@@ -1,0 +1,1 @@
+ALTER TABLE public.trade_positions ADD COLUMN IF NOT EXISTS close_lock_at timestamptz;
