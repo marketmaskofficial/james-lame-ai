@@ -12,4 +12,9 @@ export default defineConfig({
     // nitro/vite builds from this
     server: { entry: "server" },
   },
+  // This container's network stack doesn't support IPv6 (the default "::" host
+  // errors with EAFNOSUPPORT), so bind explicitly to IPv4.
+  vite: {
+    server: { host: "0.0.0.0", port: 8080 },
+  },
 });
