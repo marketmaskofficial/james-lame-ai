@@ -59,11 +59,24 @@ box(top, bottom, index1, index2, {
   extend:'none'|'right', text, textColor, textSize, state:'active'|'partial'|'mitigated'
 })  // returns a HANDLE: h.setTop/setBottom/setLeft/setRight/extendRight/stopExtend/
     // setState/setColor/setText/hide/remove  (Pine box.set_* / box.delete equivalents)
-zones(list, { bullColor, bearColor, borderColor, opacity, extend, shrink, hideFilled,
-              mitigatedColor, text })  // list items: { from, to, top, bottom, side:'bull'|'bear' }
+zones(list, { bullColor, bearColor, borderColor, borderWidth, opacity, mitigatedOpacity,
+              textSize, extend, shrink, hideFilled, mitigatedColor, text })
+  // list items: { from, to, top, bottom, side:'bull'|'bear' }
   // Full Pine object lifecycle: extends right, shrinks on partial mitigation,
   // marks/hides fully mitigated zones. USE THIS FOR FVG / OB / supply-demand.
+  // mitigatedOpacity is a real, non-compounding opacity for mitigated zones
+  // (defaults to opacity) — "heavily faded" means a low mitigatedOpacity,
+  // not double-dimming on top of it. text is a (zone => string) callback;
+  // leave it undefined for no label at all (the clean default), and when
+  // set, keep it to 1-3 words ("Bull FVG") — the renderer places it near the
+  // zone's trailing edge itself, never repeat it across the zone's width.
 line(price1, index1, price2, index2, { color, width, opacity, style, extend:'right', text })
+limitDrawings({ maxVisibleBoxes, maxVisibleLines, maxVisibleLabels, maxVisibleMarkers })
+  // Universal density cap: trims each array to the most recent N (by
+  // creation order) right before the run returns. Any indicator that can
+  // produce a lot of objects over a long chart history (zones, pivots,
+  // structure breaks, order blocks, signals) should call this — don't
+  // leave the chart to accumulate hundreds of stale drawings indefinitely.
 label(index, price, text, { color, textColor, borderColor,
       size:'tiny'|'small'|'normal'|'large', align:'left'|'center'|'right',
       offset, position:'above'|'below' })
@@ -75,6 +88,28 @@ log(...)                        // debug output
 alertcondition(boolArray, { title, message })   // safe no-op: alerts are not delivered by this
 alert(message, freq?)                           // preview/backtest runtime yet, but calling these
                                                  // never throws — never invent a different name for them
+
+VISUAL STYLE — the price chart is primary; drawings give context, never compete with it
+- Zone/box fills default to translucent (roughly 10-20% opacity, e.g.
+  rgba(34,197,94,0.15)), with a thin (1px), soft-alpha border
+  (rgba(...,0.4-0.6)) — never a solid, fully-opaque fill or a bright/thick
+  border by default.
+- No text inside a zone/box and no marker/arrow for a zone's creation event
+  unless the user actually asked for labels/signals — expose a "Show
+  Labels"-style input() instead of always-on text. When labels are on, keep
+  them to 1-3 words (e.g. "Bull FVG"), not a sentence like "Mitigated
+  Bullish FVG" — the renderer places box text near the zone's trailing edge
+  itself, so one short label per zone is enough.
+- Any indicator that can accumulate objects over a long chart history
+  (zones, order blocks, structure breaks, pivots) needs both: (a) its own
+  domain-aware cap where relevant (e.g. separate max counts per bull/bear
+  side — the runtime has no generic "side" concept, so this is on the
+  script), and (b) a call to limitDrawings() as a blanket safety net. Never
+  leave a detection loop free to keep drawing for the entire loaded history.
+- Give zone-lifecycle indicators (FVG, order blocks, supply/demand) a "Show
+  Mitigated Zones" and/or "Remove Zone After Mitigation" input; mitigated
+  zones that stay visible should render heavily faded (zones()'s
+  mitigatedOpacity, well below the active opacity), never at full strength.
 
 VISUAL PARITY CONTRACT (enforced by the validator)
 - Whatever the Pine twin draws, the SGScript MUST draw with the same primitive:
@@ -176,24 +211,71 @@ hline(50, { color: 'rgba(255,255,255,0.15)', pane: 'osc' })
     code: `// @name Fair Value Gaps
 // @overlay true
 
-const extend = input.int('Extend bars', 20, { min: 1, max: 200 })
 const minAtrMult = input.float('Min size (ATR)', 0.15, { min: 0, max: 5, step: 0.05 })
+
+const showBull = input.bool('Show Bullish FVGs', true)
+const showBear = input.bool('Show Bearish FVGs', true)
+const showLabels = input.bool('Show Labels', false)
+const showMitigated = input.bool('Show Mitigated Zones', true)
+const removeAfterMitigation = input.bool('Remove Zone After Mitigation', false)
+const maxBull = input.int('Max Bullish Zones', 8, { min: 1, max: 50 })
+const maxBear = input.int('Max Bearish Zones', 8, { min: 1, max: 50 })
+const bullFill = input.color('Bullish Fill', 'rgba(34,197,94,0.15)')
+const bearFill = input.color('Bearish Fill', 'rgba(239,68,68,0.15)')
+const fillOpacity = input.float('Fill Opacity', 1, { min: 0, max: 1, step: 0.05 })
+const borderColor = input.color('Border Color', 'rgba(148,163,184,0.45)')
+const borderWidth = input.int('Border Width', 1, { min: 0, max: 4 })
+const labelSize = input.string('Label Size', 'tiny', { options: ['tiny', 'small', 'normal', 'large'] })
+const historicalOpacity = input.float('Historical Zone Opacity', 0.35, { min: 0, max: 1, step: 0.05 })
+
+// Candles stay the primary read: zones are a translucent 10-20%-opacity
+// fill, a thin border, no text and no arrows unless explicitly turned on,
+// and only the most recent zones per side are kept — see limitDrawings()
+// and the Max Bullish/Bearish Zones inputs below for how.
 const a = atr(14)
+const gaps = []
 
 for (let i = 2; i <= lastIndex; i++) {
   const size = a[i]
   if (!Number.isFinite(size)) continue
   const bullGap = low[i] - high[i - 2]
   const bearGap = low[i - 2] - high[i]
-  const to = Math.min(lastIndex, i + extend)
+  const to = lastIndex
 
   if (bullGap > size * minAtrMult) {
-    box(high[i - 2], low[i], i - 2, to, { color: 'rgba(34,197,94,0.14)', borderColor: 'rgba(34,197,94,0.5)' })
+    gaps.push({ from: i - 2, to, top: low[i], bottom: high[i - 2], side: 'bull' })
   }
   if (bearGap > size * minAtrMult) {
-    box(high[i], low[i - 2], i - 2, to, { color: 'rgba(239,68,68,0.14)', borderColor: 'rgba(239,68,68,0.5)' })
+    gaps.push({ from: i - 2, to, top: low[i - 2], bottom: high[i], side: 'bear' })
   }
 }
+
+// Domain-specific (bull vs bear side) capping happens here, per-side, before
+// the zones are even created — the runtime has no generic notion of "side".
+const bullGaps = gaps.filter(g => g.side === 'bull').slice(-maxBull)
+const bearGaps = gaps.filter(g => g.side === 'bear').slice(-maxBear)
+const visible = []
+if (showBull) visible.push(...bullGaps)
+if (showBear) visible.push(...bearGaps)
+
+zones(visible, {
+  bullColor: bullFill,
+  bearColor: bearFill,
+  opacity: fillOpacity,
+  mitigatedOpacity: historicalOpacity,
+  borderColor: borderColor,
+  borderWidth: borderWidth,
+  textSize: labelSize,
+  extend: true,
+  shrink: true,
+  hideFilled: removeAfterMitigation || !showMitigated,
+  text: showLabels ? (z => z.side === 'bull' ? 'Bull FVG' : 'Bear FVG') : undefined,
+})
+
+// A universal safety net on top of the per-side caps above — any indicator
+// can call this, not just this one, so the chart can never be spammed with
+// hundreds of leftover objects regardless of what a script's own logic does.
+limitDrawings({ maxVisibleBoxes: maxBull + maxBear, maxVisibleLabels: maxBull + maxBear })
 `,
   },
   {

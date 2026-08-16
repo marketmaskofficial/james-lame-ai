@@ -386,6 +386,14 @@ export function StudioChart({
 
   const hostRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  /**
+   * Zones/fills paint here instead of the foreground overlay canvas, so
+   * candles (drawn by Lightweight Charts' own canvas, a sibling with no
+   * explicit z-index) visually sit on top of them. Lines/labels/markers/
+   * drawings stay on the foreground canvas, which keeps its positive
+   * z-index and paints above candles as before.
+   */
+  const bgCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const chartRef = useRef<ChartApi | null>(null);
   const priceSeriesRef = useRef<SeriesApi | null>(null);
   const oscSeriesRef = useRef<SeriesApi | null>(null);
@@ -994,12 +1002,14 @@ export function StudioChart({
   // ---- overlay canvas: boxes, lines, labels, drawings ---------------------
   function drawOverlay() {
     const canvas = canvasRef.current;
+    const bgCanvas = bgCanvasRef.current;
     const chart = chartRef.current;
     const price = priceSeriesRef.current;
     const host = hostRef.current;
-    if (!canvas || !chart || !price || !host) return;
+    if (!canvas || !bgCanvas || !chart || !price || !host) return;
     const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    const bgCtx = bgCanvas.getContext("2d");
+    if (!ctx || !bgCtx) return;
 
     const dpr = window.devicePixelRatio || 1;
     if (canvas.width !== host.clientWidth * dpr) {
@@ -1008,8 +1018,16 @@ export function StudioChart({
       canvas.style.width = `${host.clientWidth}px`;
       canvas.style.height = `${host.clientHeight}px`;
     }
+    if (bgCanvas.width !== host.clientWidth * dpr) {
+      bgCanvas.width = host.clientWidth * dpr;
+      bgCanvas.height = host.clientHeight * dpr;
+      bgCanvas.style.width = `${host.clientWidth}px`;
+      bgCanvas.style.height = `${host.clientHeight}px`;
+    }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, host.clientWidth, host.clientHeight);
+    bgCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    bgCtx.clearRect(0, 0, host.clientWidth, host.clientHeight);
 
     const ts = chart.timeScale();
     const geometryReady = isChartGeometryReady(ts, host.clientWidth, host.clientHeight);
@@ -1078,8 +1096,7 @@ export function StudioChart({
             continue;
           }
           const x2 = Math.min(x2raw, host.clientWidth);
-          const mit = b.state === "mitigated";
-          const alpha = (b.opacity ?? 1) * (mit ? 0.45 : 1);
+          const alpha = b.opacity ?? 1;
           const left = Math.min(x1, x2);
           const top = Math.min(y1, y2);
           const w = Math.max(1, Math.abs(x2 - x1));
@@ -1088,28 +1105,37 @@ export function StudioChart({
             stats.boxes.offscreen++;
             continue;
           }
-          ctx.save();
-          ctx.fillStyle = applyAlpha(b.color, alpha);
-          ctx.fillRect(left, top, w, h);
+          // Zones paint on the background canvas (behind candles) — see
+          // bgCanvasRef's doc comment. Everything else in this function
+          // keeps using the foreground `ctx`.
+          bgCtx.save();
+          bgCtx.fillStyle = applyAlpha(b.color, alpha);
+          bgCtx.fillRect(left, top, w, h);
           if (b.borderColor && (b.borderWidth ?? 1) > 0) {
-            ctx.strokeStyle = applyAlpha(b.borderColor, alpha);
-            ctx.lineWidth = b.borderWidth ?? 1;
-            ctx.setLineDash(
+            bgCtx.strokeStyle = applyAlpha(b.borderColor, alpha);
+            bgCtx.lineWidth = b.borderWidth ?? 1;
+            bgCtx.setLineDash(
               b.borderStyle === "dashed"
                 ? [5, 4]
                 : b.borderStyle === "dotted"
                   ? [1, 3]
                   : [],
             );
-            ctx.strokeRect(left, top, w, h);
+            bgCtx.strokeRect(left, top, w, h);
           }
-          if (b.text) {
-            ctx.setLineDash([]);
-            ctx.fillStyle = applyAlpha(b.textColor ?? "rgba(232,234,240,0.9)", alpha);
-            ctx.font = `${LABEL_FONT_PX[b.textSize ?? "small"] ?? 10}px ui-sans-serif, system-ui`;
-            ctx.fillText(b.text, left + 4, top + 12);
+          if (b.text && w > 28) {
+            // One small label near the zone's trailing (right) edge, not
+            // repeated across its width — the reader's eye is at the active
+            // edge, and a left-anchored label sits over the oldest candles.
+            bgCtx.setLineDash([]);
+            bgCtx.fillStyle = applyAlpha(b.textColor ?? "rgba(232,234,240,0.9)", alpha);
+            const fontPx = LABEL_FONT_PX[b.textSize ?? "small"] ?? 10;
+            bgCtx.font = `${fontPx}px ui-sans-serif, system-ui`;
+            const textW = bgCtx.measureText(b.text).width;
+            const tx = Math.max(left + 4, left + w - textW - 6);
+            bgCtx.fillText(b.text, tx, top + fontPx + 2);
           }
-          ctx.restore();
+          bgCtx.restore();
           stats.boxes.drawn++;
         } catch {
           // One bad box must never take the rest of the batch down with it.
@@ -1262,15 +1288,17 @@ export function StudioChart({
             stats.fills.offscreen++;
             continue;
           }
-          ctx.save();
-          ctx.beginPath();
-          ctx.moveTo(topPts[0][0], topPts[0][1]);
-          for (const [px, py] of topPts.slice(1)) ctx.lineTo(px, py);
-          for (const [px, py] of [...botPts].reverse()) ctx.lineTo(px, py);
-          ctx.closePath();
-          ctx.fillStyle = applyAlpha(f.color, f.opacity ?? 1);
-          ctx.fill();
-          ctx.restore();
+          // Fills paint on the background canvas alongside zones — see
+          // bgCanvasRef's doc comment.
+          bgCtx.save();
+          bgCtx.beginPath();
+          bgCtx.moveTo(topPts[0][0], topPts[0][1]);
+          for (const [px, py] of topPts.slice(1)) bgCtx.lineTo(px, py);
+          for (const [px, py] of [...botPts].reverse()) bgCtx.lineTo(px, py);
+          bgCtx.closePath();
+          bgCtx.fillStyle = applyAlpha(f.color, f.opacity ?? 1);
+          bgCtx.fill();
+          bgCtx.restore();
           stats.fills.drawn++;
         } catch {
           stats.fills.failed++;
@@ -1736,7 +1764,12 @@ export function StudioChart({
   );
 
   return (
-    <div ref={hostRef} className="relative h-full w-full">
+    <div ref={hostRef} className="relative isolate h-full w-full">
+      <canvas
+        ref={bgCanvasRef}
+        className="absolute inset-0"
+        style={{ zIndex: -1, pointerEvents: "none" }}
+      />
       <canvas
         ref={canvasRef}
         className="absolute inset-0 z-10"

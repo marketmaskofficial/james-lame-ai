@@ -113,6 +113,24 @@ export function runScript(req: RunRequest): RunResult {
   let drawCount = 0;
   let uid = 0;
   const nextId = () => `o${uid++}`;
+  const limits: { boxes?: number; lines?: number; labels?: number; markers?: number } = {};
+  /**
+   * Universal object-density cap: any indicator can call this, not just
+   * zone-heavy ones, so "don't let this indicator spam the chart with
+   * hundreds of old objects" never has to be re-implemented per script.
+   * Applied once, right before this run's result is returned.
+   */
+  function limitDrawings(o: {
+    maxVisibleBoxes?: number;
+    maxVisibleLines?: number;
+    maxVisibleLabels?: number;
+    maxVisibleMarkers?: number;
+  }) {
+    if (o.maxVisibleBoxes != null) limits.boxes = o.maxVisibleBoxes;
+    if (o.maxVisibleLines != null) limits.lines = o.maxVisibleLines;
+    if (o.maxVisibleLabels != null) limits.labels = o.maxVisibleLabels;
+    if (o.maxVisibleMarkers != null) limits.markers = o.maxVisibleMarkers;
+  }
 
   const budget = () => {
     if (Date.now() - started > LIMITS.timeoutMs)
@@ -576,7 +594,11 @@ export function runScript(req: RunRequest): RunResult {
         bullColor?: string;
         bearColor?: string;
         borderColor?: string;
+        borderWidth?: number;
         opacity?: number;
+        /** Fill opacity for mitigated zones; defaults to `opacity` (no auto-dim). */
+        mitigatedOpacity?: number;
+        textSize?: "tiny" | "small" | "normal" | "large";
         extend?: boolean;
         shrink?: boolean;
         hideFilled?: boolean;
@@ -614,16 +636,18 @@ export function runScript(req: RunRequest): RunResult {
           : (o.bearColor ?? "rgba(239,68,68,0.18)");
         const h = box(top, bottom, z.from, right, {
           color: state === "mitigated" ? (o.mitigatedColor ?? base) : base,
-          opacity: o.opacity ?? 1,
+          opacity: state === "mitigated" ? (o.mitigatedOpacity ?? o.opacity ?? 1) : (o.opacity ?? 1),
           borderColor: o.borderColor ?? (bull ? "rgba(34,197,94,0.6)" : "rgba(239,68,68,0.6)"),
+          borderWidth: o.borderWidth,
           extend: state === "mitigated" || o.extend === false ? "none" : "right",
           state,
-          ...(o.text ? { text: o.text({ side: z.side, top, bottom }) } : {}),
+          ...(o.text ? { text: o.text({ side: z.side, top, bottom }), textSize: o.textSize } : {}),
         });
         if (h) out.push(h);
       }
       return out;
     },
+    limitDrawings,
     // Constructs the runtime cannot reproduce are reported, never faked.
     table: () => warn("table() is not supported by the Signal Goat renderer yet"),
     bgcolor: () => warn("bgcolor() is not supported by the Signal Goat renderer yet"),
@@ -703,13 +727,17 @@ export function runScript(req: RunRequest): RunResult {
     inputs,
     plots,
     hlines,
-    boxes,
-    lines,
-    labels,
-    markers,
+    // Trimmed to the most recent N when the script opted in via
+    // limitDrawings() — keeps the newest objects, since those are the ones
+    // still relevant to current price action.
+    boxes: limits.boxes != null ? boxes.slice(-limits.boxes) : boxes,
+    lines: limits.lines != null ? lines.slice(-limits.lines) : lines,
+    labels: limits.labels != null ? labels.slice(-limits.labels) : labels,
+    markers: limits.markers != null ? markers.slice(-limits.markers) : markers,
     fills,
     logs,
     warnings,
+    limits,
     ms: Date.now() - started,
   };
 }

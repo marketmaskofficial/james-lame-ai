@@ -179,6 +179,13 @@ export type RunResult = {
   logs: string[];
   /** Parity warnings raised by the runtime itself (unsupported constructs). */
   warnings?: string[];
+  /**
+   * Universal object-density cap, set by the script via limitDrawings() and
+   * already applied (boxes/lines/labels/markers trimmed to the most recent N)
+   * before this result is returned — any indicator can opt in, not just
+   * zone-heavy ones, so the renderer never has to special-case a category.
+   */
+  limits?: { boxes?: number; lines?: number; labels?: number; markers?: number };
 
   ms: number;
 };
