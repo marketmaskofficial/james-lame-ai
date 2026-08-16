@@ -2,7 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { generateText } from "ai";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { createLovableAiGatewayProvider } from "@/lib/ai-gateway.server";
+import { createOpenAiProvider } from "@/lib/ai-gateway.server";
 import { SGSCRIPT_REFERENCE } from "@/lib/sgscript/examples";
 
 // Translates a Pine Script (or a plain-English description) into SGScript so
@@ -19,14 +19,14 @@ export const translateToSgScript = createServerFn({ method: "POST" })
       .parse(i),
   )
   .handler(async ({ data }) => {
-    const apiKey = process.env["LOVABLE_API_KEY"];
+    const apiKey = process.env["OPENAI_API_KEY"];
     if (!apiKey) throw new Error("AI is not configured");
-    const provider = createLovableAiGatewayProvider(apiKey);
+    const provider = createOpenAiProvider(apiKey);
 
     const { text } = await generateText({
-      model: provider("google/gemini-3.1-pro-preview"),
+      model: provider("gpt-5.6-sol"),
       temperature: 0.1,
-      maxOutputTokens: 12_000,
+      maxOutputTokens: 20_000, // headroom for Sol's reasoning tokens, drawn from the same budget
       system: `You port trading indicators into SGScript, the Signal Goat runtime language. The source may be Pine Script v4/v5/v6, MQL, ThinkScript, EasyLanguage, pseudo-code, broken SGScript, or a plain-English description — always produce working SGScript.
 
 ${SGSCRIPT_REFERENCE}
@@ -58,14 +58,14 @@ export const repairSgScript = createServerFn({ method: "POST" })
       .parse(i),
   )
   .handler(async ({ data }) => {
-    const apiKey = process.env["LOVABLE_API_KEY"];
+    const apiKey = process.env["OPENAI_API_KEY"];
     if (!apiKey) throw new Error("AI is not configured");
-    const provider = createLovableAiGatewayProvider(apiKey);
+    const provider = createOpenAiProvider(apiKey);
 
     const { text } = await generateText({
-      model: provider("google/gemini-3.1-pro-preview"),
+      model: provider("gpt-5.6-sol"),
       temperature: 0,
-      maxOutputTokens: 12_000,
+      maxOutputTokens: 20_000, // headroom for Sol's reasoning tokens, drawn from the same budget
       system: `You fix broken SGScript for the Signal Goat runtime.
 
 ${SGSCRIPT_REFERENCE}

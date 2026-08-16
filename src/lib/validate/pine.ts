@@ -67,6 +67,52 @@ function balanced(code: string): Issue[] {
   return issues;
 }
 
+/**
+ * Pine's block structure is indentation-significant, like Python: the body of
+ * an `if`/`else`/`for`/`while` header or a multi-line `=>` function must be
+ * indented deeper than the header, or the compiler either errors or silently
+ * treats the block as empty. The prompt tells the model this; nothing here
+ * used to actually check it.
+ */
+function blockIndentation(code: string): Issue[] {
+  const issues: Issue[] = [];
+  const raw = code.split("\n");
+  const stripped = raw.map(strip);
+
+  const indentOf = (line: string) => line.length - line.replace(/^[ \t]*/, "").length;
+  const isHeader = (line: string) => {
+    const t = line.trim();
+    if (!t) return false;
+    if (/=>\s*$/.test(t)) return true; // multi-line function/lambda def
+    if (/^(if|else\s+if)\b/.test(t)) return true;
+    if (/^else\s*$/.test(t)) return true;
+    if (/^for\b.*\bto\b|^for\b.*\bin\b/.test(t)) return true;
+    if (/^while\b/.test(t)) return true;
+    return false;
+  };
+
+  for (let i = 0; i < stripped.length; i++) {
+    const line = stripped[i];
+    if (!line.trim() || !isHeader(line)) continue;
+    const headerIndent = indentOf(raw[i]);
+
+    let j = i + 1;
+    while (j < stripped.length && !stripped[j].trim()) j++; // skip blanks/comment-only lines
+    if (j >= stripped.length) continue; // header is the last thing in the file
+
+    const bodyIndent = indentOf(raw[j]);
+    if (bodyIndent <= headerIndent) {
+      issues.push({
+        severity: "error",
+        code: "block-indent",
+        message: `Line ${i + 1} opens a block ("${line.trim()}") but line ${j + 1} is not indented deeper — Pine treats unindented lines as outside the block`,
+        line: j + 1,
+      });
+    }
+  }
+  return issues;
+}
+
 const V5_ISMS: Array<[RegExp, string, string]> = [
   [/(^|[^.\w])study\s*\(/, "v5-study", "study() is v4 — use indicator()"],
   [/(^|[^.\w])security\s*\(/, "v5-security", "security() must be request.security()"],
@@ -111,6 +157,7 @@ export function validatePine(code: string): PineReport {
   }
 
   issues.push(...balanced(code));
+  issues.push(...blockIndentation(code));
 
   lines.forEach((raw, i) => {
     const l = strip(raw);

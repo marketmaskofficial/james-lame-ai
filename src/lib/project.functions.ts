@@ -2,14 +2,14 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { generateText } from "ai";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { createLovableAiGatewayProvider } from "@/lib/ai-gateway.server";
+import { createOpenAiProvider } from "@/lib/ai-gateway.server";
 import { PROJECT_SYSTEM_PROMPT } from "@/lib/ai/project-prompt";
 import { coerceSpec, type IndicatorSpec } from "@/lib/spec/types";
 import { validatePine, formatIssues, type PineReport } from "@/lib/validate/pine";
 import { validateSgScript, visualParity } from "@/lib/validate/sgscript";
 
-const MODEL = "google/gemini-3.1-pro-preview";
-const MAX_REPAIRS = 2;
+const MODEL = "gpt-5.6-sol";
+const MAX_REPAIRS = 3;
 
 export type BuildResult = {
   spec: IndicatorSpec;
@@ -107,9 +107,9 @@ export const buildProject = createServerFn({ method: "POST" })
       .parse(i),
   )
   .handler(async ({ data }): Promise<BuildResult> => {
-    const apiKey = process.env["LOVABLE_API_KEY"];
+    const apiKey = process.env["OPENAI_API_KEY"];
     if (!apiKey) throw new Error("AI is not configured");
-    const provider = createLovableAiGatewayProvider(apiKey);
+    const provider = createOpenAiProvider(apiKey);
     const model = provider(MODEL);
 
     const context = [
@@ -129,6 +129,9 @@ export const buildProject = createServerFn({ method: "POST" })
       const { text } = await generateText({
         model,
         temperature: 0.1,
+        // Sol is a reasoning model: its internal "thinking" tokens are billed
+        // from this same budget before any visible output, so this needs
+        // real headroom above what the final Pine/SGScript text alone needs.
         maxOutputTokens: 32_000,
         system: PROJECT_SYSTEM_PROMPT,
         prompt,

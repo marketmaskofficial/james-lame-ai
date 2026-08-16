@@ -1,4 +1,5 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { createOpenAI } from "@ai-sdk/openai";
 
 const LOVABLE_AIG_RUN_ID_HEADER = "X-Lovable-AIG-Run-ID";
 
@@ -38,6 +39,14 @@ export function createLovableAiGatewayRunIdFetch(initialRunId?: string) {
     getRunId: () => runId,
     waitForRunId: () => (runId ? Promise.resolve(runId) : runIdReady),
   };
+}
+
+// Uses the dedicated @ai-sdk/openai provider (not openai-compatible): it
+// auto-detects reasoning models like gpt-5.6-sol and sends
+// max_completion_tokens instead of the legacy max_tokens param, which Sol
+// rejects outright over Chat Completions.
+export function createOpenAiProvider(apiKey: string) {
+  return createOpenAI({ apiKey });
 }
 
 export function createLovableAiGatewayProvider(

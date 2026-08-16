@@ -36,7 +36,7 @@ export const Route = createFileRoute("/")({
 function Landing() {
   const { user, loading } = useAuth();
   const ctaHref = user ? "/app" : "/auth";
-  const ctaLabel = user ? "Open the app" : "Start building free";
+  const ctaLabel = user ? "Open the app" : "Try it free";
 
   return (
     <div className="min-h-screen bg-background text-foreground">

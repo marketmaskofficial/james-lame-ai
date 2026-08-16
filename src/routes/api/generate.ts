@@ -1,7 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { streamText } from "ai";
-import { createLovableAiGatewayProvider } from "@/lib/ai-gateway.server";
+import { generateText } from "ai";
+import { createOpenAiProvider } from "@/lib/ai-gateway.server";
 import { requireApiUser, rateLimit } from "@/lib/api-auth.server";
+import { validatePine, formatIssues, type PineReport } from "@/lib/validate/pine";
 
 import {
   SYSTEM_PROMPT,
@@ -15,6 +16,21 @@ import {
   REASONING_PROTOCOL,
   VISION_CHART_PLAYBOOK,
 } from "@/lib/ai/pine-playbooks";
+
+const MAX_REPAIRS = 2;
+
+const SYSTEM = [
+  SYSTEM_PROMPT,
+  V6_STRICT_MANDATE,
+  REASONING_PROTOCOL,
+  VISION_CHART_PLAYBOOK,
+  PINE_V6_UPGRADE,
+  SIGNAL_LABELS_PLAYBOOK,
+  COMMON_ERRORS_APPENDIX,
+  ICT_SMART_MONEY_PLAYBOOK,
+  ORDER_FLOW_PLAYBOOK,
+  PINE_COMPILER_GUARDRAILS,
+].join("\n\n");
 
 export const Route = createFileRoute("/api/generate")({
   server: {
@@ -30,11 +46,10 @@ export const Route = createFileRoute("/api/generate")({
         if (!Array.isArray(body.messages)) {
           return new Response("messages required", { status: 400 });
         }
-        const key = process.env.LOVABLE_API_KEY;
+        const key = process.env.OPENAI_API_KEY;
         if (!key) {
-          return new Response("LOVABLE_API_KEY not configured", { status: 500 });
+          return new Response("OPENAI_API_KEY not configured", { status: 500 });
         }
-
 
         // Convert incoming messages (which may carry `images: string[]` as data URLs
         // or https URLs) into AI SDK multimodal message parts. Assistant messages
@@ -54,43 +69,54 @@ export const Route = createFileRoute("/api/generate")({
           return { role: m.role, content: m.content };
         });
 
-        const gateway = createLovableAiGatewayProvider(key);
-        const model = gateway("google/gemini-3.1-pro-preview");
+        const gateway = createOpenAiProvider(key);
+        const model = gateway("gpt-5.6-sol");
 
-        const result = streamText({
-          model,
-          system:
-            SYSTEM_PROMPT +
-            "\n\n" +
-            V6_STRICT_MANDATE +
-            "\n\n" +
-            REASONING_PROTOCOL +
-            "\n\n" +
-            VISION_CHART_PLAYBOOK +
-            "\n\n" +
-            PINE_V6_UPGRADE +
-            "\n\n" +
-            SIGNAL_LABELS_PLAYBOOK +
-            "\n\n" +
-            COMMON_ERRORS_APPENDIX +
-            "\n\n" +
-            ICT_SMART_MONEY_PLAYBOOK +
-            "\n\n" +
-            ORDER_FLOW_PLAYBOOK +
-            "\n\n" +
-            PINE_COMPILER_GUARDRAILS,
-          temperature: 0.1,
-          maxOutputTokens: 32000,
-          messages: messages as NonNullable<Parameters<typeof streamText>[0]["messages"]>,
-        });
+        type Msgs = NonNullable<Parameters<typeof generateText>[0]["messages"]>;
 
-        // Line-buffered safety net: repair the handful of v5-isms that still slip
-        // through the model, so pasted code always compiles as Pine v6.
-        const sanitized = result.textStream.pipeThrough(createV6Sanitizer());
-        return new Response(sanitized.pipeThrough(new TextEncoderStream()), {
+        const runGeneration = (msgs: Msgs) =>
+          generateText({
+            model,
+            system: SYSTEM,
+            temperature: 0.1,
+            // gpt-5.6-sol is a reasoning model: reasoning tokens draw from this
+            // same budget before visible output, so keep it generous. The
+            // account's 500K TPM ceiling on Sol easily covers the ~15-16K
+            // system prompt plus this.
+            maxOutputTokens: 32000,
+            messages: msgs,
+          });
+
+        // Buffered (not streamed) on purpose: we validate the Pine code against
+        // our compiler guardrails before anything reaches the user, and repair
+        // it if it fails. That requires the full response, so this trades the
+        // old token-by-token typing effect for a guarantee the code that shows
+        // up has passed static validation.
+        let { text } = await runGeneration(messages as Msgs);
+        text = sanitizeText(text);
+        let report = validateResponse(text);
+
+        let attempts = 0;
+        while (!report.ok && attempts < MAX_REPAIRS) {
+          attempts++;
+          const repairMsgs = [
+            ...messages,
+            { role: "assistant" as const, content: text },
+            {
+              role: "user" as const,
+              content: `Your last response fails static validation against the Pine v6 compiler guardrails. Fix ONLY these problems and re-output the full response in the same format (one short paragraph, exactly one fenced \`\`\`pinescript code block, optional "Usage:" bullets):\n\n${formatIssues(report.issues)}`,
+            },
+          ];
+          const retry = await runGeneration(repairMsgs as unknown as Msgs);
+          text = sanitizeText(retry.text);
+          report = validateResponse(text);
+        }
+
+        return new Response(text, {
           headers: {
             "Content-Type": "text/plain; charset=utf-8",
             "Cache-Control": "no-cache",
+            "X-Pine-Validated": report.ok ? "true" : "false",
           },
         });
       },
@@ -98,7 +124,32 @@ export const Route = createFileRoute("/api/generate")({
   },
 });
 
-/** Rewrites a single line of streamed Pine so it is valid v6. */
+/** Extracts the fenced pinescript block (matching the frontend's own extractCode) and validates it. */
+function validateResponse(text: string): PineReport {
+  const match = /```(?:pinescript|pine)?\s*\n([\s\S]*?)```/i.exec(text);
+  if (!match) {
+    return {
+      ok: false,
+      issues: [
+        {
+          severity: "error",
+          code: "no-code-block",
+          message: "Response has no fenced ```pinescript code block",
+        },
+      ],
+      repaint: { classification: "unknown", reasons: [] },
+      stats: { lines: 0, plots: 0, drawings: 0 },
+    };
+  }
+  return validatePine(match[1]);
+}
+
+/** Rewrites every line so the handful of v5-isms that still slip through the model never reach the user. */
+function sanitizeText(text: string): string {
+  return text.split("\n").map(fixPineLine).join("\n");
+}
+
+/** Rewrites a single line of Pine so it is valid v6. */
 function fixPineLine(line: string): string {
   // Only touch lines that look like code, never prose.
   if (/^\s*\/\/@version\s*=\s*[1-5]\s*$/.test(line)) return "//@version=6";
@@ -128,19 +179,3 @@ function fixPineLine(line: string): string {
   out = out.replace(/(^|[^.\w])_IFF_\(/g, "$1iff(");
   return out;
 }
-
-function createV6Sanitizer(): TransformStream<string, string> {
-  let buffer = "";
-  return new TransformStream<string, string>({
-    transform(chunk, controller) {
-      buffer += chunk;
-      const parts = buffer.split("\n");
-      buffer = parts.pop() ?? "";
-      for (const line of parts) controller.enqueue(fixPineLine(line) + "\n");
-    },
-    flush(controller) {
-      if (buffer) controller.enqueue(fixPineLine(buffer));
-    },
-  });
-}
-

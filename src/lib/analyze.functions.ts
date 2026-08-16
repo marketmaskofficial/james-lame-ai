@@ -2,7 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { generateText, Output, NoObjectGeneratedError } from "ai";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { createLovableAiGatewayProvider } from "@/lib/ai-gateway.server";
+import { createOpenAiProvider } from "@/lib/ai-gateway.server";
 
 const inputSchema = z.object({
   code: z.string().min(1).max(20000),
@@ -139,15 +139,15 @@ export const analyzeIndicator = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((i: unknown) => inputSchema.parse(i))
   .handler(async ({ data }): Promise<AnalyzeResult> => {
-    const key = process.env.LOVABLE_API_KEY;
-    if (!key) throw new Error("LOVABLE_API_KEY not configured");
+    const key = process.env.OPENAI_API_KEY;
+    if (!key) throw new Error("OPENAI_API_KEY not configured");
 
     const candles = await fetchKlines(data.symbol, data.interval, 200);
     if (candles.length < 30) throw new Error("Not enough historical data");
     const stats = summarizeBars(candles)!;
 
-    const gateway = createLovableAiGatewayProvider(key);
-    const model = gateway("google/gemini-2.5-pro");
+    const gateway = createOpenAiProvider(key);
+    const model = gateway("gpt-5.6-sol");
 
     const prompt = `Analyze the following TradingView Pine Script v5 indicator/strategy against recent market data for ${data.symbol} on the ${data.interval} timeframe.
 
