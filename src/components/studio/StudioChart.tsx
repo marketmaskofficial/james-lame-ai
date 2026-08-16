@@ -1182,7 +1182,7 @@ export function StudioChart({
           ctx.setLineDash([]);
           if (l.text) {
             ctx.fillStyle = applyAlpha(l.color, l.opacity ?? 1);
-            ctx.font = "10px ui-sans-serif, system-ui";
+            ctx.font = `${LABEL_FONT_PX[l.textSize ?? "small"] ?? 10}px ui-sans-serif, system-ui`;
             ctx.fillText(l.text, Math.min(x2, host.clientWidth - 60) + 4, yEnd - 3);
           }
           ctx.restore();

@@ -358,7 +358,7 @@ export function runScript(req: RunRequest): RunResult {
       dashed: style !== "solid",
       style,
       extend: o.extend ?? "none",
-      ...(o.text ? { text: o.text } : {}),
+      ...(o.text ? { text: o.text, textSize: o.textSize } : {}),
     });
   }
 

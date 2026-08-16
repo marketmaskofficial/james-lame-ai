@@ -83,6 +83,7 @@ export type LineOut = {
   style?: "solid" | "dashed" | "dotted";
   extend?: "none" | "right";
   text?: string;
+  textSize?: "tiny" | "small" | "normal" | "large";
 };
 
 export type LabelOut = {

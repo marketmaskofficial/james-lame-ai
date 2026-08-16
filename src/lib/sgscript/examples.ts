@@ -70,7 +70,7 @@ zones(list, { bullColor, bearColor, borderColor, borderWidth, opacity, mitigated
   // leave it undefined for no label at all (the clean default), and when
   // set, keep it to 1-3 words ("Bull FVG") — the renderer places it near the
   // zone's trailing edge itself, never repeat it across the zone's width.
-line(price1, index1, price2, index2, { color, width, opacity, style, extend:'right', text })
+line(price1, index1, price2, index2, { color, width, opacity, style, extend:'right', text, textSize })
 limitDrawings({ maxVisibleBoxes, maxVisibleLines, maxVisibleLabels, maxVisibleMarkers })
   // Universal density cap: trims each array to the most recent N (by
   // creation order) right before the run returns. Any indicator that can
@@ -357,32 +357,70 @@ for (let i = 1; i <= lastIndex; i++) {
 const left = input.int('Pivot left', 5, { min: 1, max: 50 })
 const right = input.int('Pivot right', 5, { min: 1, max: 50 })
 
+const showBull = input.bool('Show Bullish BOS', true)
+const showBear = input.bool('Show Bearish BOS', true)
+const showLabels = input.bool('Show Labels', false)
+const showMarkers = input.bool('Show Markers', false)
+const maxBull = input.int('Max Bullish Breaks', 8, { min: 1, max: 50 })
+const maxBear = input.int('Max Bearish Breaks', 8, { min: 1, max: 50 })
+const bullColor = input.color('Bullish Line', '#22c55e')
+const bearColor = input.color('Bearish Line', '#ef4444')
+const lineWidth = input.int('Line Width', 1, { min: 1, max: 4 })
+const labelSize = input.string('Label Size', 'tiny', { options: ['tiny', 'small', 'normal', 'large'] })
+
+// Direction already reads from line color — text and markers are optional,
+// off by default, so one break doesn't announce itself through three
+// separate channels at once. Only the most recent breaks per side are kept.
 const ph = pivotHigh(left, right)
 const pl = pivotLow(left, right)
 
 let lastHigh = NaN, lastHighIdx = -1
 let lastLow = NaN, lastLowIdx = -1
-const bull = new Array(barCount).fill(false)
-const bear = new Array(barCount).fill(false)
+const bullBreaks = []
+const bearBreaks = []
 
 for (let i = 0; i <= lastIndex; i++) {
   if (Number.isFinite(ph[i])) { lastHigh = ph[i]; lastHighIdx = i }
   if (Number.isFinite(pl[i])) { lastLow = pl[i]; lastLowIdx = i }
 
   if (Number.isFinite(lastHigh) && close[i] > lastHigh) {
-    bull[i] = true
-    line(lastHigh, lastHighIdx, lastHigh, i, { color: '#22c55e', text: 'BOS' })
+    bullBreaks.push({ price: lastHigh, from: lastHighIdx, to: i })
     lastHigh = NaN
   }
   if (Number.isFinite(lastLow) && close[i] < lastLow) {
-    bear[i] = true
-    line(lastLow, lastLowIdx, lastLow, i, { color: '#ef4444', text: 'BOS' })
+    bearBreaks.push({ price: lastLow, from: lastLowIdx, to: i })
     lastLow = NaN
   }
 }
 
-signal(bull, 'buy', 'BOS up')
-signal(bear, 'sell', 'BOS down')
+const visibleBull = showBull ? bullBreaks.slice(-maxBull) : []
+const visibleBear = showBear ? bearBreaks.slice(-maxBear) : []
+
+for (const b of visibleBull) {
+  line(b.price, b.from, b.price, b.to, {
+    color: bullColor,
+    width: lineWidth,
+    ...(showLabels ? { text: 'BOS', textSize: labelSize } : {}),
+  })
+}
+for (const b of visibleBear) {
+  line(b.price, b.from, b.price, b.to, {
+    color: bearColor,
+    width: lineWidth,
+    ...(showLabels ? { text: 'BOS', textSize: labelSize } : {}),
+  })
+}
+
+if (showMarkers) {
+  const bull = new Array(barCount).fill(false)
+  const bear = new Array(barCount).fill(false)
+  for (const b of visibleBull) bull[b.to] = true
+  for (const b of visibleBear) bear[b.to] = true
+  signal(bull, 'buy', 'BOS up')
+  signal(bear, 'sell', 'BOS down')
+}
+
+limitDrawings({ maxVisibleLines: maxBull + maxBear, maxVisibleMarkers: maxBull + maxBear })
 `,
   },
   {
