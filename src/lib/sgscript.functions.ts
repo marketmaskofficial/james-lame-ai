@@ -4,6 +4,10 @@ import { generateText } from "ai";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { createOpenAiProvider } from "@/lib/ai-gateway.server";
 import { SGSCRIPT_REFERENCE } from "@/lib/sgscript/examples";
+import { validateSgScript, visualParity } from "@/lib/validate/sgscript";
+import { formatIssues } from "@/lib/validate/pine";
+
+const MAX_TRANSLATE_REPAIRS = 2;
 
 // Translates a Pine Script (or a plain-English description) into SGScript so
 // it can execute in the Signal Goat runtime. Pine itself is never executed —
@@ -23,24 +27,58 @@ export const translateToSgScript = createServerFn({ method: "POST" })
     if (!apiKey) throw new Error("AI is not configured");
     const provider = createOpenAiProvider(apiKey);
 
-    const { text } = await generateText({
-      model: provider("gpt-5.6-sol"),
-      temperature: 0.1,
-      maxOutputTokens: 20_000, // headroom for Sol's reasoning tokens, drawn from the same budget
-      system: `You port trading indicators into SGScript, the Signal Goat runtime language. The source may be Pine Script v4/v5/v6, MQL, ThinkScript, EasyLanguage, pseudo-code, broken SGScript, or a plain-English description — always produce working SGScript.
+    const system = `You port trading indicators into SGScript, the Signal Goat runtime language. The source may be Pine Script v4/v5/v6, MQL, ThinkScript, EasyLanguage, pseudo-code, broken SGScript, or a plain-English description — always produce working SGScript.
 
 ${SGSCRIPT_REFERENCE}
 
 Output ONLY the SGScript code inside a single \`\`\`sgscript fenced block. No commentary.
 Reproduce the source logic faithfully: same inputs, same conditions, same plots, boxes, labels and buy/sell signals.
+If the source draws persistent zone rectangles (Pine's box.new/box.set_*), you MUST call box(top, bottom, from, to, {...}) in the port — never substitute a signal()/plotshape-style marker for a zone, that silently drops the visual.
 Never emit Pine Script syntax. Never emit imports, fetch, DOM or timers.
-Every array arithmetic must use add/sub/mul/div. Guard values with Number.isFinite before drawing.`,
+Every array arithmetic must use add/sub/mul/div. Guard values with Number.isFinite before drawing.`;
+
+    const extract = (text: string) => {
+      const fenced = /```(?:sgscript|js|javascript)?\s*\n([\s\S]*?)```/i.exec(text);
+      return (fenced ? fenced[1] : text).trim();
+    };
+
+    const { text: firstText } = await generateText({
+      model: provider("gpt-5.6-sol"),
+      temperature: 0.1,
+      maxOutputTokens: 20_000, // headroom for Sol's reasoning tokens, drawn from the same budget
+      system,
       prompt: `Port this to SGScript.${data.note ? `\nExtra instruction: ${data.note}` : ""}\n\n${data.source}`,
     });
 
-    const fenced = /```(?:sgscript|js|javascript)?\s*\n([\s\S]*?)```/i.exec(text);
-    const code = (fenced ? fenced[1] : text).trim();
+    let code = extract(firstText);
     if (!code) throw new Error("Translation produced no code");
+
+    // The source is real Pine (or another language) we never re-derive, so we
+    // can check the port against it directly: same failure mode buildProject
+    // guards against (box.new zones silently downgraded to signal() markers),
+    // just on the paste-a-script path instead of the describe-a-strategy path.
+    const check = () => {
+      const base = validateSgScript(code);
+      const parity = visualParity(data.source, code);
+      const issues = [...base.issues, ...parity];
+      return { ok: !issues.some((i) => i.severity === "error"), issues };
+    };
+
+    let report = check();
+    let attempts = 0;
+    while (!report.ok && attempts < MAX_TRANSLATE_REPAIRS) {
+      attempts++;
+      const { text: retryText } = await generateText({
+        model: provider("gpt-5.6-sol"),
+        temperature: 0,
+        maxOutputTokens: 20_000,
+        system,
+        prompt: `Your previous port fails validation. Fix ONLY these problems and return the full corrected SGScript again, same fenced format:\n\n${formatIssues(report.issues)}\n\nOriginal source:\n${data.source}\n\nYour previous port:\n${code}`,
+      });
+      code = extract(retryText) || code;
+      report = check();
+    }
+
     return { code };
   });
 
