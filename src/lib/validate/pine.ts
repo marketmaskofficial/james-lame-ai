@@ -237,6 +237,37 @@ export function validatePine(code: string): PineReport {
   };
 }
 
+const CONFIRM_OFFSET_RE = /\[1\]|\[\s*barstate\.isrealtime\s*\?\s*1\s*:\s*0\s*\]/;
+
+/**
+ * True if any request.security(...) call's argument list contains a [1] (or
+ * the ternary realtime-safe) confirm offset anywhere within it — not just
+ * immediately before the closing paren, which misses both a trailing named
+ * arg (`..., close[1], lookahead=barmerge.lookahead_on)`) and a [1] applied
+ * to a nested call (`ta.ema(close, len)[1]`). Scans each call's balanced
+ * parens by hand since a single regex can't track nesting depth.
+ */
+function anySecurityCallConfirmed(src: string): boolean {
+  const marker = "request.security";
+  let searchFrom = 0;
+  for (;;) {
+    const idx = src.indexOf(marker, searchFrom);
+    if (idx === -1) return false;
+    const parenStart = src.indexOf("(", idx);
+    if (parenStart === -1) return false;
+    let depth = 1;
+    let i = parenStart + 1;
+    while (i < src.length && depth > 0) {
+      if (src[i] === "(") depth++;
+      else if (src[i] === ")") depth--;
+      i++;
+    }
+    const args = src.slice(parenStart + 1, i - 1);
+    if (CONFIRM_OFFSET_RE.test(args)) return true;
+    searchFrom = i;
+  }
+}
+
 /** Conservative repaint classification — never claims safety it can't prove. */
 export function classifyRepaint(code: string): {
   classification: RepaintClass;
@@ -248,13 +279,20 @@ export function classifyRepaint(code: string): {
     .join("\n");
   const reasons: string[] = [];
 
-  if (/lookahead\s*=\s*barmerge\.lookahead_on/.test(src)) {
-    reasons.push("request.security uses lookahead_on (future data on history)");
+  const usesSecurity = /request\.security\s*\(/.test(src);
+  const securityConfirmed = usesSecurity && anySecurityCallConfirmed(src);
+
+  // lookahead_on without a [1]-style confirm offset genuinely leaks an
+  // unclosed future value on historical bars — always unsafe, flagged
+  // immediately. Paired with a confirm offset, it's the documented-safe
+  // "already-closed value, no extra lag" idiom instead (see
+  // pine-playbooks.ts's repainting-discipline section), so it falls through
+  // to the normal classification below rather than being flagged here.
+  if (/lookahead\s*=\s*barmerge\.lookahead_on/.test(src) && !securityConfirmed) {
+    reasons.push("request.security uses lookahead_on without a [1] confirm offset (future data on history)");
     return { classification: "intentionally-repainting", reasons };
   }
 
-  const usesSecurity = /request\.security\s*\(/.test(src);
-  const securityConfirmed = /\[\s*barstate\.isrealtime\s*\?\s*1\s*:\s*0\s*\]|\[1\]\s*\)/.test(src);
   const usesRealtime = /barstate\.isrealtime|barstate\.islast/.test(src);
   const usesPivots = /ta\.pivot(high|low)\s*\(/.test(src);
   const confirmGate = /barstate\.isconfirmed/.test(src);

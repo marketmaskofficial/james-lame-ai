@@ -1,6 +1,6 @@
 # Pine parity report
 
-Generated 2026-08-16T03:11:42.797Z — 26/27 passed.
+Generated 2026-08-16T03:18:53.359Z — 27/27 passed.
 
 | Fixture | Category | Pine valid | Repaint | SGScript valid | Runtime | Check | Result |
 |---|---|---|---|---|---|---|---|
@@ -25,14 +25,9 @@ Generated 2026-08-16T03:11:42.797Z — 26/27 passed.
 | 19-confluence-scoring | scoring | OK | - | OK | OK | OK | PASS |
 | 20-repaint-safe-offset | repaint-classification | OK | OK | OK | OK | OK | PASS |
 | 21-repaint-unsafe | repaint-classification | OK | OK | OK | OK | OK | PASS |
-| 22-repaint-documented-safe-idiom | repaint-classification | OK | FAIL | OK | OK | OK | FAIL |
+| 22-repaint-documented-safe-idiom | repaint-classification | OK | OK | OK | OK | OK | PASS |
 | 23-udt-method | language-features | OK | - | OK | OK | OK | PASS |
 | 24-array-tracking | language-features | OK | - | OK | OK | OK | PASS |
 | 25-barstate-usage | language-features | OK | - | OK | OK | OK | PASS |
 | 26-supertrend | language-features | OK | - | OK | OK | OK | PASS |
 | 27-table-bgcolor-graceful | language-features | OK | - | OK | OK | OK | PASS |
-
-## Failure detail
-
-### 22-repaint-documented-safe-idiom
-- **repaintOk**: KNOWN GAP (see description): documented-safe [1]+lookahead_on idiom classified as "intentionally-repainting" instead of a safe classification. classifyRepaint() in src/lib/validate/pine.ts checks for lookahead_on before checking for a [1] confirm offset — fix by checking securityConfirmed first, or by only treating lookahead_on as unsafe when it's NOT paired with [1].

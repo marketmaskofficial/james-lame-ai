@@ -80,24 +80,30 @@ Not every failure is a translation bug — some are the runtime not being able
 to represent a Pine construct at all. Worth fixing at the runtime level, not
 by asking the AI to try harder.
 
-Currently open:
+None currently open. Fixed so far:
 
-- **`classifyRepaint()` misclassifies the documented-safe HTF idiom**
-  (`22-repaint-documented-safe-idiom`, left failing on purpose): pairing a
-  `[1]` confirm offset with `lookahead=barmerge.lookahead_on` — the exact
-  pattern `pine-playbooks.ts`'s own repainting-discipline section
-  recommends — gets classified `"intentionally-repainting"`, the worst
-  label, because `classifyRepaint()` (`src/lib/validate/pine.ts`) checks for
-  `lookahead_on` and returns early, before ever checking whether it's paired
-  with a confirming offset. Fix: check `securityConfirmed` first, or only
-  treat `lookahead_on` as unsafe when it's NOT paired with `[1]`. Verified
-  the simpler `close[1])`-only idiom (no `lookahead_on`) classifies
-  correctly (`20-repaint-safe-offset`), and a genuinely unsafe call with
-  neither protection classifies as unsafe too (`21-repaint-unsafe`) — so the
-  classifier logic itself is sound, just ordered wrong for this one
-  combination.
-
-Fixed so far:
+- ~~`classifyRepaint()` misclassifies the documented-safe HTF idiom~~
+  (`22-repaint-documented-safe-idiom`): pairing a `[1]` confirm offset with
+  `lookahead=barmerge.lookahead_on` — the exact pattern
+  `pine-playbooks.ts`'s own repainting-discipline section recommends — used
+  to get classified `"intentionally-repainting"`, the worst label, because
+  `classifyRepaint()` (`src/lib/validate/pine.ts`) checked for `lookahead_on`
+  and returned early, before ever checking whether it was paired with a
+  confirming offset. Fixed by reordering — `lookahead_on` only returns
+  `"intentionally-repainting"` immediately when it's NOT paired with a
+  confirm offset now. That surfaced a second, deeper bug while fixing it:
+  the confirm-offset regex itself (`\[1\]\s*\)`) only matched `[1]`
+  immediately before the call's closing paren, missing both a trailing
+  named arg (`..., close[1], lookahead=barmerge.lookahead_on)`, the
+  documented idiom's actual shape) and a `[1]` applied to a nested call
+  (`ta.ema(close, len)[1]`, what `13-htf-ema` actually uses). Replaced with
+  `anySecurityCallConfirmed()`, which scans each `request.security(...)`
+  call's balanced parens by hand and checks for the confirm offset anywhere
+  in its argument list. Verified all three repaint fixtures pass (safe
+  offset-only, genuinely-unsafe, and the documented lookahead_on+[1] combo),
+  and that `13-htf-ema`'s nested-call case — previously *also*
+  misclassified `"intentionally-repainting"`, just never asserted on —
+  now correctly classifies `"non-repainting"` too.
 
 - ~~`htf()`'s `close` is a pass-through~~ — **on closer inspection this was
   not actually a bug.** `htf()` deliberately represents the *forming* HTF
