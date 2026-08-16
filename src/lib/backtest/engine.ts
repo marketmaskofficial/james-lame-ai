@@ -230,6 +230,8 @@ type OpenTrade = {
   qty: number;
   stop: number | null;
   target: number | null;
+  /** Bar-indexed trailing-stop series, if the script declared one. */
+  trail: number[] | null;
   comment: string;
 };
 
@@ -360,6 +362,7 @@ export function runBacktestEngine(args: {
       qty,
       stop: signal.stop === null ? null : roundToTick(inst, signal.stop),
       target: target === null ? null : roundToTick(inst, target),
+      trail: signal.trail,
       comment: signal.comment,
     };
   };
@@ -371,6 +374,23 @@ export function runBacktestEngine(args: {
     // 1) Protective exits first — they belong to bars strictly after entry.
     const held = pos.current;
     if (held && held.entryBar < i) {
+      // Ratchet the stop to this bar's trail value before testing it against
+      // the bar's range — a real trailing-stop order adjusts, then the
+      // market either does or doesn't trade through the new level. Only
+      // moves in the position's favour, matching every real broker's
+      // trailing-stop semantics: it can never loosen.
+      if (held.trail && i < held.trail.length) {
+        const candidate = held.trail[i];
+        if (Number.isFinite(candidate)) {
+          const rounded = roundToTick(inst, candidate);
+          held.stop =
+            held.stop === null
+              ? rounded
+              : held.side === "long"
+                ? Math.max(held.stop, rounded)
+                : Math.min(held.stop, rounded);
+        }
+      }
       const { stop, target, side } = held;
       const hitStop =
         stop !== null && (side === "long" ? bar.low <= stop : bar.high >= stop);

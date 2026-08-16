@@ -20,29 +20,29 @@ const longCond = crossover(close, trendEma)
 const shortCond = crossunder(close, trendEma)
 
 const atrDistance = mul(atrVal, atrMult)
-const longStop = sub(close, atrDistance)
-const shortStop = add(close, atrDistance)
-
-strategy.long(longCond, {
-  stop: longStop,
-  qty: 10,
-  comment: 'Long'
-})
-
-strategy.short(shortCond, {
-  stop: shortStop,
-  qty: 10,
-  comment: 'Short'
-})
+const longTrail = sub(close, atrDistance)
+const shortTrail = add(close, atrDistance)
 
 signal(longCond, 'buy', 'Long', {
-  color: '#00A000',
+  color: '#00AA00',
   shape: 'arrow',
   location: 'below'
 })
 
 signal(shortCond, 'sell', 'Short', {
-  color: '#D00000',
+  color: '#CC0000',
   shape: 'arrow',
   location: 'above'
+})
+
+strategy.long(longCond, {
+  trail: longTrail,
+  qty: 10,
+  comment: 'Long'
+})
+
+strategy.short(shortCond, {
+  trail: shortTrail,
+  qty: 10,
+  comment: 'Short'
 })

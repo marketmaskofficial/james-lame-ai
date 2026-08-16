@@ -135,6 +135,14 @@ export type StrategyEntryOut = {
   target: number | null;
   /** Target expressed as a multiple of the entry risk, if any. */
   targetR: number | null;
+  /**
+   * Full-length (bar-indexed) series of the desired protective stop level on
+   * each bar while this position is open, if the script asked for a trailing
+   * stop. The backtest engine ratchets `stop` to this every bar after entry —
+   * only in the position's favour, never against it — instead of leaving
+   * `stop` frozen at its entry-time value.
+   */
+  trail: number[] | null;
   /** Script-declared quantity override, if any. */
   qty: number | null;
   comment: string;

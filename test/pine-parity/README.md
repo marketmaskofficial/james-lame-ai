@@ -54,11 +54,15 @@ of just patching it and moving on:
 1. Save the reported Pine source as `fixtures/NN-short-name.pine` (next
    available number).
 2. Write `fixtures/NN-short-name.check.mjs` exporting `category`,
-   `description`, optional `settings`, and `check(result, { bars, ref })`
-   returning an array of issue strings (empty = pass). Reuse
-   `helpers.mjs`'s `bestMatchingPlot` for numeric series, or write structural
-   assertions (counts, coordinate sanity, direction) for drawing/strategy
-   output — see existing fixtures for patterns.
+   `description`, optional `settings`, and
+   `check(result, { bars, ref, backtest })` returning an array of issue
+   strings (empty = pass). `backtest` is a real `BacktestReport` (or
+   `BacktestBlocked`), automatically run for any fixture whose script
+   declares strategy rules — use it to assert on actual trade fills/stops,
+   not just the raw runtime output. Reuse `helpers.mjs`'s `bestMatchingPlot`
+   for numeric series, or write structural assertions (counts, coordinate
+   sanity, direction) for drawing/strategy output — see existing fixtures for
+   patterns.
 3. Run with `--retranslate` once to generate and commit the
    `.sgscript.js` cache.
 4. If it fails, that failure is now permanent and visible in every future
@@ -66,19 +70,26 @@ of just patching it and moving on:
 
 ## Known gaps this suite has already surfaced
 
-Some failures below aren't translation bugs — they're the runtime not being
-able to represent a Pine construct at all yet. Worth fixing at the runtime
-level, not by asking the AI to try harder:
+Not every failure is a translation bug — some are the runtime not being able
+to represent a Pine construct at all. Worth fixing at the runtime level, not
+by asking the AI to try harder. Still open:
 
-- **No `strategy.exit()` / trailing stops** (`17-atr-trailing-strategy`):
-  `StrategyEntryOut.stop` is a single static number set once at entry. There
-  is no way to express a stop that ratchets bar-by-bar.
-- **No `alertcondition`/`alert()` primitive** (`18-alerts`): unlike
-  `table()`/`bgcolor()`, which degrade gracefully via a `warn()` stub, there
-  is nothing in the sandboxed scope for alerts at all. If a translation ever
-  emits a literal `alertcondition(...)` call, the script throws instead of
-  just dropping the alert.
 - **`htf()`'s `close` is a pass-through** (`13-htf-ema`): `resample()` in
   `stdlib.ts` only buckets `open`/`high`/`low`/`volume` — `close` is always
   just the base-timeframe close, un-aggregated. A close-based HTF indicator
   may be numerically indistinguishable from its on-chart equivalent.
+
+Fixed so far:
+
+- ~~No `alertcondition`/`alert()` primitive~~ — `runtime.ts` now has both as
+  no-op `warn()` stubs (same pattern as `table()`/`bgcolor()`), so a literal
+  `alertcondition(...)` call no longer throws and takes the whole script
+  down. `SGSCRIPT_REFERENCE` also documents them so the AI preserves the call
+  instead of guessing whether to drop it.
+- ~~No `strategy.exit()` / trailing stops~~ — `strategy.long`/`short` now
+  accept a `trail: series` option (`StrategyEntryOut.trail`); the backtest
+  engine (`engine.ts`) ratchets the live stop to `trail[i]` every bar after
+  entry, favourable direction only, instead of leaving `stop` frozen at its
+  entry-time value. `17-atr-trailing-strategy`'s check now verifies this
+  against real backtest trade output (via the harness's new `backtest`
+  context, see below), not just that the field exists.

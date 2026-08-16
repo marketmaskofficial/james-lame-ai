@@ -397,6 +397,14 @@ export function runScript(req: RunRequest): RunResult {
     targetPoints?: number;
     /** Target as a multiple of the entry risk (needs a stop). */
     targetR?: number;
+    /**
+     * Full bar-indexed series (e.g. `sub(close, mul(atr(14), 3))`) for a
+     * trailing stop: the backtest engine ratchets the live stop to this
+     * value every bar after entry, favourable direction only. Mirrors Pine's
+     * `strategy.exit(..., trail_points=...)` idiom without needing a
+     * separate exit() primitive — pass the whole computed series once here.
+     */
+    trail?: Series;
     qty?: number;
     comment?: string;
   };
@@ -425,6 +433,7 @@ export function runScript(req: RunRequest): RunResult {
           target === null && Number.isFinite(o.targetR ?? NaN)
             ? (o.targetR as number)
             : null,
+        trail: Array.isArray(o.trail) ? o.trail : null,
         qty: Number.isFinite(o.qty ?? NaN) ? (o.qty as number) : null,
         comment: o.comment ?? (side === "long" ? "Long" : "Short"),
       };

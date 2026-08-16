@@ -18,6 +18,7 @@ import path from "node:path";
 import { validatePine, formatIssues } from "../../src/lib/validate/pine.ts";
 import { validateSgScript, visualParity } from "../../src/lib/validate/sgscript.ts";
 import { runScript } from "../../src/lib/sgscript/runtime.ts";
+import { runBacktestEngine, DEFAULT_SETTINGS } from "../../src/lib/backtest/engine.ts";
 import { generateBars } from "./bars.mjs";
 import * as ref from "./reference.mjs";
 import { translate } from "./translate.mjs";
@@ -89,11 +90,26 @@ async function runFixture(name) {
   }
   result.stages.runtimeOk = { ok: !!runResult, detail: runError ?? "" };
 
+  // For strategy fixtures, also run the real backtest engine so checks can
+  // verify actual trade outcomes (fills, stop ratcheting, exits) — not just
+  // that the runtime recorded the right shape of entry.
+  let backtest;
+  if (runResult?.strategy?.declared) {
+    backtest = runBacktestEngine({
+      bars,
+      strategy: runResult.strategy,
+      symbol: "TEST",
+      interval: "1d",
+      strategyName: name,
+      settings: DEFAULT_SETTINGS,
+    });
+  }
+
   // Stage 5: fixture-specific correctness check against independent reference math.
   let checkIssues = [];
   if (runResult) {
     try {
-      checkIssues = (await mod.check(runResult, { bars, ref })) ?? [];
+      checkIssues = (await mod.check(runResult, { bars, ref, backtest })) ?? [];
     } catch (e) {
       checkIssues = [`check() threw: ${e instanceof Error ? e.message : String(e)}`];
     }

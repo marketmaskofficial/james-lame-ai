@@ -96,13 +96,21 @@ VISUAL PARITY CONTRACT (enforced by the validator)
 STRATEGY RULES (required whenever the user asks for a strategy / backtest)
 Declare the rules; the deterministic backtest engine executes them. Never
 simulate fills, P&L, or equity yourself.
-strategy.long(condSeries, { stop, target, stopPoints, targetPoints, targetR, qty, comment })
+strategy.long(condSeries, { stop, target, stopPoints, targetPoints, targetR, trail, qty, comment })
 strategy.short(condSeries, { ...same })
 strategy.close(condSeries, { side: 'long'|'short', comment })  // side omitted = close any
 strategy.note('one trade per session')                          // documents a limitation
 - cond is a boolean[] aligned to the bars (e.g. crossover(fast, slow)).
 - stop/target accept a number or a series; stopPoints/targetPoints are distances
   in price from the entry; targetR is a multiple of entry risk (needs a stop).
+- trail: a full bar-indexed series for a TRAILING stop (Pine's
+  strategy.exit(..., trail_points=...) idiom) — compute the whole desired
+  stop-level series once (e.g. sub(close, mul(atr(14), 3)) for an ATR trail,
+  or highest(high,20) minus a distance for a Donchian trail) and pass the
+  array. The backtest engine ratchets the live stop to trail[i] every bar
+  after entry, favourable direction only (never loosens). There is no
+  separate exit()/strategy.exit() call — trail on the entry IS the trailing
+  stop; do not also emit strategy.close for the same trailing behaviour.
 - Entries and exits fill at the NEXT bar's open. Never reference a future bar.
 - Emit signal() markers for the same conditions so chart and backtest agree.
 
