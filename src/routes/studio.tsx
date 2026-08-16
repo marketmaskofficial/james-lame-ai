@@ -189,6 +189,41 @@ type DockTab =
   | "docs";
 type RightTab = "watchlist" | "trade" | "ai" | "alerts";
 
+// A script can run to completion (no throw, `result.ok`) while still
+// producing nothing visible — a session/condition that never fires, a
+// primitive call the AI silently dropped, a coordinate bug upstream of
+// this. "Compiled" and "executed" both being true says nothing about
+// whether anything will actually show up on the chart, so treat that as
+// its own distinct outcome instead of folding it into a generic success
+// message the user has no way to act on.
+const DRAWING_CALL_RE = /(^|[^.\w])(plot\w*|hist|hline|box|line|label|signal|fill)\s*\(/;
+
+function totalVisualObjects(result: RunResult): number {
+  return (
+    result.plots.length +
+    result.boxes.length +
+    result.lines.length +
+    result.labels.length +
+    result.markers.length +
+    result.hlines.length +
+    result.fills.length
+  );
+}
+
+/**
+ * Null when the run is fine to report as a normal success. Otherwise a
+ * message explaining that the script executed but drew nothing, distinct
+ * from (and much more actionable than) a silent "updated" notice.
+ */
+function emptyOutputWarning(source: string, result: RunResult): string | null {
+  if (!DRAWING_CALL_RE.test(source)) return null; // nothing was ever going to draw — not this script's problem
+  if (totalVisualObjects(result) > 0) return null;
+  const hint = result.warnings?.length
+    ? ` (${result.warnings[0]})`
+    : " — check whether its condition(s) ever actually fire against the loaded bars";
+  return `Ran successfully but drew nothing on the chart${hint}.`;
+}
+
 const DOCK_TABS: Array<{ id: DockTab; label: string }> = [
   { id: "code", label: "Code" },
   { id: "tester", label: "Strategy tester" },
@@ -683,6 +718,15 @@ function Studio() {
     return barsLiveRef.current;
   }, []);
 
+  // Set by runCode on every successful run, read by callers right after to
+  // decide whether the normal success notice is honest or needs overriding —
+  // see emptyOutputWarning() above.
+  const lastVisualWarningRef = useRef<string | null>(null);
+  const finalNotice = useCallback(
+    (defaultMsg: string) => lastVisualWarningRef.current ?? defaultMsg,
+    [],
+  );
+
   const runCode = useCallback(
     async (
       source: string,
@@ -707,6 +751,7 @@ function Studio() {
           data,
           opts.settings ?? {},
         );
+        lastVisualWarningRef.current = emptyOutputWarning(source, result);
         const key = opts.key ?? `i${Date.now()}`;
         const next: StudioIndicator = {
           key,
@@ -850,7 +895,7 @@ function Studio() {
       }
 
       if (!err) {
-        setNotice("Indicator plotted on the chart.");
+        setNotice(finalNotice("Indicator plotted on the chart."));
         return null;
       }
 
@@ -876,7 +921,7 @@ function Studio() {
         setNotice(null);
         setRunError(err);
       } else {
-        setNotice("Script repaired and plotted on the chart.");
+        setNotice(finalNotice("Script repaired and plotted on the chart."));
       }
       return err ?? null;
     },
@@ -912,7 +957,7 @@ function Studio() {
         track(err2 ? "add_to_chart_failed" : "add_to_chart_succeeded", { repaired: true });
       } else {
         track("add_to_chart_succeeded", { repaired: false });
-        setNotice("Indicator updated on the chart.");
+        setNotice(finalNotice("Indicator updated on the chart."));
       }
     })();
   };
@@ -2247,7 +2292,7 @@ function Studio() {
                       });
                     } else {
                       track("add_to_chart_succeeded", { repaired: false });
-                      setNotice("Indicator plotted on the chart.");
+                      setNotice(finalNotice("Indicator plotted on the chart."));
                     }
                   })();
                 }}

@@ -1,0 +1,23 @@
+//@version=6
+indicator("Market Session Boxes", overlay=true)
+
+asiaSession = "2000-0000"
+inSession = not na(time(timeframe.period, asiaSession, "America/New_York"))
+newSession = inSession and not inSession[1]
+endSession = not inSession and inSession[1]
+
+var float sessHigh = na
+var float sessLow = na
+var int sessStartBar = na
+
+if newSession
+    sessHigh := high
+    sessLow := low
+    sessStartBar := bar_index
+else if inSession
+    sessHigh := math.max(sessHigh, high)
+    sessLow := math.min(sessLow, low)
+
+if endSession
+    box.new(sessStartBar, sessHigh, bar_index, sessLow, border_color=color.orange, bgcolor=color.new(color.orange, 90))
+    label.new(sessStartBar, sessHigh, "Asia Session", style=label.style_label_down, color=color.orange, textcolor=color.white)

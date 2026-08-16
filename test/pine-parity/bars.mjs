@@ -95,19 +95,38 @@ export function generateIntradayHourlyBars(
   seed = 42,
   { sessionStartHour = 9, sessionEndHour = 16 } = {},
 ) {
+  return generateIntradayBars(count, seed, { intervalMinutes: 60, sessionStartHour, sessionEndHour });
+}
+
+/**
+ * Continuous intraday bars at an arbitrary interval (e.g. 15m, matching a
+ * crypto pair that trades 24/7 like BTCUSDT) — `sessionStartHour`/`sessionEndHour`
+ * are UTC hours; pass values already converted from a local session if testing
+ * a timezone-aware session (e.g. America/New_York 20:00 in January (EST,
+ * UTC-5) is UTC hour 1 the next day).
+ */
+export function generateIntradayBars(
+  count = 500,
+  seed = 42,
+  { intervalMinutes = 15, sessionStartHour = 9, sessionEndHour = 16 } = {},
+) {
   const rand = mulberry32(seed);
   const bars = [];
   const start = Date.UTC(2024, 0, 1, 0, 0, 0) / 1000; // 2024-01-01 00:00 UTC (a Monday)
+  const stepSec = intervalMinutes * 60;
   let price = 100;
   for (let i = 0; i < count; i++) {
-    const t = start + i * 3600;
+    const t = start + i * stepSec;
     const hour = new Date(t * 1000).getUTCHours();
-    const inSession = hour >= sessionStartHour && hour < sessionEndHour;
-    const drift = inSession ? (rand() - 0.45) * 1.2 : (rand() - 0.5) * 0.2;
+    const inSession =
+      sessionStartHour <= sessionEndHour
+        ? hour >= sessionStartHour && hour < sessionEndHour
+        : hour >= sessionStartHour || hour < sessionEndHour;
+    const drift = inSession ? (rand() - 0.45) * 0.4 : (rand() - 0.5) * 0.1;
     const open = price;
     const close = Math.max(1, open + drift);
-    const high = Math.max(open, close) + rand() * 0.5;
-    const low = Math.min(open, close) - rand() * 0.5;
+    const high = Math.max(open, close) + rand() * 0.15;
+    const low = Math.min(open, close) - rand() * 0.15;
     bars.push({
       time: t,
       open: round4(open),
