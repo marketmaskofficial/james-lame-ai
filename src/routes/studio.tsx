@@ -957,6 +957,16 @@ function Studio() {
   const recomputingRef = useRef(false);
   const lastRecomputeRef = useRef(0);
   const recomputeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Always the CURRENT symbol/interval, read by recompute() at execution
+  // time — not the value captured when the effect scheduled it, since a
+  // symbol switch fires this effect twice (once immediately when bars
+  // resets to [] and no-ops on the empty-data guard below, again once the
+  // new bars actually arrive) and only the second firing does real work.
+  const symbolIntervalRef = useRef(`${symbol}:${interval}`);
+  symbolIntervalRef.current = `${symbol}:${interval}`;
+  // The symbol/interval a recompute last actually completed FOR, only set
+  // once real work happens — never on the no-op empty-bars firing.
+  const recomputedForRef = useRef<string | null>(null);
 
   const recompute = useCallback(async () => {
     const list = indicatorsRef.current;
@@ -964,6 +974,7 @@ function Studio() {
     if (list.length === 0 || data.length === 0 || recomputingRef.current) return;
     recomputingRef.current = true;
     lastRecomputeRef.current = Date.now();
+    const keyAtRun = symbolIntervalRef.current;
     try {
       const failures: string[] = [];
       const updated = await Promise.all(
@@ -991,6 +1002,7 @@ function Studio() {
           ? updated
           : prev,
       );
+      recomputedForRef.current = keyAtRun;
     } finally {
       recomputingRef.current = false;
     }
@@ -998,7 +1010,6 @@ function Studio() {
 
   const lastBarTime = bars.length ? bars[bars.length - 1].time : 0;
   const lastClose = bars.length ? bars[bars.length - 1].close : 0;
-  const prevSymbolIntervalRef = useRef(`${symbol}:${interval}`);
   useEffect(() => {
     if (indicators.length === 0) return;
     // A symbol/timeframe switch resets `bars` to a different date range
@@ -1010,11 +1021,26 @@ function Studio() {
     // collapsing to the chart's left edge via timeToLogical's out-of-range
     // fallback. A symbol/timeframe change is a discrete, deliberate action:
     // recompute immediately instead of waiting out that debounce.
+    //
+    // This effect fires twice on a symbol switch: once immediately when
+    // `bars` resets to [] (recompute() no-ops on its empty-data guard —
+    // there's nothing to compute yet), and again once the real bars arrive.
+    // Comparing against the symbol recompute last actually COMPLETED for
+    // (set inside recompute() itself, only on real work) rather than the
+    // symbol at schedule time means both firings correctly get wait=0 —
+    // the first is a no-op regardless, and the second is the one that
+    // matters. Comparing against schedule-time state instead made the
+    // first (no-op) firing consume the "just changed" flag, leaving the
+    // second — the one with actual new data — to fall back into the
+    // debounce, which is what caused the chart to render nothing at all
+    // instead of stale-but-visible boxes: timeToLogical's null-return for
+    // out-of-range points (added alongside this fix) hid the still-stale
+    // pre-recompute result instead of mispositioning it, and then nothing
+    // replaced it until the debounce finally elapsed.
     const key = `${symbol}:${interval}`;
-    const symbolChanged = prevSymbolIntervalRef.current !== key;
-    prevSymbolIntervalRef.current = key;
+    const needsImmediate = recomputedForRef.current !== key;
     const since = Date.now() - lastRecomputeRef.current;
-    const wait = symbolChanged ? 0 : Math.max(0, 1500 - since);
+    const wait = needsImmediate ? 0 : Math.max(0, 1500 - since);
     if (recomputeTimer.current) clearTimeout(recomputeTimer.current);
     recomputeTimer.current = setTimeout(() => void recompute(), wait);
     return () => {
