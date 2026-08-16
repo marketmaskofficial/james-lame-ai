@@ -67,6 +67,7 @@ import {
   type CrosshairInfo,
   type ChartTrade,
   type PositionPlan,
+  type RenderStats,
   DEFAULT_CHART_SETTINGS,
 } from "@/components/studio/StudioChart";
 import { BrokerConnections } from "@/components/studio/BrokerConnections";
@@ -211,17 +212,110 @@ function totalVisualObjects(result: RunResult): number {
 }
 
 /**
- * Null when the run is fine to report as a normal success. Otherwise a
- * message explaining that the script executed but drew nothing, distinct
- * from (and much more actionable than) a silent "updated" notice.
+ * Turns runtime output + real render telemetry for one indicator into either
+ * null (fine to report as a normal success) or a specific, actionable
+ * message. This is the only thing allowed to justify a success notice —
+ * "compiled", "executed" and "state updated" are all necessary but none of
+ * them are sufficient, which is exactly the gap that let this bug hide
+ * behind a false "Indicator updated on the chart." before.
  */
-function emptyOutputWarning(source: string, result: RunResult): string | null {
+function describeRenderOutcome(
+  source: string,
+  result: RunResult,
+  stats: RenderStats | undefined,
+): string | null {
   if (!DRAWING_CALL_RE.test(source)) return null; // nothing was ever going to draw — not this script's problem
-  if (totalVisualObjects(result) > 0) return null;
-  const hint = result.warnings?.length
-    ? ` (${result.warnings[0]})`
-    : " — check whether its condition(s) ever actually fire against the loaded bars";
-  return `Ran successfully but drew nothing on the chart${hint}.`;
+  if (totalVisualObjects(result) === 0) {
+    const hint = result.warnings?.length ? ` (${result.warnings[0]})` : "";
+    return `Ran successfully but drew nothing on the chart${hint} — check whether its condition(s) ever actually fire against the loaded bars.`;
+  }
+  if (!stats) return "Indicator executed, but its render status could not be determined yet.";
+
+  const types = ["boxes", "lines", "labels", "plots", "markers", "fills", "hlines"] as const;
+  let received = 0, drawn = 0, offscreen = 0, waiting = 0, failed = 0;
+  for (const t of types) {
+    received += stats[t].received;
+    drawn += stats[t].drawn;
+    offscreen += stats[t].offscreen;
+    waiting += stats[t].waitingForGeometry;
+    failed += stats[t].failed;
+  }
+  if (received === 0) return null; // e.g. this indicator is only plots/markers/hlines, which don't need this check
+  if (drawn > 0) return null; // at least one requested, currently-relevant visual actually rendered
+
+  if (!stats.chartGeometryReady || waiting === received) {
+    return "Indicator executed, but the chart is still initializing — it will render automatically as soon as it's ready.";
+  }
+  if (failed > 0 && offscreen === 0) {
+    return `Indicator generated ${received} object${received === 1 ? "" : "s"}, but ${failed} failed coordinate conversion.`;
+  }
+  if (offscreen > 0) {
+    return `Indicator executed, but its ${received} drawing${received === 1 ? " is" : "s are"} outside the current visible range — pan or zoom to see ${received === 1 ? "it" : "them"}.`;
+  }
+  return `Indicator generated ${received} object${received === 1 ? "" : "s"}, but none rendered.`;
+}
+
+// Correlates one Add to Chart click through translation, execution and
+// rendering for the console — a permanent (not stripped after this fix)
+// lightweight diagnostic, per the same principle as describeRenderOutcome:
+// don't make debugging a rendering problem require re-deriving this from
+// scratch. window.__lastRenderDiagnostics holds the latest summary for
+// inspection from devtools; logRenderOutcome prints one consolidated line
+// instead of one line per pipeline stage.
+declare global {
+  interface Window {
+    __lastRenderDiagnostics?: {
+      runId: string;
+      key: string;
+      source: string;
+      result: { plots: number; lines: number; boxes: number; labels: number; markers: number; fills: number; hlines: number };
+      stats: RenderStats | undefined;
+    };
+  }
+}
+
+function newTraceRunId(): string {
+  return crypto.randomUUID();
+}
+
+function logRenderOutcome(
+  runId: string,
+  key: string,
+  source: string,
+  result: RunResult,
+  stats: RenderStats | undefined,
+): void {
+  const resultCounts = {
+    plots: result.plots.length,
+    lines: result.lines.length,
+    boxes: result.boxes.length,
+    labels: result.labels.length,
+    markers: result.markers.length,
+    fills: result.fills.length,
+    hlines: result.hlines.length,
+  };
+  if (typeof window !== "undefined") {
+    window.__lastRenderDiagnostics = { runId, key, source, result: resultCounts, stats };
+  }
+  if (!import.meta.env.DEV) return;
+  const s = stats;
+  const totals = s
+    ? (["boxes", "lines", "labels", "plots", "markers", "fills", "hlines"] as const).reduce(
+        (acc, t) => ({
+          drawn: acc.drawn + s[t].drawn,
+          offscreen: acc.offscreen + s[t].offscreen,
+          waiting: acc.waiting + s[t].waitingForGeometry,
+          failed: acc.failed + s[t].failed,
+        }),
+        { drawn: 0, offscreen: 0, waiting: 0, failed: 0 },
+      )
+    : null;
+  // eslint-disable-next-line no-console
+  console.log(
+    `[render ${runId.slice(0, 8)}] key=${key} runtime=${JSON.stringify(resultCounts)} rendered=${
+      totals ? JSON.stringify(totals) : "no stats yet"
+    } geometryReady=${s?.chartGeometryReady ?? "?"}`,
+  );
 }
 
 const DOCK_TABS: Array<{ id: DockTab; label: string }> = [
@@ -720,10 +814,35 @@ function Studio() {
 
   // Set by runCode on every successful run, read by callers right after to
   // decide whether the normal success notice is honest or needs overriding —
-  // see emptyOutputWarning() above.
+  // see describeRenderOutcome() above.
   const lastVisualWarningRef = useRef<string | null>(null);
   const finalNotice = useCallback(
     (defaultMsg: string) => lastVisualWarningRef.current ?? defaultMsg,
+    [],
+  );
+
+  // Latest per-indicator render telemetry reported by StudioChart's draw
+  // loop. Rendering runs on an independent rAF loop decoupled from React's
+  // commit, so a just-added indicator's real outcome isn't known the instant
+  // setIndicators() returns — waitForRenderStats briefly polls this ref
+  // until the draw loop has actually reported on the new indicator's key.
+  const renderStatsRef = useRef<Record<string, RenderStats>>({});
+  const handleRenderStats = useCallback(
+    (stats: Record<string, RenderStats>) => {
+      renderStatsRef.current = stats;
+    },
+    [],
+  );
+  const waitForRenderStats = useCallback(
+    async (key: string, timeoutMs = 800): Promise<RenderStats | undefined> => {
+      const start = Date.now();
+      while (Date.now() - start < timeoutMs) {
+        const s = renderStatsRef.current[key];
+        if (s) return s;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      return renderStatsRef.current[key];
+    },
     [],
   );
 
@@ -751,7 +870,6 @@ function Studio() {
           data,
           opts.settings ?? {},
         );
-        lastVisualWarningRef.current = emptyOutputWarning(source, result);
         const key = opts.key ?? `i${Date.now()}`;
         const next: StudioIndicator = {
           key,
@@ -775,6 +893,15 @@ function Studio() {
           Object.fromEntries(result.inputs.map((i) => [i.name, i.value])),
         );
         setRunError(null);
+
+        // Only worth waiting on the draw loop when there's something for it
+        // to actually draw — strategy-only / plotless scripts skip the wait.
+        const stats =
+          totalVisualObjects(result) > 0
+            ? await waitForRenderStats(key)
+            : undefined;
+        logRenderOutcome(newTraceRunId(), key, source, result, stats);
+        lastVisualWarningRef.current = describeRenderOutcome(source, result, stats);
         return null;
       } catch (e) {
         const msg = e instanceof Error ? e.message : "Script failed";
@@ -784,7 +911,7 @@ function Studio() {
         setRunning(false);
       }
     },
-    [waitForBars],
+    [waitForBars, waitForRenderStats],
   );
 
   // Pine (or anything non-SGScript) gets ported to SGScript before running.
@@ -1720,6 +1847,7 @@ function Studio() {
                 settings={chartSettings}
                 onCrosshair={setCrosshair}
                 onReady={onChartReady}
+                onRenderStats={handleRenderStats}
               />
             )}
 

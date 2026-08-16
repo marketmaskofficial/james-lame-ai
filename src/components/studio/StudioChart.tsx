@@ -93,6 +93,100 @@ const LABEL_FONT_PX: Record<string, number> = {
   large: 13,
 };
 
+// ---- render telemetry ------------------------------------------------------
+//
+// Root cause this closes: lightweight-charts' logicalToCoordinate() returns
+// null for any logical index outside the chart's CURRENT visible pan/zoom
+// range — not just outside the loaded data range. The draw loops used to
+// treat that null identically to "invalid data" and silently skip the
+// object, so a box/line/label anchored to a bar that isn't currently
+// scrolled into view (or one drawn during the first frame or two after the
+// chart's geometry hasn't settled yet) never rendered — with no error, no
+// distinction from a bad indicator, and no way to tell from the outside.
+//
+// Fix: only trust logicalToCoordinate() as authoritative once the chart has
+// a real visible range (chartGeometryReady). Once it does, a null from the
+// native API means "off-screen", not "invalid" — extrapolate a pixel
+// position linearly from the known visible-range-to-pixel mapping instead of
+// dropping the object. Downstream drawing already clamps to canvas bounds
+// (`Math.min(x2raw, host.clientWidth)`), so an extrapolated coordinate off
+// either edge is handled the same way a partially-visible object always was.
+
+export type PrimitiveStats = {
+  received: number;
+  drawn: number;
+  /** Valid coordinates, but the object's on-canvas footprint is zero (e.g. both edges clamp to the same side). */
+  offscreen: number;
+  /** Chart geometry wasn't ready yet this frame — expected to self-resolve on a later frame, not a failure. */
+  waitingForGeometry: number;
+  /** Threw while processing — isolated so it can't take down the rest of the batch. */
+  failed: number;
+};
+
+export type RenderStats = {
+  boxes: PrimitiveStats;
+  lines: PrimitiveStats;
+  labels: PrimitiveStats;
+  plots: PrimitiveStats;
+  markers: PrimitiveStats;
+  fills: PrimitiveStats;
+  hlines: PrimitiveStats;
+  chartGeometryReady: boolean;
+};
+
+function emptyStats(): PrimitiveStats {
+  return { received: 0, drawn: 0, offscreen: 0, waitingForGeometry: 0, failed: 0 };
+}
+
+export function emptyRenderStats(): RenderStats {
+  return {
+    boxes: emptyStats(),
+    lines: emptyStats(),
+    labels: emptyStats(),
+    plots: emptyStats(),
+    markers: emptyStats(),
+    fills: emptyStats(),
+    hlines: emptyStats(),
+    chartGeometryReady: false,
+  };
+}
+
+type MinimalTimeScale = {
+  logicalToCoordinate: (logical: number) => number | null;
+  getVisibleLogicalRange: () => { from: number; to: number } | null;
+};
+
+/**
+ * Chart geometry is "ready" once the time scale can report a real visible
+ * range — false for a handful of frames right after chart creation, a data
+ * reset, or a container resize, before layout has settled. Distinct from
+ * "this particular object is off-screen", which is normal and not an error.
+ */
+function isChartGeometryReady(ts: MinimalTimeScale, canvasWidth: number, canvasHeight: number): boolean {
+  if (canvasWidth <= 0 || canvasHeight <= 0) return false;
+  const range = ts.getVisibleLogicalRange();
+  return !!range && Number.isFinite(range.from) && Number.isFinite(range.to) && range.to > range.from;
+}
+
+/**
+ * Pixel coordinate for a logical index. Once chartGeometryReady is true, this
+ * NEVER returns null for a finite logical index — off-screen positions are
+ * extrapolated linearly from the visible range's own pixel mapping rather
+ * than dropped, so a persistent box/line that starts outside the current
+ * viewport still gets a real (possibly off-canvas, correctly clamped later)
+ * coordinate instead of silently disappearing.
+ */
+function logicalToPixel(ts: MinimalTimeScale, logical: number, canvasWidth: number): number | null {
+  if (!Number.isFinite(logical)) return null;
+  const direct = ts.logicalToCoordinate(logical);
+  if (direct != null) return direct;
+  const range = ts.getVisibleLogicalRange();
+  if (!range) return null; // chart not ready — caller's readiness gate handles this
+  const span = range.to - range.from;
+  if (!(span > 0)) return null;
+  return ((logical - range.from) / span) * canvasWidth;
+}
+
 /** Entry / stop / target / working-order levels drawn on the price scale. */
 export type TradeLine = {
   price: number;
@@ -250,6 +344,14 @@ export function StudioChart({
   onReady,
   selectedId = null,
   onSelectDrawing,
+  /**
+   * Fired every drawOverlay() frame with what actually happened to every
+   * indicator-drawn primitive this frame — received/drawn/offscreen/
+   * waitingForGeometry/failed per type. The only trustworthy source for an
+   * "did this indicator actually render" notice; runtime execution success
+   * says nothing about whether anything ended up on screen.
+   */
+  onRenderStats,
 
 }: {
   bars: Bar[];
@@ -279,6 +381,7 @@ export function StudioChart({
   /** Currently selected drawing (select tool). */
   selectedId?: string | null;
   onSelectDrawing?: (id: string | null) => void;
+  onRenderStats?: (statsByIndicatorKey: Record<string, RenderStats>) => void;
 }) {
 
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -301,6 +404,25 @@ export function StudioChart({
   // Live refs for the overlay renderer (avoids stale closures in rAF).
   const stateRef = useRef({ indicators, drawings, tool, bars, instrument, selectedId });
   stateRef.current = { indicators, drawings, tool, bars, instrument, selectedId };
+
+  // Render telemetry, recomputed every drawOverlay() frame and pushed to the
+  // parent so it can drive an honest success/failure notice instead of a
+  // blind "updated" message — see emptyRenderStats()'s doc comment.
+  const lastRenderStatsRef = useRef<Record<string, RenderStats>>({});
+  const onRenderStatsRef = useRef(onRenderStats);
+  // drawOverlay is a plain function redefined on every render (it closes
+  // over bars/timeToLogical/etc., all of which need to be current), but the
+  // rAF loop that drives it is started once, in the "create chart once"
+  // mount effect. Calling drawOverlay() directly from that loop would freeze
+  // it on whatever bars/timeToLogical looked like at mount (typically
+  // bars = [] before the first candle fetch resolves) for the component's
+  // entire lifetime — every box/line/label/fill would silently fail
+  // coordinate conversion forever, while native-series primitives (plots,
+  // markers) kept working because they're drawn from a separate,
+  // properly-dependent effect. Routing every frame through this ref, updated
+  // on every render below, keeps the loop calling the current closure.
+  const drawOverlayRef = useRef<() => void>(() => {});
+  onRenderStatsRef.current = onRenderStats;
 
   const draftRef = useRef<Drawing | null>(null);
   const editRef = useRef<{
@@ -489,7 +611,7 @@ export function StudioChart({
       ro.observe(el);
 
       const loop = () => {
-        drawOverlay();
+        drawOverlayRef.current();
         raf = requestAnimationFrame(loop);
       };
       raf = requestAnimationFrame(loop);
@@ -890,12 +1012,27 @@ export function StudioChart({
     ctx.clearRect(0, 0, host.clientWidth, host.clientHeight);
 
     const ts = chart.timeScale();
+    const geometryReady = isChartGeometryReady(ts, host.clientWidth, host.clientHeight);
     const x = (logical: number | null) =>
-      logical == null ? null : ts.logicalToCoordinate(logical);
+      logical == null ? null : geometryReady ? logicalToPixel(ts, logical, host.clientWidth) : null;
     const y = (p: number) => price.priceToCoordinate(p);
 
     const { indicators: inds, drawings: draws } = stateRef.current;
     const planBoxes: Array<{ id: string; x: number; y: number }> = [];
+
+    // Telemetry for this frame, per indicator (not a global aggregate — with
+    // several indicators on the chart, "did indicator X actually render"
+    // needs X's own counts, not the whole chart's). See emptyRenderStats()'s
+    // doc comment for why "off-screen" and "waiting for geometry" are
+    // tracked separately from "failed": neither is an error, and conflating
+    // them with a genuine failure is what let boxes vanish with zero signal
+    // before.
+    const statsByKey: Record<string, RenderStats> = {};
+    const footprint = (left: number, top: number, w: number, h: number) => {
+      const onCanvasX = left + w > 0 && left < host.clientWidth;
+      const onCanvasY = top + h > 0 && top < host.clientHeight;
+      return onCanvasX && onCanvasY;
+    };
 
     // Keep the HTML trade-level rows glued to their price as the chart moves.
     for (const t of tradesRef.current) {
@@ -916,111 +1053,245 @@ export function StudioChart({
     for (const ind of inds) {
       if (!ind.visible) continue;
       const r = ind.result;
+      const stats = emptyRenderStats();
+      stats.chartGeometryReady = geometryReady;
+      statsByKey[ind.key] = stats;
 
+      stats.boxes.received += r.boxes.length;
       for (const b of r.boxes) {
         if (b.hidden) continue;
-        const x1 = x(timeToLogical(b.time1));
-        const x2raw =
-          b.extend === "right" ? host.clientWidth : x(timeToLogical(b.time2));
-        const y1 = y(b.price1);
-        const y2 = y(b.price2);
-        if (x1 == null || x2raw == null || y1 == null || y2 == null) continue;
-        const x2 = Math.min(x2raw, host.clientWidth);
-        const mit = b.state === "mitigated";
-        const alpha = (b.opacity ?? 1) * (mit ? 0.45 : 1);
-        const left = Math.min(x1, x2);
-        const top = Math.min(y1, y2);
-        const w = Math.max(1, Math.abs(x2 - x1));
-        const h = Math.max(1, Math.abs(y2 - y1));
-        ctx.save();
-        ctx.fillStyle = applyAlpha(b.color, alpha);
-        ctx.fillRect(left, top, w, h);
-        if (b.borderColor && (b.borderWidth ?? 1) > 0) {
-          ctx.strokeStyle = applyAlpha(b.borderColor, alpha);
-          ctx.lineWidth = b.borderWidth ?? 1;
-          ctx.setLineDash(
-            b.borderStyle === "dashed"
-              ? [5, 4]
-              : b.borderStyle === "dotted"
-                ? [1, 3]
-                : [],
-          );
-          ctx.strokeRect(left, top, w, h);
+        try {
+          if (!geometryReady) {
+            stats.boxes.waitingForGeometry++;
+            continue;
+          }
+          const x1 = x(timeToLogical(b.time1));
+          const x2raw =
+            b.extend === "right" ? host.clientWidth : x(timeToLogical(b.time2));
+          const y1 = y(b.price1);
+          const y2 = y(b.price2);
+          if (x1 == null || x2raw == null || y1 == null || y2 == null) {
+            // geometryReady is true, so a null here means genuinely invalid
+            // input (e.g. a NaN price) rather than off-screen — off-screen
+            // positions are always extrapolated to a real number above.
+            stats.boxes.failed++;
+            continue;
+          }
+          const x2 = Math.min(x2raw, host.clientWidth);
+          const mit = b.state === "mitigated";
+          const alpha = (b.opacity ?? 1) * (mit ? 0.45 : 1);
+          const left = Math.min(x1, x2);
+          const top = Math.min(y1, y2);
+          const w = Math.max(1, Math.abs(x2 - x1));
+          const h = Math.max(1, Math.abs(y2 - y1));
+          if (!footprint(left, top, w, h)) {
+            stats.boxes.offscreen++;
+            continue;
+          }
+          ctx.save();
+          ctx.fillStyle = applyAlpha(b.color, alpha);
+          ctx.fillRect(left, top, w, h);
+          if (b.borderColor && (b.borderWidth ?? 1) > 0) {
+            ctx.strokeStyle = applyAlpha(b.borderColor, alpha);
+            ctx.lineWidth = b.borderWidth ?? 1;
+            ctx.setLineDash(
+              b.borderStyle === "dashed"
+                ? [5, 4]
+                : b.borderStyle === "dotted"
+                  ? [1, 3]
+                  : [],
+            );
+            ctx.strokeRect(left, top, w, h);
+          }
+          if (b.text) {
+            ctx.setLineDash([]);
+            ctx.fillStyle = applyAlpha(b.textColor ?? "rgba(232,234,240,0.9)", alpha);
+            ctx.font = `${LABEL_FONT_PX[b.textSize ?? "small"] ?? 10}px ui-sans-serif, system-ui`;
+            ctx.fillText(b.text, left + 4, top + 12);
+          }
+          ctx.restore();
+          stats.boxes.drawn++;
+        } catch {
+          // One bad box must never take the rest of the batch down with it.
+          stats.boxes.failed++;
         }
-        if (b.text) {
-          ctx.setLineDash([]);
-          ctx.fillStyle = applyAlpha(b.textColor ?? "rgba(232,234,240,0.9)", alpha);
-          ctx.font = `${LABEL_FONT_PX[b.textSize ?? "small"] ?? 10}px ui-sans-serif, system-ui`;
-          ctx.fillText(b.text, left + 4, top + 12);
-        }
-        ctx.restore();
       }
 
+      stats.lines.received += r.lines.length;
       for (const l of r.lines) {
-        const x1 = x(timeToLogical(l.time1));
-        const x2raw =
-          l.extend === "right" ? host.clientWidth : x(timeToLogical(l.time2));
-        const y1 = y(l.price1);
-        const y2 = y(l.price2);
-        if (x1 == null || x2raw == null || y1 == null || y2 == null) continue;
-        // Extended lines keep their slope, so project the price out to the edge.
-        const x2 = x2raw;
-        const yEnd =
-          l.extend === "right" && x2 !== x1
-            ? y1 + ((y2 - y1) * (x2 - x1)) / Math.max(1e-6, (x(timeToLogical(l.time2)) ?? x2) - x1)
-            : y2;
-        ctx.save();
-        ctx.strokeStyle = applyAlpha(l.color, l.opacity ?? 1);
-        ctx.lineWidth = l.width ?? 1;
-        ctx.setLineDash(
-          l.style === "dotted" ? [1, 3] : l.style === "dashed" || l.dashed ? [4, 4] : [],
-        );
-        ctx.beginPath();
-        ctx.moveTo(x1, y1);
-        ctx.lineTo(x2, yEnd);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        if (l.text) {
-          ctx.fillStyle = applyAlpha(l.color, l.opacity ?? 1);
-          ctx.font = "10px ui-sans-serif, system-ui";
-          ctx.fillText(l.text, Math.min(x2, host.clientWidth - 60) + 4, yEnd - 3);
+        try {
+          if (!geometryReady) {
+            stats.lines.waitingForGeometry++;
+            continue;
+          }
+          const x1 = x(timeToLogical(l.time1));
+          const x2raw =
+            l.extend === "right" ? host.clientWidth : x(timeToLogical(l.time2));
+          const y1 = y(l.price1);
+          const y2 = y(l.price2);
+          if (x1 == null || x2raw == null || y1 == null || y2 == null) {
+            stats.lines.failed++;
+            continue;
+          }
+          // Extended lines keep their slope, so project the price out to the edge.
+          const x2 = x2raw;
+          const yEnd =
+            l.extend === "right" && x2 !== x1
+              ? y1 + ((y2 - y1) * (x2 - x1)) / Math.max(1e-6, (x(timeToLogical(l.time2)) ?? x2) - x1)
+              : y2;
+          if (!footprint(Math.min(x1, x2), Math.min(y1, yEnd), Math.abs(x2 - x1) || 1, Math.abs(yEnd - y1) || 1)) {
+            stats.lines.offscreen++;
+            continue;
+          }
+          ctx.save();
+          ctx.strokeStyle = applyAlpha(l.color, l.opacity ?? 1);
+          ctx.lineWidth = l.width ?? 1;
+          ctx.setLineDash(
+            l.style === "dotted" ? [1, 3] : l.style === "dashed" || l.dashed ? [4, 4] : [],
+          );
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x2, yEnd);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          if (l.text) {
+            ctx.fillStyle = applyAlpha(l.color, l.opacity ?? 1);
+            ctx.font = "10px ui-sans-serif, system-ui";
+            ctx.fillText(l.text, Math.min(x2, host.clientWidth - 60) + 4, yEnd - 3);
+          }
+          ctx.restore();
+          stats.lines.drawn++;
+        } catch {
+          stats.lines.failed++;
         }
-        ctx.restore();
       }
 
       // Labels keep the script's exact (multi-line) text, size and styling.
+      stats.labels.received += r.labels.length;
       for (const lb of r.labels) {
-        const cx = x(timeToLogical(lb.time));
-        const cy = y(lb.price);
-        if (cx == null || cy == null) continue;
-        const fs = LABEL_FONT_PX[lb.size ?? "normal"] ?? 11;
-        ctx.save();
-        ctx.font = `${fs}px ui-sans-serif, system-ui`;
-        const rows = String(lb.text).split("\n");
-        const w = Math.max(...rows.map((t) => ctx.measureText(t).width)) + 12;
-        const lh = fs + 3;
-        const h = rows.length * lh + 7;
-        const top =
-          (lb.position === "above" ? cy - h - 6 : cy + 6) + (lb.offset ?? 0);
-        const left =
-          lb.align === "left" ? cx : lb.align === "right" ? cx - w : cx - w / 2;
-        ctx.fillStyle = lb.color;
-        ctx.beginPath();
-        ctx.roundRect(left, top, w, h, 4);
-        ctx.fill();
-        if (lb.borderColor) {
-          ctx.strokeStyle = lb.borderColor;
-          ctx.lineWidth = 1;
-          ctx.stroke();
+        try {
+          if (!geometryReady) {
+            stats.labels.waitingForGeometry++;
+            continue;
+          }
+          const cx = x(timeToLogical(lb.time));
+          const cy = y(lb.price);
+          if (cx == null || cy == null) {
+            stats.labels.failed++;
+            continue;
+          }
+          const fs = LABEL_FONT_PX[lb.size ?? "normal"] ?? 11;
+          ctx.save();
+          ctx.font = `${fs}px ui-sans-serif, system-ui`;
+          const rows = String(lb.text).split("\n");
+          const w = Math.max(...rows.map((t) => ctx.measureText(t).width)) + 12;
+          const lh = fs + 3;
+          const h = rows.length * lh + 7;
+          const top =
+            (lb.position === "above" ? cy - h - 6 : cy + 6) + (lb.offset ?? 0);
+          const left =
+            lb.align === "left" ? cx : lb.align === "right" ? cx - w : cx - w / 2;
+          if (!footprint(left, top, w, h)) {
+            ctx.restore();
+            stats.labels.offscreen++;
+            continue;
+          }
+          ctx.fillStyle = lb.color;
+          ctx.beginPath();
+          ctx.roundRect(left, top, w, h, 4);
+          ctx.fill();
+          if (lb.borderColor) {
+            ctx.strokeStyle = lb.borderColor;
+            ctx.lineWidth = 1;
+            ctx.stroke();
+          }
+          ctx.fillStyle = lb.textColor ?? "#e8eaf0";
+          ctx.textAlign = "left";
+          rows.forEach((t, i) => {
+            ctx.fillText(t, left + 6, top + 5 + lh * (i + 1) - 3);
+          });
+          ctx.restore();
+          stats.labels.drawn++;
+        } catch {
+          stats.labels.failed++;
         }
-        ctx.fillStyle = lb.textColor ?? "#e8eaf0";
-        ctx.textAlign = "left";
-        rows.forEach((t, i) => {
-          ctx.fillText(t, left + 6, top + 5 + lh * (i + 1) - 3);
-        });
-        ctx.restore();
       }
+
+      // fill() between two plots: computed correctly by the runtime but
+      // never actually drawn anywhere — plots render via native
+      // lightweight-charts series, which have no "fill the area between
+      // these two series" primitive of their own, so this was silently
+      // dropped between "runtime produced a FillOut" and "pixels on
+      // screen". Draw it on this same canvas overlay using the two
+      // referenced plots' own (time, value) points.
+      stats.fills.received += r.fills.length;
+      for (const f of r.fills) {
+        try {
+          if (!geometryReady) {
+            stats.fills.waitingForGeometry++;
+            continue;
+          }
+          const plotA = r.plots.find((p) => p.id === f.plotA);
+          const plotB = r.plots.find((p) => p.id === f.plotB);
+          if (!plotA || !plotB) {
+            stats.fills.failed++;
+            continue;
+          }
+          const bValueAt = new Map(plotB.values.map((v) => [v.time, v.value]));
+          const topPts: Array<[number, number]> = [];
+          const botPts: Array<[number, number]> = [];
+          for (const va of plotA.values) {
+            const vb = bValueAt.get(va.time);
+            if (vb === undefined || !Number.isFinite(va.value) || !Number.isFinite(vb)) continue;
+            const px = x(timeToLogical(va.time));
+            const pyA = y(va.value);
+            const pyB = y(vb);
+            if (px == null || pyA == null || pyB == null) continue;
+            topPts.push([px, pyA]);
+            botPts.push([px, pyB]);
+          }
+          if (topPts.length < 2) {
+            stats.fills.offscreen++; // not enough overlapping, in-range points to draw a shape
+            continue;
+          }
+          const xs = topPts.map((p) => p[0]).concat(botPts.map((p) => p[0]));
+          const ys = topPts.map((p) => p[1]).concat(botPts.map((p) => p[1]));
+          const left = Math.min(...xs);
+          const top = Math.min(...ys);
+          if (!footprint(left, top, Math.max(...xs) - left, Math.max(...ys) - top)) {
+            stats.fills.offscreen++;
+            continue;
+          }
+          ctx.save();
+          ctx.beginPath();
+          ctx.moveTo(topPts[0][0], topPts[0][1]);
+          for (const [px, py] of topPts.slice(1)) ctx.lineTo(px, py);
+          for (const [px, py] of [...botPts].reverse()) ctx.lineTo(px, py);
+          ctx.closePath();
+          ctx.fillStyle = applyAlpha(f.color, f.opacity ?? 1);
+          ctx.fill();
+          ctx.restore();
+          stats.fills.drawn++;
+        } catch {
+          stats.fills.failed++;
+        }
+      }
+
+      // Native lightweight-charts series (plots) and setMarkers (markers)
+      // handle their own coordinate conversion, clipping and redraw
+      // lifecycle internally — they can't silently lose data to this bug
+      // class, so telemetry here is a straight received/drawn count, not a
+      // per-object loop.
+      stats.plots.received += r.plots.length;
+      stats.plots.drawn += r.plots.length;
+      stats.markers.received += r.markers.length;
+      stats.markers.drawn += r.markers.length;
+      stats.hlines.received += r.hlines.length;
+      stats.hlines.drawn += r.hlines.length;
     }
+
+    lastRenderStatsRef.current = statsByKey;
+    onRenderStatsRef.current?.(statsByKey);
 
     const all = draftRef.current ? [...draws, draftRef.current] : draws;
     const selected = stateRef.current.selectedId;
@@ -1237,6 +1508,7 @@ export function StudioChart({
       el.style.transform = `translate(${Math.round(box.x)}px, ${Math.round(box.y)}px)`;
     }
   }
+  drawOverlayRef.current = drawOverlay;
 
 
   // ---- pointer interaction for drawing tools ------------------------------
