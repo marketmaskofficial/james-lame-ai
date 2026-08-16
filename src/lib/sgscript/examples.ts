@@ -279,6 +279,56 @@ limitDrawings({ maxVisibleBoxes: maxBull + maxBear, maxVisibleLabels: maxBull + 
 `,
   },
   {
+    name: "Order blocks (OB)",
+    code: `// @name Order Blocks
+// @overlay true
+
+const dispMult = input.float('Displacement (ATR mult)', 1.5, { min: 0.5, max: 5, step: 0.1 })
+
+const showBull = input.bool('Show Bullish OBs', true)
+const showBear = input.bool('Show Bearish OBs', true)
+const showLabels = input.bool('Show Labels', false)
+const showMitigated = input.bool('Show Mitigated Zones', true)
+const removeAfterMitigation = input.bool('Remove Zone After Mitigation', false)
+const maxBull = input.int('Max Bullish Zones', 8, { min: 1, max: 50 })
+const maxBear = input.int('Max Bearish Zones', 8, { min: 1, max: 50 })
+const bullFill = input.color('Bullish Fill', 'rgba(34,197,94,0.15)')
+const bearFill = input.color('Bearish Fill', 'rgba(239,68,68,0.15)')
+const fillOpacity = input.float('Fill Opacity', 1, { min: 0, max: 1, step: 0.05 })
+const borderColor = input.color('Border Color', 'rgba(148,163,184,0.45)')
+const borderWidth = input.int('Border Width', 1, { min: 0, max: 4 })
+const labelSize = input.string('Label Size', 'tiny', { options: ['tiny', 'small', 'normal', 'large'] })
+const historicalOpacity = input.float('Historical Zone Opacity', 0.35, { min: 0, max: 1, step: 0.05 })
+
+// Same visual system as Fair Value Gaps: a translucent zone behind candles,
+// no text/labels unless asked, only the most recent N zones per side.
+const disp = displacement(dispMult)
+const gaps = orderBlocks(disp)
+
+const bullGaps = gaps.filter(g => g.side === 'bull').slice(-maxBull)
+const bearGaps = gaps.filter(g => g.side === 'bear').slice(-maxBear)
+const visible = []
+if (showBull) visible.push(...bullGaps)
+if (showBear) visible.push(...bearGaps)
+
+zones(visible, {
+  bullColor: bullFill,
+  bearColor: bearFill,
+  opacity: fillOpacity,
+  mitigatedOpacity: historicalOpacity,
+  borderColor: borderColor,
+  borderWidth: borderWidth,
+  textSize: labelSize,
+  extend: true,
+  shrink: true,
+  hideFilled: removeAfterMitigation || !showMitigated,
+  text: showLabels ? (z => z.side === 'bull' ? 'Bull OB' : 'Bear OB') : undefined,
+})
+
+limitDrawings({ maxVisibleBoxes: maxBull + maxBear, maxVisibleLabels: maxBull + maxBear })
+`,
+  },
+  {
     name: "VWAP + session levels",
     code: `// @name VWAP + Daily Levels
 // @overlay true

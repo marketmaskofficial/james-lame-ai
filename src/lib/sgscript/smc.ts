@@ -356,7 +356,7 @@ export function premiumDiscount(
   return close.map((c, i) => {
     const h = rangeHigh[i];
     const l = rangeLow[i];
-    return Number.isFinite(h) && Number.isFinite(l) && h > l ? (c - l) / (h - l) : N;
+    return Number.isFinite(h) && Number.isFinite(l) && h > l ? (c - l) / (h - l) : NaN;
   });
 }
 
