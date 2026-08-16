@@ -1,0 +1,8 @@
+//@version=6
+indicator("RSI Test", overlay=false)
+len = input.int(14, "RSI Length", minval=1)
+rsiVal = ta.rsi(close, len)
+plot(rsiVal, "RSI", color=color.purple)
+hline(70, "Overbought", color=color.red)
+hline(30, "Oversold", color=color.green)
+hline(50, "Midline", color=color.gray)

@@ -1,0 +1,5 @@
+//@version=6
+indicator("HTF Trend Bias Test", overlay=false)
+htfOpen = request.security(syminfo.tickerid, "1W", open, lookahead=barmerge.lookahead_off)
+bias = close > htfOpen ? 1 : -1
+plot(bias, "HTF Bias", style=plot.style_histogram, color=bias > 0 ? color.green : color.red)

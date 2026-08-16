@@ -1,0 +1,22 @@
+//@version=6
+strategy("ATR Trailing Stop Strategy Test", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=10)
+atrLen = input.int(14, "ATR Length")
+atrMult = input.float(3.0, "ATR Multiplier")
+trendLen = input.int(20, "Trend EMA Length")
+
+atrVal = ta.atr(atrLen)
+trendEma = ta.ema(close, trendLen)
+plot(trendEma, "Trend EMA", color=color.blue)
+
+longCond = ta.crossover(close, trendEma)
+shortCond = ta.crossunder(close, trendEma)
+
+if longCond
+    strategy.entry("Long", strategy.long)
+if shortCond
+    strategy.entry("Short", strategy.short)
+
+longStop = close - atrVal * atrMult
+shortStop = close + atrVal * atrMult
+strategy.exit("Long Trail", from_entry="Long", stop=longStop)
+strategy.exit("Short Trail", from_entry="Short", stop=shortStop)

@@ -1,0 +1,6 @@
+//@version=6
+indicator("OBV Test", overlay=false)
+obvVal = ta.cum(math.sign(ta.change(close)) * volume)
+plot(obvVal, "OBV", color=color.blue)
+obvMA = ta.sma(obvVal, 20)
+plot(obvMA, "OBV MA", color=color.orange)

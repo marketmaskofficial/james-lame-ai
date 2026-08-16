@@ -1,0 +1,7 @@
+//@version=6
+indicator("VWAP Test", overlay=true)
+srcVal = hlc3
+cumVolPrice = ta.cum(srcVal * volume)
+cumVol = ta.cum(volume)
+vwapVal = cumVolPrice / cumVol
+plot(vwapVal, "VWAP", color=color.yellow, linewidth=2)

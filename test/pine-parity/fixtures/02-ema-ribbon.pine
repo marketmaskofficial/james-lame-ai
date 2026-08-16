@@ -1,0 +1,11 @@
+//@version=6
+indicator("EMA Ribbon Test", overlay=true)
+len1 = input.int(9, "EMA 1")
+len2 = input.int(21, "EMA 2")
+len3 = input.int(55, "EMA 3")
+ema1 = ta.ema(close, len1)
+ema2 = ta.ema(close, len2)
+ema3 = ta.ema(close, len3)
+plot(ema1, "EMA 9", color=color.new(color.aqua, 0))
+plot(ema2, "EMA 21", color=color.new(color.yellow, 0))
+plot(ema3, "EMA 55", color=color.new(color.purple, 0))

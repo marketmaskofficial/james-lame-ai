@@ -1,0 +1,10 @@
+//@version=6
+indicator("MACD Test", overlay=false)
+fastLen = input.int(12, "Fast Length")
+slowLen = input.int(26, "Slow Length")
+signalLen = input.int(9, "Signal Length")
+[macdLine, signalLine, histLine] = ta.macd(close, fastLen, slowLen, signalLen)
+plot(macdLine, "MACD", color=color.blue)
+plot(signalLine, "Signal", color=color.orange)
+plot(histLine, "Histogram", color=color.gray, style=plot.style_histogram)
+hline(0, "Zero", color=color.gray)

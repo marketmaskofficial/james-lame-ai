@@ -1,0 +1,11 @@
+//@version=6
+indicator("Breakout Alerts Test", overlay=true)
+len = input.int(20, "Breakout Length")
+highest = ta.highest(high, len)
+lowest = ta.lowest(low, len)
+breakoutUp = close >= highest
+breakoutDown = close <= lowest
+plotshape(breakoutUp, title="Breakout Up", location=location.belowbar, style=shape.triangleup, color=color.green)
+plotshape(breakoutDown, title="Breakout Down", location=location.abovebar, style=shape.triangledown, color=color.red)
+alertcondition(breakoutUp, title="Breakout Up", message="Price broke above the {{plot_0}}-bar high")
+alertcondition(breakoutDown, title="Breakout Down", message="Price broke below the {{plot_0}}-bar low")

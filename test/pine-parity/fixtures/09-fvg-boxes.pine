@@ -1,0 +1,11 @@
+//@version=6
+indicator("Fair Value Gap Boxes", overlay=true, max_boxes_count=500)
+
+bullishFVG = low > high[2]
+bearishFVG = high < low[2]
+
+if bullishFVG
+    b = box.new(bar_index[2], high[2], bar_index, low, border_color=color.new(color.green, 0), bgcolor=color.new(color.green, 85), extend=extend.right)
+
+if bearishFVG
+    b2 = box.new(bar_index[2], low[2], bar_index, high, border_color=color.new(color.red, 0), bgcolor=color.new(color.red, 85), extend=extend.right)

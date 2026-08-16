@@ -1,0 +1,16 @@
+//@version=6
+strategy("MA Cross Strategy Test", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=10)
+fastLen = input.int(10, "Fast Length")
+slowLen = input.int(30, "Slow Length")
+fastMA = ta.sma(close, fastLen)
+slowMA = ta.sma(close, slowLen)
+plot(fastMA, "Fast", color=color.blue)
+plot(slowMA, "Slow", color=color.orange)
+
+longCond = ta.crossover(fastMA, slowMA)
+shortCond = ta.crossunder(fastMA, slowMA)
+
+if longCond
+    strategy.entry("Long", strategy.long)
+if shortCond
+    strategy.entry("Short", strategy.short)

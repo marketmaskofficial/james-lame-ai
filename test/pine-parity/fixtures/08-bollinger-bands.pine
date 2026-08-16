@@ -1,0 +1,12 @@
+//@version=6
+indicator("Bollinger Bands Test", overlay=true)
+len = input.int(20, "Length")
+mult = input.float(2.0, "Mult")
+basis = ta.sma(close, len)
+dev = mult * ta.stdev(close, len)
+upper = basis + dev
+lower = basis - dev
+plot(basis, "Basis", color=color.orange)
+p1 = plot(upper, "Upper", color=color.blue)
+p2 = plot(lower, "Lower", color=color.blue)
+fill(p1, p2, color=color.new(color.blue, 90))

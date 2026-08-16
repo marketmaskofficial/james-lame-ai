@@ -1,0 +1,11 @@
+//@version=6
+indicator("Stochastic Test", overlay=false)
+kLen = input.int(14, "%K Length")
+kSmooth = input.int(3, "%K Smoothing")
+dLen = input.int(3, "%D Length")
+k = ta.sma(ta.stoch(close, high, low, kLen), kSmooth)
+d = ta.sma(k, dLen)
+plot(k, "%K", color=color.blue)
+plot(d, "%D", color=color.orange)
+hline(80, "Overbought", color=color.red)
+hline(20, "Oversold", color=color.green)

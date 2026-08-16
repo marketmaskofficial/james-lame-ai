@@ -1,0 +1,25 @@
+//@version=6
+strategy("RSI Mean Reversion Strategy Test", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=10)
+len = input.int(14, "RSI Length")
+oversold = input.int(30, "Oversold")
+overbought = input.int(70, "Overbought")
+stopPct = input.float(2.0, "Stop %")
+targetPct = input.float(4.0, "Target %")
+
+rsiVal = ta.rsi(close, len)
+plot(rsiVal, "RSI")
+
+longCond = ta.crossover(rsiVal, oversold)
+shortCond = ta.crossunder(rsiVal, overbought)
+
+if longCond
+    stopPrice = close * (1 - stopPct / 100)
+    targetPrice = close * (1 + targetPct / 100)
+    strategy.entry("Long", strategy.long)
+    strategy.exit("Long Exit", from_entry="Long", stop=stopPrice, limit=targetPrice)
+
+if shortCond
+    stopPrice2 = close * (1 + stopPct / 100)
+    targetPrice2 = close * (1 - targetPct / 100)
+    strategy.entry("Short", strategy.short)
+    strategy.exit("Short Exit", from_entry="Short", stop=stopPrice2, limit=targetPrice2)

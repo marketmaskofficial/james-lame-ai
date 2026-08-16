@@ -1,0 +1,15 @@
+//@version=6
+indicator("Order Blocks Test", overlay=true, max_boxes_count=200, max_labels_count=200)
+
+lookback = input.int(10, "Swing Lookback", minval=2)
+
+pivotHigh = ta.pivothigh(high, lookback, lookback)
+pivotLow = ta.pivotlow(low, lookback, lookback)
+
+if not na(pivotHigh)
+    box.new(bar_index[lookback], pivotHigh, bar_index[lookback] + 3, close[lookback], border_color=color.red, bgcolor=color.new(color.red, 80))
+    label.new(bar_index[lookback], pivotHigh, "OB-H", style=label.style_label_down, color=color.red, textcolor=color.white, size=size.tiny)
+
+if not na(pivotLow)
+    box.new(bar_index[lookback], pivotLow, bar_index[lookback] + 3, close[lookback], border_color=color.green, bgcolor=color.new(color.green, 80))
+    label.new(bar_index[lookback], pivotLow, "OB-L", style=label.style_label_up, color=color.green, textcolor=color.white, size=size.tiny)

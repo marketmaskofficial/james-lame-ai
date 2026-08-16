@@ -1,0 +1,13 @@
+//@version=6
+indicator("Pivot Labels Test", overlay=true, max_labels_count=200)
+
+lookback = input.int(8, "Lookback", minval=2)
+
+ph = ta.pivothigh(high, lookback, lookback)
+pl = ta.pivotlow(low, lookback, lookback)
+
+if not na(ph)
+    label.new(bar_index[lookback], ph, str.tostring(ph, "#.##"), style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.small)
+
+if not na(pl)
+    label.new(bar_index[lookback], pl, str.tostring(pl, "#.##"), style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white, size=size.small)

@@ -1,0 +1,13 @@
+//@version=6
+indicator("Support/Resistance Lines Test", overlay=true, max_lines_count=200)
+
+lookback = input.int(15, "Pivot Lookback", minval=2)
+
+ph = ta.pivothigh(high, lookback, lookback)
+pl = ta.pivotlow(low, lookback, lookback)
+
+if not na(ph)
+    line.new(bar_index[lookback], ph, bar_index, ph, color=color.red, width=1, extend=extend.right, style=line.style_dashed)
+
+if not na(pl)
+    line.new(bar_index[lookback], pl, bar_index, pl, color=color.green, width=1, extend=extend.right, style=line.style_dashed)

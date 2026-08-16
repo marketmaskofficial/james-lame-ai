@@ -1,0 +1,6 @@
+//@version=6
+indicator("HTF EMA Test", overlay=true)
+htf = input.timeframe("1W", "Higher Timeframe")
+len = input.int(10, "EMA Length")
+htfEma = request.security(syminfo.tickerid, htf, ta.ema(close, len)[1], lookahead=barmerge.lookahead_on)
+plot(htfEma, "HTF EMA", color=color.fuchsia, linewidth=2)
