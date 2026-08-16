@@ -47,6 +47,10 @@ const TF_SECONDS: Record<string, number> = {
   "12h": 43200,
   "1d": 86400,
   "1w": 604800,
+  // Calendar months have no fixed duration — std.MONTH_BUCKET tells
+  // resample()/htfClosed() to bucket by real UTC year/month instead of a
+  // fixed seconds divisor.
+  "1M": std.MONTH_BUCKET,
 };
 
 function parseMeta(code: string) {

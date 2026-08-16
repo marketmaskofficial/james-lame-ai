@@ -72,15 +72,36 @@ of just patching it and moving on:
 
 Not every failure is a translation bug — some are the runtime not being able
 to represent a Pine construct at all. Worth fixing at the runtime level, not
-by asking the AI to try harder. Still open:
+by asking the AI to try harder.
 
-- **`htf()`'s `close` is a pass-through** (`13-htf-ema`): `resample()` in
-  `stdlib.ts` only buckets `open`/`high`/`low`/`volume` — `close` is always
-  just the base-timeframe close, un-aggregated. A close-based HTF indicator
-  may be numerically indistinguishable from its on-chart equivalent.
+None currently open. Fixed so far:
 
-Fixed so far:
-
+- ~~`htf()`'s `close` is a pass-through~~ — **on closer inspection this was
+  not actually a bug.** `htf()` deliberately represents the *forming* HTF
+  candle (as opposed to `htfClosed()`, the last *closed* one), and a
+  forming candle's close is by definition wherever the underlying price
+  currently is — so `close[i]` tracking the base-timeframe close is
+  correct, not a shortcut. Verified `htfClosed()` independently implements
+  genuinely different "last closed bucket" semantics, confirming the two
+  primitives are intentionally distinct rather than `htf()` being broken.
+  What *was* a real, separate bug found while re-checking this: weekly
+  bucketing used plain `floor(time/604800)`, bucketing relative to the Unix
+  epoch (1970-01-01, a **Thursday**) instead of real Monday-start calendar
+  weeks — what every exchange and TradingView's own weekly bars use. Fixed
+  via a shared `bucketOf()` helper (`stdlib.ts`) that both `resample()` and
+  `htfClosed()` (`smc.ts`) now use, shifting by 3 days so boundaries land on
+  real Mondays. Also added calendar-month bucketing (`"1M"`, via a
+  `MONTH_BUCKET` sentinel using real UTC year/month instead of a fixed
+  seconds duration) — previously `"1M"` threw "Unknown timeframe" outright,
+  since a month has no fixed length in seconds to put in `TF_SECONDS`.
+  Verified with 21 real daily bars starting on an actual Monday: weekly
+  buckets now flip exactly on bars 0/7/14, and `close[i] === weeklyClose[i]`
+  every bar as expected — confirming the pass-through really is correct.
+  `14-htf-trend-bias`'s own independent reference math was updated to the
+  same Monday-aligned bucketing (it briefly failed after the runtime fix —
+  for the right reason: the runtime's bucket boundaries moved, and the
+  fixture's hand-rolled reference calc was still using the old, unaligned
+  ones).
 - ~~No `alertcondition`/`alert()` primitive~~ — `runtime.ts` now has both as
   no-op `warn()` stubs (same pattern as `table()`/`bgcolor()`), so a literal
   `alertcondition(...)` call no longer throws and takes the whole script

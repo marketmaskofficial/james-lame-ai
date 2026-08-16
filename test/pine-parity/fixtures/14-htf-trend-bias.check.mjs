@@ -2,6 +2,12 @@ export const category = "multi-timeframe";
 export const description = "Bias histogram from weekly open vs current close (exercises real HTF bucket aggregation, not the close pass-through)";
 
 const WEEK_SECONDS = 604800;
+// Unix epoch was a Thursday, so plain floor(t/WEEK_SECONDS) buckets land on
+// arbitrary Thursday-to-Thursday chunks, not real Monday-start calendar
+// weeks. stdlib.ts's bucketOf() shifts by 3 days to correct this — mirror
+// that exact shift here so this independent reference matches real weeks,
+// not just whatever the runtime happens to do.
+const MONDAY_SHIFT = 3 * 86400;
 
 export function check(result, { bars }) {
   const issues = [];
@@ -11,13 +17,13 @@ export function check(result, { bars }) {
     return issues;
   }
 
-  // Independently bucket weekly opens the same way runtime.ts's resample()
-  // does: floor(time/seconds), first bar in each bucket sets the open.
+  // Independently bucket weekly opens by real calendar week (Monday start),
+  // first bar in each bucket sets the open.
   const weeklyOpen = new Array(bars.length).fill(NaN);
-  let bucket = -1;
+  let bucket = -Infinity;
   let currentOpen = NaN;
   for (let i = 0; i < bars.length; i++) {
-    const b = Math.floor(bars[i].time / WEEK_SECONDS);
+    const b = Math.floor((bars[i].time + MONDAY_SHIFT) / WEEK_SECONDS);
     if (b !== bucket) {
       bucket = b;
       currentOpen = bars[i].open;

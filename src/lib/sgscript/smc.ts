@@ -4,6 +4,8 @@
 // These are generic building blocks, not indicator templates — the AI composes
 // them so new ICT/SMC combinations never need a hard-coded recipe.
 
+import { bucketOf } from "./stdlib";
+
 type Series = number[];
 const N = NaN;
 
@@ -190,7 +192,7 @@ export function htfClosed(
   const h = new Array<number>(len).fill(N);
   const l = new Array<number>(len).fill(N);
   const c = new Array<number>(len).fill(N);
-  let bucket = Math.floor(time[0] / seconds);
+  let bucket = bucketOf(time[0], seconds);
   let co = open[0];
   let ch = high[0];
   let cl = low[0];
@@ -200,7 +202,7 @@ export function htfClosed(
   let pl = N;
   let pc = N;
   for (let i = 0; i < len; i++) {
-    const b = Math.floor(time[i] / seconds);
+    const b = bucketOf(time[i], seconds);
     if (b !== bucket) {
       po = co;
       ph = ch;

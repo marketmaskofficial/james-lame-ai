@@ -336,8 +336,39 @@ export function volumeProfile(
   }));
 }
 
+// A calendar month has no fixed duration in seconds, so it can't be encoded
+// as a TF_SECONDS entry the way every other timeframe is. This sentinel
+// tells bucketOf() to switch from "seconds since epoch, divided" to real
+// UTC year/month bucketing instead.
+export const MONTH_BUCKET = -1;
+
+const WEEK_SECONDS = 604800;
+// Unix epoch (1970-01-01T00:00:00Z) was a Thursday. Floor-dividing raw
+// seconds by WEEK_SECONDS therefore buckets "weeks" as arbitrary
+// Thursday-to-Thursday 7-day chunks, not real Monday-start calendar weeks —
+// every exchange, and TradingView's own weekly bars, use the latter. Shift
+// the clock back 3 days (to the preceding Monday) before flooring so bucket
+// boundaries land on real week starts.
+const MONDAY_SHIFT = 3 * 86400;
+
+/** Bucket index for time `t` (unix seconds) at a `seconds`-long period, calendar-aligned. */
+export function bucketOf(t: number, seconds: number): number {
+  if (seconds === MONTH_BUCKET) {
+    const d = new Date(t * 1000);
+    return d.getUTCFullYear() * 12 + d.getUTCMonth();
+  }
+  const shift = seconds === WEEK_SECONDS ? MONDAY_SHIFT : 0;
+  return Math.floor((t + shift) / seconds);
+}
+
 // Resample bars to a higher timeframe and re-align each HTF value back onto
 // the chart's bar index, so multi-timeframe logic stays 1:1 with the chart.
+//
+// `close` is intentionally a live pass-through of the base-timeframe close,
+// not a bug: this represents the FORMING HTF candle (matching Pine's
+// request.security(...) without a [1]/lookahead_on confirm), and a forming
+// candle's close is by definition wherever the underlying price currently
+// is. For the last fully CLOSED HTF candle instead, use htfClosed().
 export function resample(
   time: Series,
   open: Series,
@@ -353,13 +384,13 @@ export function resample(
   const l = new Array<number>(len).fill(N);
   const c = new Array<number>(len).fill(N);
   const v = new Array<number>(len).fill(N);
-  let bucket = -1;
+  let bucket = -Infinity;
   let co = N;
   let ch = -Infinity;
   let cl = Infinity;
   let cv = 0;
   for (let i = 0; i < len; i++) {
-    const b = Math.floor(time[i] / seconds);
+    const b = bucketOf(time[i], seconds);
     if (b !== bucket) {
       bucket = b;
       co = open[i];
