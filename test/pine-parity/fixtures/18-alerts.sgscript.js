@@ -9,14 +9,24 @@ const lowestLow = lowest(low, len);
 const breakoutUp = gte(close, highestHigh);
 const breakoutDown = lte(close, lowestLow);
 
-signal(breakoutUp, 'buy', 'Price broke above the breakout high', {
-  color: '#4CAF50',
+signal(breakoutUp, 'buy', 'Breakout Up', {
+  color: '#00FF00',
   shape: 'arrow',
   location: 'below'
 });
 
-signal(breakoutDown, 'sell', 'Price broke below the breakout low', {
-  color: '#F23645',
+signal(breakoutDown, 'sell', 'Breakout Down', {
+  color: '#FF0000',
   shape: 'arrow',
   location: 'above'
+});
+
+alertcondition(breakoutUp, {
+  title: 'Breakout Up',
+  message: 'Price broke above the {{plot_0}}-bar high'
+});
+
+alertcondition(breakoutDown, {
+  title: 'Breakout Down',
+  message: 'Price broke below the {{plot_0}}-bar low'
 });

@@ -605,6 +605,14 @@ export function runScript(req: RunRequest): RunResult {
     // Constructs the runtime cannot reproduce are reported, never faked.
     table: () => warn("table() is not supported by the Signal Goat renderer yet"),
     bgcolor: () => warn("bgcolor() is not supported by the Signal Goat renderer yet"),
+    // Alerts have no delivery mechanism in this preview/backtest runtime, but
+    // a translation may still emit a literal alertcondition()/alert() call
+    // (Pine encourages both heavily) — unlike table()/bgcolor() these had NO
+    // stub at all until now, so any script that kept the call verbatim threw
+    // a ReferenceError and the whole script died instead of just dropping
+    // the alert. Accept any arg shape, never throw.
+    alertcondition: () => warn("alertcondition() has no effect in this preview — alerts are not supported yet"),
+    alert: () => warn("alert() has no effect in this preview — alerts are not supported yet"),
     unsupported: (what: string) => warn(String(what)),
     log: (...args: unknown[]) => {
       if (logs.length < 100) logs.push(args.map((a) => String(a)).join(" "));

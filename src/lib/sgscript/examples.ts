@@ -69,6 +69,9 @@ label(index, price, text, { color, textColor, borderColor,
 signal(boolArray, 'buy'|'sell', text?, { color, shape:'arrow'|'circle'|'square', location })
 fill(plotIdA, plotIdB, color, opacity)   // plot() returns its id
 log(...)                        // debug output
+alertcondition(boolArray, { title, message })   // safe no-op: alerts are not delivered by this
+alert(message, freq?)                           // preview/backtest runtime yet, but calling these
+                                                 // never throws — never invent a different name for them
 
 VISUAL PARITY CONTRACT (enforced by the validator)
 - Whatever the Pine twin draws, the SGScript MUST draw with the same primitive:
@@ -83,6 +86,11 @@ VISUAL PARITY CONTRACT (enforced by the validator)
   actually change runtime behaviour.
 - NOT reproduced yet: table.new, bgcolor. Avoid them; if unavoidable, keep them
   cosmetic in Pine only and never rely on them for information.
+- alertcondition() / alert() ARE safe to call (they exist as no-ops), unlike
+  table.new/bgcolor which have no SGScript equivalent at all. Always translate
+  Pine's alertcondition(cond, title=..., message=...) into
+  alertcondition(cond, { title, message }) — never drop it silently and never
+  invent unrelated syntax for it.
 
 
 STRATEGY RULES (required whenever the user asks for a strategy / backtest)
