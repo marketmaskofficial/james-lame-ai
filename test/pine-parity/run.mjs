@@ -29,7 +29,7 @@ const args = process.argv.slice(2);
 const retranslate = args.includes("--retranslate");
 const filter = args.find((a) => !a.startsWith("--"));
 
-const bars = generateBars(300, 42);
+const defaultBars = generateBars(300, 42);
 
 function loadFixtures() {
   const pineFiles = readdirSync(fixturesDir)
@@ -47,6 +47,10 @@ async function runFixture(name) {
 
   const pineSource = readFileSync(pinePath, "utf8");
   const mod = await import(`${pathToFileURL(checkPath).href}?t=${Date.now()}`);
+  // Most fixtures share the default daily bar set; ones that need a
+  // different shape (e.g. session-time-of-day logic needs intraday bars,
+  // meaningless on daily data) export their own `bars` array to override it.
+  const bars = mod.bars ?? defaultBars;
 
   const result = { name, category: mod.category ?? "uncategorized", stages: {} };
 

@@ -47,6 +47,9 @@ const src = input.source('Source', close)   // returns a SERIES (open/high/low/c
 
 
 OUTPUTS (the Signal Goat renderer reproduces these 1:1 with the Pine twin)
+Every "opacity" below is 0..1 OPACITY (1 = fully visible), not Pine's 0..100
+TRANSPARENCY (0 = fully visible) — color.new(color.blue, 90) is 90%
+transparent, i.e. opacity: 0.1, NOT opacity: 10. Convert with (100 - X) / 100.
 plot(series, { title, color, width, opacity, style: 'line'|'histogram'|'area'|'stepline' })
 plotOsc(series, opts)      // lower pane
 hist(series, opts)         // histogram (lower pane by default)

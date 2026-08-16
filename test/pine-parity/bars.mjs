@@ -80,3 +80,43 @@ export function generateBars(count = 300, seed = 42) {
 function round4(n) {
   return Math.round(n * 10000) / 10000;
 }
+
+/**
+ * Hourly bars, continuous (including outside-session hours), for testing
+ * session-time-of-day logic (e.g. `time(tf, "0930-1600")` in Pine, `session()`
+ * in SGScript) — meaningless on the daily bars generateBars() produces, since
+ * every daily bar's timestamp is midnight. UTC hour `sessionStartHour` (incl.)
+ * through `sessionEndHour` (excl.) gets elevated drift so session ranges are
+ * visually/numerically distinct from the overnight chop, matching how a real
+ * regular-trading-hours session behaves relative to the overnight session.
+ */
+export function generateIntradayHourlyBars(
+  count = 500,
+  seed = 42,
+  { sessionStartHour = 9, sessionEndHour = 16 } = {},
+) {
+  const rand = mulberry32(seed);
+  const bars = [];
+  const start = Date.UTC(2024, 0, 1, 0, 0, 0) / 1000; // 2024-01-01 00:00 UTC (a Monday)
+  let price = 100;
+  for (let i = 0; i < count; i++) {
+    const t = start + i * 3600;
+    const hour = new Date(t * 1000).getUTCHours();
+    const inSession = hour >= sessionStartHour && hour < sessionEndHour;
+    const drift = inSession ? (rand() - 0.45) * 1.2 : (rand() - 0.5) * 0.2;
+    const open = price;
+    const close = Math.max(1, open + drift);
+    const high = Math.max(open, close) + rand() * 0.5;
+    const low = Math.min(open, close) - rand() * 0.5;
+    bars.push({
+      time: t,
+      open: round4(open),
+      high: round4(high),
+      low: round4(low),
+      close: round4(close),
+      volume: Math.round(1000 + rand() * 500),
+    });
+    price = close;
+  }
+  return bars;
+}
