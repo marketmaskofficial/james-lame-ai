@@ -118,7 +118,16 @@ RULES
 - Plain JS: const/let, if, for, while, functions, objects, arrays.
 - No fetch, no DOM, no timers, no imports. Scripts must finish in under 3 seconds.
 - Max 10,000 drawing objects. Guard loops with bar indexes.
-- Always check Number.isFinite() before drawing from a series value.`;
+- Always check Number.isFinite() before drawing from a series value.
+- Pine's \`var x = seed\` gives x a REAL starting value from bar 0, not NaN/undefined.
+  A hand-rolled per-bar state loop (trend flips, running totals, Supertrend-style
+  "persist unless a condition fires" logic) MUST seed its output array with that
+  same real value at index 0 (or wherever the loop begins), never leave it NaN and
+  rely on a later condition to "eventually" set it. If the triggering condition
+  never fires early in the series (a real possibility, not just an edge case),
+  new Array(barCount).fill(NaN) plus a naive \`state[i] = state[i-1]\` carries that
+  NaN forward indefinitely — every bar in a NaN-poisoned stretch silently reads as
+  the WRONG side of any \`state[i] === 1\` check, not as "no data yet".`;
 
 export const DEFAULT_SCRIPT = `// @name EMA Trend + Signals
 // @overlay true

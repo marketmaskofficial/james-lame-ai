@@ -1,0 +1,14 @@
+//@version=6
+indicator("Supertrend Test", overlay=true)
+atrLen = input.int(10, "ATR Length")
+mult = input.float(3.0, "Multiplier")
+
+atrVal = ta.atr(atrLen)
+upperBand = hl2 + mult * atrVal
+lowerBand = hl2 - mult * atrVal
+
+var trend = 1
+trend := close > upperBand[1] ? 1 : close < lowerBand[1] ? -1 : trend[1]
+
+supertrendLine = trend == 1 ? lowerBand : upperBand
+plot(supertrendLine, "Supertrend", color=trend == 1 ? color.green : color.red, linewidth=2)

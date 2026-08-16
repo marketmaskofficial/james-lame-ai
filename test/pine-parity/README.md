@@ -16,23 +16,29 @@ Writes `REPORT.md` in this folder every run.
 
 ## How a fixture is judged
 
-Each `NN-name.pine` / `NN-name.check.mjs` pair goes through 4 gates, all of
-which must pass:
+Each `NN-name.pine` / `NN-name.check.mjs` pair goes through up to 5 gates,
+all of which must pass:
 
 1. **`pineValid`** — the fixture's own Pine source passes `validatePine()`
    (sanity check on the test suite itself — if this fails, the fixture is
    broken, not the pipeline).
+1b. **`repaintOk`** *(optional)* — if the fixture exports `checkPine(pineReport)`,
+   it runs against `validatePine()`'s own `PineReport` (e.g. its repaint
+   `classification`) instead of the runtime output. Use this for anything
+   that's a property of the Pine source's static analysis, not of execution —
+   see `20`/`21`/`22-repaint-*` for the pattern.
 2. **`sgscriptValid`** — the AI's SGScript translation passes
    `validateSgScript()` + `visualParity()` (same checks the app itself runs).
 3. **`runtimeOk`** — the translation executes against the shared
    deterministic bar set (`bars.mjs`, seeded, same every run) without
    throwing.
-4. **`checkOk`** — the fixture's own `check(result, { bars, ref })` passes.
-   This is where "correct" is actually defined: numeric series are compared
-   against independent reference math in `reference.mjs` (not against
-   whatever the AI happened to produce — that would prove nothing), and
-   drawing-heavy fixtures assert real object counts/shapes computed the same
-   way.
+4. **`checkOk`** — the fixture's own `check(result, { bars, ref, backtest })`
+   passes. This is where "correct" is actually defined: numeric series are
+   compared against independent reference math in `reference.mjs` (not
+   against whatever the AI happened to produce — that would prove nothing),
+   and drawing-heavy fixtures assert real object counts/shapes computed the
+   same way. `backtest` is a real `BacktestReport` for any fixture whose
+   script declares strategy rules.
 
 ## Translation caching
 
@@ -74,7 +80,24 @@ Not every failure is a translation bug — some are the runtime not being able
 to represent a Pine construct at all. Worth fixing at the runtime level, not
 by asking the AI to try harder.
 
-None currently open. Fixed so far:
+Currently open:
+
+- **`classifyRepaint()` misclassifies the documented-safe HTF idiom**
+  (`22-repaint-documented-safe-idiom`, left failing on purpose): pairing a
+  `[1]` confirm offset with `lookahead=barmerge.lookahead_on` — the exact
+  pattern `pine-playbooks.ts`'s own repainting-discipline section
+  recommends — gets classified `"intentionally-repainting"`, the worst
+  label, because `classifyRepaint()` (`src/lib/validate/pine.ts`) checks for
+  `lookahead_on` and returns early, before ever checking whether it's paired
+  with a confirming offset. Fix: check `securityConfirmed` first, or only
+  treat `lookahead_on` as unsafe when it's NOT paired with `[1]`. Verified
+  the simpler `close[1])`-only idiom (no `lookahead_on`) classifies
+  correctly (`20-repaint-safe-offset`), and a genuinely unsafe call with
+  neither protection classifies as unsafe too (`21-repaint-unsafe`) — so the
+  classifier logic itself is sound, just ordered wrong for this one
+  combination.
+
+Fixed so far:
 
 - ~~`htf()`'s `close` is a pass-through~~ — **on closer inspection this was
   not actually a bug.** `htf()` deliberately represents the *forming* HTF
@@ -112,5 +135,23 @@ None currently open. Fixed so far:
   engine (`engine.ts`) ratchets the live stop to `trail[i]` every bar after
   entry, favourable direction only, instead of leaving `stop` frozen at its
   entry-time value. `17-atr-trailing-strategy`'s check now verifies this
-  against real backtest trade output (via the harness's new `backtest`
-  context, see below), not just that the field exists.
+  against real backtest trade output (via the harness's `backtest` context),
+  not just that the field exists.
+- ~~`htf()`/`htfClosed()` timeframe lookup was case-sensitive~~
+  (`20`/`21-repaint-*`): `TF_SECONDS` only had lowercase keys (`"1w"`), but
+  Pine's own convention — and `input.timeframe()`'s own default strings — is
+  uppercase (`"1W"`). A translation that passed the timeframe string through
+  unchanged (a completely reasonable thing to do) got `"Unknown timeframe
+  \"1W\""` and crashed. Added a `resolveTfSeconds()` helper that falls back
+  to a lowercased lookup instead of relying on the AI to always remember to
+  normalize case.
+- ~~AI-translated per-bar state loops sometimes dropped Pine's `var x = seed`
+  initial value~~ (`26-supertrend`): a stateful trend-flip line's `trend`
+  array was seeded `NaN` instead of Pine's `var trend = 1`, and since this
+  fixture's synthetic data never actually triggers a real crossing, `NaN`
+  propagated through the whole 300-bar series via `trend[i] = trend[i-1]` —
+  silently reading as the wrong side of every `trend[i] === 1` check for the
+  entire run, not as "no data yet". `SGSCRIPT_REFERENCE` had zero guidance
+  about preserving `var`'s initial-value semantics; added an explicit rule.
+  Retranslating after the prompt fix now correctly seeds
+  `new Array(barCount).fill(1)`.

@@ -54,6 +54,18 @@ async function runFixture(name) {
   const pineReport = validatePine(pineSource);
   result.stages.pineValid = { ok: pineReport.ok, detail: pineReport.ok ? "" : formatIssues(pineReport.issues) };
 
+  // Stage 1b: fixture-specific checks against the Pine source's own analysis
+  // (e.g. repaint classification) — opt-in via an exported checkPine().
+  if (typeof mod.checkPine === "function") {
+    let repaintIssues = [];
+    try {
+      repaintIssues = (await mod.checkPine(pineReport)) ?? [];
+    } catch (e) {
+      repaintIssues = [`checkPine() threw: ${e instanceof Error ? e.message : String(e)}`];
+    }
+    result.stages.repaintOk = { ok: repaintIssues.length === 0, detail: repaintIssues.join("; ") };
+  }
+
   // Stage 2: translate (cached) or retranslate
   let sgscript;
   let translateAttempts = 0;
@@ -179,13 +191,13 @@ function writeReport(results, passed) {
   lines.push("");
   lines.push(`Generated ${new Date().toISOString()} — ${passed}/${results.length} passed.`);
   lines.push("");
-  lines.push("| Fixture | Category | Pine valid | SGScript valid | Runtime | Check | Result |");
-  lines.push("|---|---|---|---|---|---|---|");
+  lines.push("| Fixture | Category | Pine valid | Repaint | SGScript valid | Runtime | Check | Result |");
+  lines.push("|---|---|---|---|---|---|---|---|");
   for (const r of results) {
     const s = r.stages ?? {};
     const cell = (k) => (s[k] ? (s[k].ok ? "OK" : "FAIL") : "-");
     lines.push(
-      `| ${r.name} | ${r.category} | ${cell("pineValid")} | ${cell("sgscriptValid")} | ${cell("runtimeOk")} | ${cell("checkOk")} | ${r.pass ? "PASS" : "FAIL"} |`,
+      `| ${r.name} | ${r.category} | ${cell("pineValid")} | ${cell("repaintOk")} | ${cell("sgscriptValid")} | ${cell("runtimeOk")} | ${cell("checkOk")} | ${r.pass ? "PASS" : "FAIL"} |`,
     );
   }
   lines.push("");

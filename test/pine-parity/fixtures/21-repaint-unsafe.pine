@@ -1,0 +1,5 @@
+//@version=6
+indicator("Repaint Unsafe Test", overlay=true)
+htf = input.timeframe("1W", "Higher Timeframe")
+htfClose = request.security(syminfo.tickerid, htf, close)
+plot(htfClose, "HTF Close (live, repaints)", color=color.red)

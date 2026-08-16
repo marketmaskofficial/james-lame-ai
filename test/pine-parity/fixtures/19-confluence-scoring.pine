@@ -1,0 +1,18 @@
+//@version=6
+indicator("Confluence Scoring Test", overlay=false)
+fastLen = input.int(9, "Fast EMA")
+slowLen = input.int(21, "Slow EMA")
+
+fastEma = ta.ema(close, fastLen)
+slowEma = ta.ema(close, slowLen)
+rsiVal = ta.rsi(close, 14)
+
+score = 0.0
+score := score + (fastEma > slowEma ? 1 : 0)
+score := score + (close > fastEma ? 1 : 0)
+score := score + (rsiVal > 50 ? 1 : 0)
+score := score + (rsiVal < 70 ? 1 : 0)
+score := score - (rsiVal > 80 ? 1 : 0)
+
+plot(score, "Confluence Score", style=plot.style_histogram, color=score >= 3 ? color.green : color.gray)
+hline(3, "Threshold", color=color.orange)

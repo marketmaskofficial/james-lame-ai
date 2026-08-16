@@ -53,6 +53,17 @@ const TF_SECONDS: Record<string, number> = {
   "1M": std.MONTH_BUCKET,
 };
 
+// Pine's own timeframe strings are conventionally uppercase for day/week/
+// month ("1D", "1W", "1M" — e.g. input.timeframe()'s default), but a
+// translation may pass that string through unchanged rather than lowercase
+// it to match TF_SECONDS's keys. Rather than rely on the AI to always
+// remember to normalize case, accept either.
+function resolveTfSeconds(tf: string): number {
+  const secs = TF_SECONDS[tf] ?? TF_SECONDS[tf.toLowerCase()];
+  if (secs === undefined) throw new Error(`Unknown timeframe "${tf}"`);
+  return secs;
+}
+
 function parseMeta(code: string) {
   const name = /^\s*\/\/\s*@name\s+(.+)$/m.exec(code)?.[1]?.trim();
   const overlayRaw = /^\s*\/\/\s*@overlay\s+(true|false)$/m.exec(code)?.[1];
@@ -475,8 +486,7 @@ export function runScript(req: RunRequest): RunResult {
   }
 
   function htf(tf: string) {
-    const secs = TF_SECONDS[tf];
-    if (!secs) throw new Error(`Unknown timeframe "${tf}"`);
+    const secs = resolveTfSeconds(tf);
     const r = std.resample(time, open, high, low, close, volume, secs);
     return { ...r, hl2: std.div(std.add(r.high, r.low), 2) };
   }
@@ -524,8 +534,7 @@ export function runScript(req: RunRequest): RunResult {
     previousWeek: () => smc.previousPeriod(time, high, low, close, "week"),
     previousMonth: () => smc.previousPeriod(time, high, low, close, "month"),
     htfClosed: (tf: string) => {
-      const secs = TF_SECONDS[tf];
-      if (!secs) throw new Error(`Unknown timeframe "${tf}"`);
+      const secs = resolveTfSeconds(tf);
       return smc.htfClosed(time, open, high, low, close, secs);
     },
     swings: (l?: number, r?: number) => smc.swings(high, low, l, r),

@@ -1,0 +1,12 @@
+//@version=6
+indicator("Table and Bgcolor Test", overlay=true)
+len = input.int(20, "Length")
+avg = ta.sma(close, len)
+plot(avg, "SMA", color=color.blue)
+
+bullish = close > avg
+bgcolor(bullish ? color.new(color.green, 90) : color.new(color.red, 90))
+
+var table infoTable = table.new(position.top_right, 2, 1)
+if barstate.islast
+    table.cell(infoTable, 0, 0, bullish ? "Bullish" : "Bearish", text_color=color.white)

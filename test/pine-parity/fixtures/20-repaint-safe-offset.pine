@@ -1,0 +1,5 @@
+//@version=6
+indicator("Repaint Safe Offset Test", overlay=true)
+htf = input.timeframe("1W", "Higher Timeframe")
+htfClose = request.security(syminfo.tickerid, htf, close[1])
+plot(htfClose, "HTF Close (confirmed)", color=color.blue)

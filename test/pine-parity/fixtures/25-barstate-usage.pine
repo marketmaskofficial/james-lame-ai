@@ -1,0 +1,12 @@
+//@version=6
+indicator("Barstate Usage Test", overlay=true)
+
+len = input.int(20, "Length")
+avg = ta.sma(close, len)
+plot(avg, "SMA", color=color.blue)
+
+longCond = ta.crossover(close, avg) and barstate.isconfirmed
+plotshape(longCond, title="Confirmed Cross", style=shape.triangleup, location=location.belowbar, color=color.green)
+
+if barstate.islast
+    label.new(bar_index, high, "Last Bar", style=label.style_label_down, color=color.gray, textcolor=color.white)

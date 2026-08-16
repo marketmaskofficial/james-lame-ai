@@ -1,0 +1,25 @@
+//@version=6
+indicator("UDT and Method Test", overlay=true)
+
+type SwingPoint
+    float price
+    int barIndex
+    bool isHigh
+
+method isRecent(SwingPoint p, int currentBar, int maxAge) =>
+    (currentBar - p.barIndex) <= maxAge
+
+lookback = input.int(10, "Lookback")
+ph = ta.pivothigh(high, lookback, lookback)
+pl = ta.pivotlow(low, lookback, lookback)
+
+var SwingPoint lastHigh = SwingPoint.new(na, na, true)
+var SwingPoint lastLow = SwingPoint.new(na, na, false)
+
+if not na(ph)
+    lastHigh := SwingPoint.new(ph, bar_index[lookback], true)
+if not na(pl)
+    lastLow := SwingPoint.new(pl, bar_index[lookback], false)
+
+recentHigh = lastHigh.isRecent(bar_index, 30)
+plotshape(recentHigh and not na(ph), title="Recent High", style=shape.triangledown, location=location.abovebar, color=color.red)

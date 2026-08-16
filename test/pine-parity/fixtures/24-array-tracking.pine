@@ -1,0 +1,17 @@
+//@version=6
+indicator("Array Tracking Test", overlay=false)
+
+maxLevels = input.int(5, "Max Tracked Levels", minval=1, maxval=20)
+lookback = input.int(10, "Pivot Lookback")
+
+var float[] levels = array.new_float(0)
+
+ph = ta.pivothigh(high, lookback, lookback)
+
+if not na(ph)
+    array.push(levels, ph)
+    if array.size(levels) > maxLevels
+        array.shift(levels)
+
+trackedCount = array.size(levels)
+plot(trackedCount, "Tracked Levels", style=plot.style_histogram, color=color.blue)
