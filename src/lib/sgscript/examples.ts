@@ -430,7 +430,18 @@ limitDrawings({ maxVisibleLines: maxBull + maxBear, maxVisibleMarkers: maxBull +
 
 const bins = input.int('Bins', 30, { min: 5, max: 100 })
 const lookback = input.int('Lookback bars', 200, { min: 20, max: 1000 })
+const showPoc = input.bool('Show POC Line', true)
+const profileColor = input.color('Profile Color', 'rgba(56,189,248,0.18)')
+const pocColor = input.color('POC Color', 'rgba(230,184,0,0.35)')
+const fillOpacity = input.float('Fill Opacity', 1, { min: 0, max: 1, step: 0.05 })
+const borderWidth = input.int('Border Width', 0, { min: 0, max: 4 })
+const borderColor = input.color('Border Color', 'rgba(148,163,184,0.45)')
+const labelSize = input.string('Label Size', 'tiny', { options: ['tiny', 'small', 'normal', 'large'] })
 
+// Profile bars sit behind candles like any other zone, so price stays
+// readable. No border by default (box() would otherwise fall back to its
+// own default blue outline on every bin) — the POC line/label is the only
+// text this indicator ever draws, and it's a single toggle, not per-bin.
 const from = Math.max(0, lastIndex - lookback)
 const profile = volumeProfile(from, lastIndex, bins)
 let maxVol = 0
@@ -441,9 +452,14 @@ for (const p of profile) {
   const width = Math.round((p.volume / maxVol) * (lookback * 0.25))
   const isPoc = p.volume === maxVol
   box(p.bottom, p.top, lastIndex - width, lastIndex, {
-    color: isPoc ? 'rgba(230,184,0,0.35)' : 'rgba(56,189,248,0.18)',
+    color: isPoc ? pocColor : profileColor,
+    opacity: fillOpacity,
+    borderColor: borderColor,
+    borderWidth: borderWidth,
   })
-  if (isPoc) line(p.top, from, p.top, lastIndex, { color: '#e6b800', dashed: true, text: 'POC' })
+  if (isPoc && showPoc) {
+    line(p.top, from, p.top, lastIndex, { color: pocColor, dashed: true, text: 'POC', textSize: labelSize })
+  }
 }
 `,
   },
