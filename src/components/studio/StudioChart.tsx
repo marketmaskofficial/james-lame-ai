@@ -325,10 +325,21 @@ export function StudioChart({
 
   const timeToLogical = useMemo(() => {
     const times = bars.map((b) => b.time);
-    return (t: number) => {
+    // A meaningful margin past either edge (not an exact bound) — indicator
+    // results that briefly lag a symbol/timeframe change by a render or two
+    // can legitimately have a handful of timestamps just past the loaded
+    // range without being genuinely stale. Anything beyond that margin is
+    // treated as belonging to a different bar set entirely (e.g. a stale
+    // result not yet recomputed after a symbol switch) and returns null so
+    // callers skip drawing it — a wrong-looking box at the chart's edge is
+    // worse than a briefly missing one.
+    const barSpan = times.length > 1 ? times[times.length - 1] - times[0] : 0;
+    const margin = times.length > 1 ? barSpan / times.length : Infinity;
+    return (t: number): number | null => {
       let lo = 0;
       let hi = times.length - 1;
-      if (hi < 0) return 0;
+      if (hi < 0) return null;
+      if (t < times[0] - margin || t > times[hi] + margin) return null;
       if (t <= times[0]) return 0;
       if (t >= times[hi]) return hi;
       while (lo <= hi) {
@@ -879,7 +890,8 @@ export function StudioChart({
     ctx.clearRect(0, 0, host.clientWidth, host.clientHeight);
 
     const ts = chart.timeScale();
-    const x = (logical: number) => ts.logicalToCoordinate(logical);
+    const x = (logical: number | null) =>
+      logical == null ? null : ts.logicalToCoordinate(logical);
     const y = (p: number) => price.priceToCoordinate(p);
 
     const { indicators: inds, drawings: draws } = stateRef.current;

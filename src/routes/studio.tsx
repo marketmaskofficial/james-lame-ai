@@ -998,10 +998,23 @@ function Studio() {
 
   const lastBarTime = bars.length ? bars[bars.length - 1].time : 0;
   const lastClose = bars.length ? bars[bars.length - 1].close : 0;
+  const prevSymbolIntervalRef = useRef(`${symbol}:${interval}`);
   useEffect(() => {
     if (indicators.length === 0) return;
+    // A symbol/timeframe switch resets `bars` to a different date range
+    // immediately, but existing indicator results still hold the OLD
+    // symbol's box/label timestamps until they recompute. Debouncing that
+    // recompute (fine for live-tick throttling, the other trigger for this
+    // effect) left up to 1.5s where the chart rendered stale boxes/labels
+    // against the new bars — every one of them outside the new range,
+    // collapsing to the chart's left edge via timeToLogical's out-of-range
+    // fallback. A symbol/timeframe change is a discrete, deliberate action:
+    // recompute immediately instead of waiting out that debounce.
+    const key = `${symbol}:${interval}`;
+    const symbolChanged = prevSymbolIntervalRef.current !== key;
+    prevSymbolIntervalRef.current = key;
     const since = Date.now() - lastRecomputeRef.current;
-    const wait = Math.max(0, 1500 - since);
+    const wait = symbolChanged ? 0 : Math.max(0, 1500 - since);
     if (recomputeTimer.current) clearTimeout(recomputeTimer.current);
     recomputeTimer.current = setTimeout(() => void recompute(), wait);
     return () => {
