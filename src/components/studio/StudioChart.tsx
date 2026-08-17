@@ -514,10 +514,17 @@ export function StudioChart({
             "ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif",
           fontSize: 11,
           attributionLogo: false,
+          // Subtle by default, only standing out on hover — same principle as
+          // every other quiet-until-interacted chrome element in this UI.
+          panes: {
+            separatorColor: "rgba(255,255,255,0.08)",
+            separatorHoverColor: "rgba(230,184,0,0.18)",
+            enableResize: true,
+          },
         },
         grid: {
-          vertLines: { color: "rgba(255,255,255,0.045)", style: 0 },
-          horzLines: { color: "rgba(255,255,255,0.045)", style: 0 },
+          vertLines: { color: "rgba(255,255,255,0.035)", style: 0 },
+          horzLines: { color: "rgba(255,255,255,0.035)", style: 0 },
         },
         rightPriceScale: {
           borderColor: "rgba(255,255,255,0.10)",
@@ -525,7 +532,7 @@ export function StudioChart({
           entireTextOnly: true,
           ticksVisible: true,
           // headroom above and below so candles never touch the frame
-          scaleMargins: { top: 0.1, bottom: 0.2 },
+          scaleMargins: { top: 0.08, bottom: 0.2 },
         },
         timeScale: {
           borderColor: "rgba(255,255,255,0.10)",
@@ -533,7 +540,7 @@ export function StudioChart({
           secondsVisible: false,
           ticksVisible: true,
           rightOffset: 12,
-          barSpacing: 9,
+          barSpacing: 11,
           minBarSpacing: 0.6,
           fixLeftEdge: false,
           lockVisibleTimeRangeOnResize: true,

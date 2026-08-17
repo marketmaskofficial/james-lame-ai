@@ -4,12 +4,21 @@ type Props = { value: string; onChange: (v: string) => void; height?: string };
 
 // CodeMirror + the JS parser load lazily, and only in the browser.
 const Editor = lazy(async () => {
-  const [{ default: CM }, { javascript }, { oneDark }] = await Promise.all([
+  const [{ default: CM }, { javascript }, { oneDark }, { EditorView }] = await Promise.all([
     import("@uiw/react-codemirror"),
     import("@codemirror/lang-javascript"),
     import("@codemirror/theme-one-dark"),
+    import("@codemirror/view"),
   ]);
-  const extensions = [javascript()];
+  // Match the editor's surface to the app's own panel color and tighten line
+  // height, so it reads as part of the dock instead of an embedded widget
+  // with its own visibly different background.
+  const surface = EditorView.theme({
+    "&": { backgroundColor: "var(--panel)" },
+    ".cm-gutters": { backgroundColor: "var(--panel)" },
+    ".cm-line": { lineHeight: "1.4" },
+  });
+  const extensions = [javascript(), surface];
   return {
     default: ({ value, onChange, height = "100%" }: Props) => (
       <CM

@@ -4,14 +4,15 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import {
   ArrowLeft,
+  Bell,
   BookOpen,
   Check,
+  ChevronsDown,
+  ChevronsUp,
   ClipboardPaste,
   Copy,
   Crosshair,
   ChevronDown,
-  Eye,
-  EyeOff,
   History,
   CopyPlus,
   RotateCcw,
@@ -23,8 +24,10 @@ import {
   Layers,
   Pencil,
   Play,
-  Plus,
+  PanelRightClose,
+  PanelRightOpen,
   Radio,
+  Rewind,
   Ruler,
   Save,
   Search,
@@ -42,6 +45,7 @@ import {
   PanelBottomClose,
   PanelBottomOpen,
   Star,
+  Wallet,
   Wand2,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
@@ -57,7 +61,7 @@ import { subscribeKlines, type LiveStatus } from "@/lib/live-feed";
 
 import type { Bar, InputSpec, RunResult } from "@/lib/sgscript/types";
 import { runIndicator } from "@/lib/sgscript/client";
-import { DEFAULT_SCRIPT, EXAMPLES, SGSCRIPT_REFERENCE } from "@/lib/sgscript/examples";
+import { DEFAULT_SCRIPT, SGSCRIPT_REFERENCE } from "@/lib/sgscript/examples";
 import {
   StudioChart,
   type Drawing,
@@ -94,6 +98,7 @@ import {
 } from "@/components/studio/TradingPanel";
 import { AccountBar, EnvBadge } from "@/components/studio/AccountBar";
 import { FeedbackButton } from "@/components/FeedbackButton";
+import { ChartLegendStrip } from "@/components/studio/ChartLegendStrip";
 
 import { mergeLiveBar, prependBars } from "@/lib/market/candles";
 import { TradingTables } from "@/components/studio/TradingTables";
@@ -192,6 +197,13 @@ type DockTab =
   | "saved"
   | "docs";
 type RightTab = "watchlist" | "trade" | "ai" | "alerts";
+
+const RIGHT_TABS: { id: RightTab; label: string; icon: typeof Star }[] = [
+  { id: "watchlist", label: "Watchlist", icon: Star },
+  { id: "trade", label: "Trade", icon: Wallet },
+  { id: "ai", label: "AI", icon: Wand2 },
+  { id: "alerts", label: "Alerts", icon: Bell },
+];
 
 // A script can run to completion (no throw, `result.ok`) while still
 // producing nothing visible — a session/condition that never fires, a
@@ -365,7 +377,9 @@ function Studio() {
   const [objectsOpen, setObjectsOpen] = useState(false);
   const [dock, setDock] = useState<DockTab>("code");
   const [dockHeight, setDockHeight] = useState(320);
+  const [dockState, setDockState] = useState<"collapsed" | "normal" | "maximized">("normal");
   const [notice, setNotice] = useState<string | null>(null);
+  const [noticeExpanded, setNoticeExpanded] = useState(false);
   const [live, setLive] = useState(true);
   const [liveStatus, setLiveStatus] = useState<LiveStatus>("connecting");
   const [lastPrice, setLastPrice] = useState<number | null>(null);
@@ -379,9 +393,9 @@ function Studio() {
   const [symbolOpen, setSymbolOpen] = useState(false);
   const [menu, setMenu] = useState<null | "tf" | "type" | "settings">(null);
   const [favTfs, setFavTfs] = useState<string[]>(DEFAULT_FAVORITE_TIMEFRAMES);
-  const [rightOpen, setRightOpen] = useState(true);
+  const [sidebarState, setSidebarState] = useState<"expanded" | "collapsed">("expanded");
+  const [sidebarWidth, setSidebarWidth] = useState(300);
   const [rightTab, setRightTab] = useState<RightTab>("watchlist");
-  const [dockOpen, setDockOpen] = useState(true);
   const controlsRef = useRef<ChartControls | null>(null);
   const onChartReady = useCallback((c: ChartControls) => {
     controlsRef.current = c;
@@ -416,9 +430,10 @@ function Studio() {
         settings: ChartSettings;
         dock: DockTab;
         dockHeight: number;
-        dockOpen: boolean;
+        dockState: "collapsed" | "normal" | "maximized";
         rightTab: RightTab;
-        rightOpen: boolean;
+        sidebarState: "expanded" | "collapsed";
+        sidebarWidth: number;
       }>;
       if (l.symbol) setSymbol(l.symbol);
       if (l.interval) setIntervalStr(l.interval);
@@ -426,9 +441,10 @@ function Studio() {
       if (l.settings) setChartSettings({ ...DEFAULT_CHART_SETTINGS, ...l.settings });
       if (l.dock) setDock(l.dock);
       if (typeof l.dockHeight === "number") setDockHeight(l.dockHeight);
-      if (typeof l.dockOpen === "boolean") setDockOpen(l.dockOpen);
+      if (l.dockState) setDockState(l.dockState);
       if (l.rightTab) setRightTab(l.rightTab);
-      if (typeof l.rightOpen === "boolean") setRightOpen(l.rightOpen);
+      if (l.sidebarState) setSidebarState(l.sidebarState);
+      if (typeof l.sidebarWidth === "number") setSidebarWidth(l.sidebarWidth);
     } catch {
       /* first visit */
     }
@@ -444,9 +460,10 @@ function Studio() {
           settings: chartSettings,
           dock,
           dockHeight,
-          dockOpen,
+          dockState,
           rightTab,
-          rightOpen,
+          sidebarState,
+          sidebarWidth,
         }),
       );
     } catch {
@@ -459,10 +476,26 @@ function Studio() {
     chartSettings,
     dock,
     dockHeight,
-    dockOpen,
+    dockState,
     rightTab,
-    rightOpen,
+    sidebarState,
+    sidebarWidth,
   ]);
+
+  const dockVisible = dockState !== "collapsed";
+  const openDock = useCallback(
+    () => setDockState((s) => (s === "collapsed" ? "normal" : s)),
+    [],
+  );
+  const toggleDockCollapse = useCallback(
+    () => setDockState((s) => (s === "collapsed" ? "normal" : "collapsed")),
+    [],
+  );
+  const toggleDockMaximize = useCallback(
+    () => setDockState((s) => (s === "maximized" ? "normal" : "maximized")),
+    [],
+  );
+  const openSidebar = useCallback(() => setSidebarState("expanded"), []);
 
   const listIndicatorsFn = useServerFn(listIndicators);
   const createIndicatorFn = useServerFn(createIndicator);
@@ -1393,18 +1426,22 @@ function Studio() {
   return (
     <div ref={rootRef} className="flex h-screen flex-col bg-background text-foreground">
       {/* top bar */}
-      <header className="flex shrink-0 items-center gap-3 border-b border-border bg-sidebar px-3 py-2">
+      <header className="flex shrink-0 items-center gap-2 border-b border-border bg-sidebar px-3 py-1.5">
         <Link
           to="/app"
-          className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="flex items-center gap-1 rounded-[6px] px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+          title="Back to chat"
         >
-          <ArrowLeft className="h-3.5 w-3.5" /> Chat
+          <ArrowLeft className="h-3.5 w-3.5" />
         </Link>
-        <h1 className="text-sm font-semibold tracking-tight">Chart Studio</h1>
+        <span className="hidden text-[13px] font-medium tracking-tight text-muted-foreground md:inline">
+          Chart Studio
+        </span>
+        <div className="h-4 w-px bg-border" />
 
         <button
           onClick={() => setSymbolOpen(true)}
-          className="flex items-center gap-2 rounded-md border border-border bg-card px-2.5 py-1 text-xs hover:border-brand"
+          className="flex items-center gap-2 rounded-[6px] border border-border bg-card px-2.5 py-1 text-xs hover:border-brand"
           title="Search markets (symbol)"
         >
           <Search className="h-3.5 w-3.5 text-muted-foreground" />
@@ -1415,12 +1452,12 @@ function Studio() {
         </button>
 
         {/* timeframe */}
-        <div className="flex items-center gap-0.5 rounded-md border border-border bg-card p-0.5">
+        <div className="flex items-center gap-0.5 rounded-[6px] border border-border bg-card p-0.5">
           {favTfs.map((tf) => (
             <button
               key={tf}
               onClick={() => setIntervalStr(tf)}
-              className={`rounded px-2 py-0.5 text-[11px] ${
+              className={`rounded-[4px] px-2 py-0.5 text-[11px] ${
                 interval === tf
                   ? "bg-brand text-brand-foreground"
                   : "text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -1432,14 +1469,14 @@ function Studio() {
           <div className="relative">
             <button
               onClick={() => setMenu((m) => (m === "tf" ? null : "tf"))}
-              className="flex items-center rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="flex items-center rounded-[4px] px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
               title="All timeframes"
             >
               {favTfs.includes(interval) ? "" : interval}
               <ChevronDown className="h-3 w-3" />
             </button>
             {menu === "tf" && (
-              <div className="absolute left-0 z-40 mt-1 max-h-72 w-52 overflow-auto rounded-md border border-border bg-popover p-1 shadow-xl">
+              <div className="absolute left-0 z-40 mt-1 max-h-72 w-52 overflow-auto rounded-[8px] border border-border bg-popover p-1 shadow-xl">
                 {TIMEFRAMES.map((tf) => (
                   <div
                     key={tf}
@@ -1482,13 +1519,13 @@ function Studio() {
           <button
             onClick={() => setMenu((m) => (m === "type" ? null : "type"))}
             title="Chart type"
-            className="flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
+            className="flex items-center gap-1 rounded-[6px] px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
           >
             {CHART_TYPES.find((c) => c.id === chartType)?.label}
             <ChevronDown className="h-3 w-3" />
           </button>
           {menu === "type" && (
-            <div className="absolute left-0 z-40 mt-1 w-40 rounded-md border border-border bg-popover p-1 shadow-xl">
+            <div className="absolute left-0 z-40 mt-1 w-40 rounded-[8px] border border-border bg-popover p-1 shadow-xl">
               {CHART_TYPES.map((c) => (
                 <button
                   key={c.id}
@@ -1511,12 +1548,12 @@ function Studio() {
         <button
           onClick={() => {
             setDock("saved");
-            setDockOpen(true);
+            openDock();
           }}
-          title="Open indicators panel"
-          className="flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
+          title="Indicators"
+          className="rounded-[6px] p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
         >
-          <Sliders className="h-3.5 w-3.5" /> Indicators
+          <Sliders className="h-3.5 w-3.5" />
         </button>
 
         {/* chart settings */}
@@ -1524,12 +1561,12 @@ function Studio() {
           <button
             onClick={() => setMenu((m) => (m === "settings" ? null : "settings"))}
             title="Chart settings"
-            className="rounded-md border border-border bg-card p-1.5 text-muted-foreground hover:text-foreground"
+            className="rounded-[6px] p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
           >
             <Settings2 className="h-3.5 w-3.5" />
           </button>
           {menu === "settings" && (
-            <div className="absolute left-0 z-40 mt-1 w-56 space-y-2 rounded-md border border-border bg-popover p-2.5 text-[11px] shadow-xl">
+            <div className="absolute left-0 z-40 mt-1 w-56 space-y-2 rounded-[8px] border border-border bg-popover p-2.5 text-[11px] shadow-xl">
               {(
                 [
                   ["showVolume", "Volume"],
@@ -1574,7 +1611,7 @@ function Studio() {
           )}
         </div>
 
-        <div className="ml-auto flex items-center gap-2 text-[11px] text-muted-foreground">
+        <div className="ml-auto flex items-center gap-1 text-[11px] text-muted-foreground">
           {barsLoading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
           {user && accounts.length > 0 && (
             <AccountBar
@@ -1596,7 +1633,7 @@ function Studio() {
             />
           )}
           {lastPrice !== null && (
-            <span className="font-mono text-foreground">
+            <span className="px-1.5 font-mono text-[13px] tabular-nums text-foreground">
               {lastPrice.toLocaleString("en-US", {
                 maximumFractionDigits: lastPrice >= 100 ? 2 : 6,
               })}
@@ -1605,10 +1642,10 @@ function Studio() {
           <button
             onClick={() => setLive((v) => !v)}
             title={live ? "Pause live updates" : "Resume live updates"}
-            className={`flex items-center gap-1 rounded-md border px-2 py-0.5 ${
+            className={`flex items-center gap-1 rounded-[6px] px-2 py-0.5 ${
               live && liveStatus !== "offline"
-                ? "border-brand/40 bg-brand/10 text-brand"
-                : "border-border text-muted-foreground hover:bg-accent hover:text-foreground"
+                ? "bg-brand/10 text-brand"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground"
             }`}
           >
             <Radio
@@ -1632,47 +1669,65 @@ function Studio() {
             onClick={() => void loadOlderHistory()}
             disabled={loadingHistory || bars.length === 0}
             title="Load older history"
-            className="hidden rounded-md border border-border px-1.5 py-0.5 hover:text-foreground disabled:opacity-40 lg:inline-flex lg:items-center lg:gap-1"
+            className="hidden rounded-[6px] px-1.5 py-0.5 hover:bg-accent hover:text-foreground disabled:opacity-40 lg:inline-flex lg:items-center lg:gap-1"
           >
             {loadingHistory && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
             {bars.length} bars +
           </button>
+
+          <div className="mx-1 h-4 w-px bg-border" />
+
           <button
             title="Fit chart"
             onClick={() => controlsRef.current?.fit()}
-            className="rounded-md border border-border p-1 hover:text-foreground"
+            className="rounded-[6px] p-1 hover:bg-accent hover:text-foreground"
           >
             <Maximize2 className="h-3.5 w-3.5" />
           </button>
           <button
             title="Jump to latest bar"
             onClick={() => controlsRef.current?.toLatest()}
-            className="rounded-md border border-border p-1 hover:text-foreground"
+            className="rounded-[6px] p-1 hover:bg-accent hover:text-foreground"
           >
             <ChevronsRight className="h-3.5 w-3.5" />
           </button>
           <button
-            title={dockOpen ? "Hide editor panel" : "Show editor panel"}
-            onClick={() => setDockOpen((v) => !v)}
-            className="rounded-md border border-border p-1 hover:text-foreground"
+            title="Replay (coming soon)"
+            disabled
+            className="rounded-[6px] p-1 text-muted-foreground/40"
           >
-            {dockOpen ? (
+            <Rewind className="h-3.5 w-3.5" />
+          </button>
+          <button
+            title={dockVisible ? "Hide editor panel" : "Show editor panel"}
+            onClick={toggleDockCollapse}
+            className="rounded-[6px] p-1 hover:bg-accent hover:text-foreground"
+          >
+            {dockVisible ? (
               <PanelBottomClose className="h-3.5 w-3.5" />
             ) : (
               <PanelBottomOpen className="h-3.5 w-3.5" />
             )}
           </button>
           <button
-            title={rightOpen ? "Hide watchlist" : "Show watchlist"}
-            onClick={() => setRightOpen((v) => !v)}
-            className={`rounded-md border border-border p-1 hover:text-foreground ${rightOpen ? "text-brand" : ""}`}
+            title={sidebarState === "expanded" ? "Collapse sidebar" : "Expand sidebar"}
+            onClick={() =>
+              setSidebarState((s) => (s === "expanded" ? "collapsed" : "expanded"))
+            }
+            className={`rounded-[6px] p-1 hover:bg-accent hover:text-foreground ${
+              sidebarState === "expanded" ? "text-brand" : ""
+            }`}
           >
-            <Star className="h-3.5 w-3.5" />
+            {sidebarState === "expanded" ? (
+              <PanelRightClose className="h-3.5 w-3.5" />
+            ) : (
+              <PanelRightOpen className="h-3.5 w-3.5" />
+            )}
           </button>
           <button
             title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
             onClick={toggleFullscreen}
-            className="rounded-md border border-border p-1 hover:text-foreground"
+            className="rounded-[6px] p-1 hover:bg-accent hover:text-foreground"
           >
             {isFullscreen ? (
               <Minimize className="h-3.5 w-3.5" />
@@ -1707,7 +1762,7 @@ function Studio() {
               <button
                 title={t.label}
                 onClick={() => setTool(t.id)}
-                className={`rounded-md p-2 ${
+                className={`rounded-[6px] p-2 ${
                   tool === t.id
                     ? "bg-brand text-brand-foreground"
                     : "text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -1720,7 +1775,7 @@ function Studio() {
           <button
             title="Objects & styles"
             onClick={() => setObjectsOpen((v) => !v)}
-            className={`mt-2 rounded-md p-2 ${
+            className={`mt-2 rounded-[6px] p-2 ${
               objectsOpen
                 ? "bg-accent text-foreground"
                 : "text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -1732,110 +1787,63 @@ function Studio() {
             <button
               title="Clear all drawings"
               onClick={() => setDrawings([])}
-              className="mt-2 rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="mt-2 rounded-[6px] p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
             >
               <span className="text-[10px]">clr</span>
             </button>
           )}
         </nav>
 
-        {/* chart + indicator legend */}
+        {/* chart */}
         <main className="flex min-w-0 flex-1 flex-col">
-          <div className="flex flex-wrap items-center gap-1.5 border-b border-border bg-panel px-3 py-1.5">
-            <span className="text-xs font-medium">
-              {symbol} · {timeframeLabel(interval)}
-            </span>
-            {crosshair?.bar && (
-              <span className="flex items-center gap-2 font-mono text-[10.5px] text-muted-foreground">
-                {(["open", "high", "low", "close"] as const).map((k) => (
-                  <span key={k}>
-                    {k[0].toUpperCase()}
-                    <span
-                      className={
-                        crosshair.bar!.close >= crosshair.bar!.open
-                          ? "ml-0.5 text-emerald-400"
-                          : "ml-0.5 text-red-400"
-                      }
-                    >
-                      {crosshair.bar![k].toLocaleString("en-US", {
-                        maximumFractionDigits: crosshair.bar![k] >= 100 ? 2 : 6,
-                      })}
-                    </span>
-                  </span>
-                ))}
-                {crosshair.bar.volume !== undefined && (
-                  <span>V{Math.round(crosshair.bar.volume).toLocaleString()}</span>
-                )}
-                {crosshair.values.map((v) => (
-                  <span key={v.title} style={{ color: v.color }}>
-                    {v.title} {v.value.toFixed(4)}
-                  </span>
-                ))}
-              </span>
-            )}
-            {indicators.map((ind) => (
-              <span
-                key={ind.key}
-                className={`flex items-center gap-1 rounded-md border border-border bg-card px-2 py-0.5 text-[11px] ${
-                  editingKey === ind.key ? "border-brand" : ""
-                }`}
-              >
-                <button
-                  onClick={() => {
-                    setEditingKey(ind.key);
-                    setCode(ind.code);
-                    setActiveInputs(ind.result.inputs);
-                    setSettings(ind.settings);
-                    setDock("code");
-                  }}
-                  className="hover:text-brand"
-                >
-                  {ind.name}
-                </button>
-                <button
-                  title={ind.visible ? "Hide" : "Show"}
-                  onClick={() =>
-                    setIndicators((prev) =>
-                      prev.map((p) =>
-                        p.key === ind.key ? { ...p, visible: !p.visible } : p,
-                      ),
-                    )
-                  }
-                  className="text-muted-foreground hover:text-foreground"
-                >
-                  {ind.visible ? (
-                    <Eye className="h-3 w-3" />
-                  ) : (
-                    <EyeOff className="h-3 w-3" />
-                  )}
-                </button>
-                <button
-                  title="Remove from chart"
-                  onClick={() =>
-                    setIndicators((prev) => prev.filter((p) => p.key !== ind.key))
-                  }
-                  className="text-muted-foreground hover:text-destructive"
-                >
-                  <Trash2 className="h-3 w-3" />
-                </button>
-              </span>
-            ))}
-            <button
-              onClick={() => {
-                setEditingKey(null);
-                setCode(DEFAULT_SCRIPT);
+          <div
+            className={`relative min-h-0 overflow-hidden ${
+              dockState === "maximized" ? "flex-none basis-14" : "flex-1"
+            }`}
+          >
+            <ChartLegendStrip
+              symbol={symbol}
+              intervalLabel={timeframeLabel(interval)}
+              crosshair={crosshair}
+              indicators={indicators}
+              editingKey={editingKey}
+              onSelectIndicator={(key) => {
+                const ind = indicators.find((i) => i.key === key);
+                if (!ind) return;
+                setEditingKey(key);
+                setCode(ind.code);
+                setActiveInputs(ind.result.inputs);
+                setSettings(ind.settings);
                 setDock("code");
+              }}
+              onToggleVisible={(key) =>
+                setIndicators((prev) =>
+                  prev.map((p) => (p.key === key ? { ...p, visible: !p.visible } : p)),
+                )
+              }
+              onRemoveIndicator={(key) =>
+                setIndicators((prev) => prev.filter((p) => p.key !== key))
+              }
+              onOpenSettings={(key) => {
+                const ind = indicators.find((i) => i.key === key);
+                if (!ind) return;
+                setEditingKey(key);
+                setCode(ind.code);
+                setActiveInputs(ind.result.inputs);
+                setSettings(ind.settings);
+                setDock("code");
+                openDock();
+              }}
+              onPickTemplate={(templateCode) => {
+                setEditingKey(null);
+                setCode(templateCode ?? DEFAULT_SCRIPT);
+                setDock("code");
+                openDock();
                 // Start a fresh AI build session too.
                 setProjectSpec(null);
                 builtKeyRef.current = null;
               }}
-              className="flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
-            >
-              <Plus className="h-3 w-3" /> New indicator
-            </button>
-          </div>
-
-          <div className="relative min-h-0 flex-1">
+            />
             {barsError ? (
               <div className="flex h-full items-center justify-center text-xs text-destructive">
                 {barsError}
@@ -1873,7 +1881,7 @@ function Studio() {
                     takeProfit: plan.target,
                   });
                   setRightTab("trade");
-                  setRightOpen(true);
+                  openSidebar();
                 }}
                 chartType={chartType}
                 settings={chartSettings}
@@ -1907,10 +1915,10 @@ function Studio() {
                   }}
                 />
                 <div
-                  className="absolute z-50 w-52 overflow-hidden rounded-md border border-border bg-panel py-1 text-xs shadow-xl"
+                  className="absolute z-50 w-52 overflow-hidden rounded-[8px] border border-border bg-panel py-1 text-xs shadow-xl"
                   style={{ left: chartMenu.x, top: chartMenu.y }}
                 >
-                  <div className="px-2.5 py-1 font-mono text-[10px] text-muted-foreground">
+                  <div className="px-2.5 py-1 font-mono text-[11px] text-muted-foreground">
                     {chartMenu.price.toLocaleString("en-US", {
                       maximumFractionDigits: 6,
                     })}
@@ -1935,7 +1943,7 @@ function Studio() {
                             : { stopPrice: chartMenu.price }),
                         });
                         setRightTab("trade");
-                        setRightOpen(true);
+                        openSidebar();
                         setChartMenu(null);
                       }}
                       className={`block w-full px-2.5 py-1.5 text-left hover:bg-accent ${
@@ -1952,10 +1960,12 @@ function Studio() {
 
           {/* bottom dock: editor / saved indicators / reference */}
           <section
-            className="flex shrink-0 flex-col border-t border-border bg-panel"
-            style={dockOpen ? { height: dockHeight, minHeight: 160 } : undefined}
+            className={`flex shrink-0 flex-col border-t border-border bg-panel ${
+              dockState === "maximized" ? "flex-1" : ""
+            }`}
+            style={dockState === "normal" ? { height: dockHeight, minHeight: 160 } : undefined}
           >
-          {dockOpen && (
+          {dockState === "normal" && (
             <div
               onPointerDown={(e) => {
                 e.preventDefault();
@@ -1980,22 +1990,38 @@ function Studio() {
               <div className="h-1 w-10 rounded-full bg-border transition-colors group-hover/resize:bg-brand/70" />
             </div>
           )}
-          <div className="flex items-center gap-1 border-b border-border px-2 py-1.5">
+          <div className="flex h-10 items-center gap-1 border-b border-border px-2">
             <button
-              onClick={() => setDockOpen((v) => !v)}
-              title={dockOpen ? "Collapse terminal" : "Expand terminal"}
-              className="rounded-md border border-border px-1.5 py-1 text-[10px] text-muted-foreground hover:text-foreground"
+              onClick={toggleDockCollapse}
+              title={dockVisible ? "Collapse panel" : "Expand panel"}
+              className="rounded-[6px] p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
             >
-              {dockOpen ? "▾" : "▴"}
+              {dockVisible ? (
+                <PanelBottomClose className="h-3.5 w-3.5" />
+              ) : (
+                <PanelBottomOpen className="h-3.5 w-3.5" />
+              )}
             </button>
+            <button
+              onClick={toggleDockMaximize}
+              title={dockState === "maximized" ? "Restore panel" : "Maximize panel"}
+              className="rounded-[6px] p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              {dockState === "maximized" ? (
+                <ChevronsDown className="h-3.5 w-3.5" />
+              ) : (
+                <ChevronsUp className="h-3.5 w-3.5" />
+              )}
+            </button>
+            <div className="mx-0.5 h-4 w-px bg-border" />
             {DOCK_TABS.map((d) => (
               <button
                 key={d.id}
                 onClick={() => {
                   setDock(d.id);
-                  setDockOpen(true);
+                  openDock();
                 }}
-                className={`rounded-md px-2 py-1 text-xs ${
+                className={`rounded-[6px] px-2 py-1 text-[13px] ${
                   dock === d.id
                     ? "bg-accent text-foreground"
                     : "text-muted-foreground hover:text-foreground"
@@ -2009,14 +2035,14 @@ function Studio() {
                 onClick={pasteFromClipboard}
                 disabled={running || translating}
                 title="Paste code from clipboard and plot it"
-                className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
+                className="flex items-center gap-1 rounded-[6px] px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
               >
                 <ClipboardPaste className="h-3.5 w-3.5" /> Paste
               </button>
               <button
                 onClick={copyCode}
                 title="Copy this script"
-                className="rounded-md border border-border p-1.5 text-muted-foreground hover:text-foreground"
+                className="rounded-[6px] p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 {copied ? (
                   <Check className="h-3.5 w-3.5 text-brand" />
@@ -2027,7 +2053,7 @@ function Studio() {
               <button
                 onClick={addToChart}
                 disabled={running || translating || bars.length === 0}
-                className="flex items-center gap-1 rounded-md bg-brand px-2.5 py-1 text-xs font-medium text-brand-foreground disabled:opacity-50"
+                className="flex items-center gap-1 rounded-[6px] bg-brand px-2.5 py-1 text-[13px] font-medium text-brand-foreground disabled:opacity-50"
               >
                 {running || translating ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -2040,7 +2066,7 @@ function Studio() {
                 onClick={() => saveMut.mutate()}
                 disabled={!user || saveMut.isPending || !editingKey}
                 title={user ? "Save indicator" : "Sign in to save"}
-                className="rounded-md border border-border p-1.5 text-muted-foreground hover:text-foreground disabled:opacity-40"
+                className="rounded-[6px] p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
               >
                 <Save className="h-3.5 w-3.5" />
               </button>
@@ -2048,17 +2074,7 @@ function Studio() {
 
           </div>
 
-          {dockOpen && (notice || runError) && (
-            <div
-              className={`border-b border-border px-3 py-2 text-[11px] ${
-                runError ? "text-destructive" : "text-muted-foreground"
-              }`}
-            >
-              {runError ?? notice}
-            </div>
-          )}
-
-          {dockOpen && dock === "code" && (
+          {dockVisible && dock === "code" && (
             <div className="flex min-h-0 flex-1 flex-col">
               <div className="min-h-0 flex-1 overflow-hidden">
                 <CodeEditor value={code} onChange={setCode} />
@@ -2111,36 +2127,27 @@ function Studio() {
                   </div>
                   <button
                     onClick={addToChart}
-                    className="mt-3 w-full rounded-md border border-border py-1 text-[11px] hover:bg-accent"
+                    className="mt-3 w-full rounded-[6px] border border-border py-1 text-[11px] hover:bg-accent"
                   >
                     Apply settings
                   </button>
                 </div>
               )}
 
-              <div className="shrink-0 border-t border-border p-2">
-                <p className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-                  Examples
-                </p>
-                <div className="flex flex-wrap gap-1">
-                  {EXAMPLES.map((ex) => (
-                    <button
-                      key={ex.name}
-                      onClick={() => {
-                        setCode(ex.code);
-                        setEditingKey(null);
-                      }}
-                      className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground"
-                    >
-                      {ex.name}
-                    </button>
-                  ))}
+              {(notice || runError) && (
+                <div
+                  onClick={() => setNoticeExpanded((v) => !v)}
+                  className={`shrink-0 cursor-pointer border-t border-border px-2 py-1 text-[11px] ${
+                    noticeExpanded ? "" : "truncate"
+                  } ${runError ? "text-destructive" : "text-muted-foreground"}`}
+                >
+                  {runError ?? notice}
                 </div>
-              </div>
+              )}
             </div>
           )}
 
-          {dockOpen && dock === "saved" && (
+          {dockVisible && dock === "saved" && (
             <div className="min-h-0 flex-1 overflow-auto p-3">
               {!user && (
                 <p className="text-xs text-muted-foreground">
@@ -2287,7 +2294,7 @@ function Studio() {
             </div>
           )}
 
-          {dockOpen && dock === "docs" && (
+          {dockVisible && dock === "docs" && (
             <div className="min-h-0 flex-1 overflow-auto p-3">
               <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                 <BookOpen className="h-3.5 w-3.5 text-brand" /> SGScript reference
@@ -2335,7 +2342,7 @@ function Studio() {
             </div>
           )}
 
-          {dockOpen && dock === "tester" && (
+          {dockVisible && dock === "tester" && (
             <StrategyTester
               symbol={symbol}
               interval={interval}
@@ -2344,14 +2351,14 @@ function Studio() {
               project={testerProject}
               onShowTrades={setBacktestTrades}
               onDefineRules={(suggestion) => {
-                setRightOpen(true);
+                openSidebar();
                 setRightTab("ai");
                 setAiSeed(suggestion);
               }}
             />
           )}
 
-          {dockOpen && dock === "journal" && (
+          {dockVisible && dock === "journal" && (
             <JournalPanel
               accountId={accountId}
               symbol={symbol}
@@ -2360,7 +2367,7 @@ function Studio() {
             />
           )}
 
-          {dockOpen &&
+          {dockVisible &&
             (dock === "positions" || dock === "orders" || dock === "history") && (
               <TradingTables
                 snapshot={snapshot}
@@ -2405,22 +2412,72 @@ function Studio() {
           </section>
         </main>
 
-        {rightOpen && (
-          <aside className="hidden w-[264px] shrink-0 flex-col overflow-y-auto border-l border-border bg-panel lg:flex">
+        {sidebarState === "collapsed" && (
+          <aside className="hidden w-11 shrink-0 flex-col items-center gap-1 border-l border-border bg-panel py-2 lg:flex">
+            {RIGHT_TABS.map((t) => (
+              <button
+                key={t.id}
+                title={t.label}
+                onClick={() => {
+                  setRightTab(t.id);
+                  setSidebarState("expanded");
+                }}
+                className={`rounded-[6px] p-2 ${
+                  rightTab === t.id
+                    ? "bg-accent text-foreground"
+                    : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                }`}
+              >
+                <t.icon className="h-4 w-4" />
+              </button>
+            ))}
+          </aside>
+        )}
+
+        {sidebarState === "expanded" && (
+          <div
+            onPointerDown={(e) => {
+              e.preventDefault();
+              const startX = e.clientX;
+              const startW = sidebarWidth;
+              const move = (ev: PointerEvent) =>
+                setSidebarWidth(Math.min(Math.max(240, startW + (startX - ev.clientX)), 420));
+              const up = () => {
+                window.removeEventListener("pointermove", move);
+                window.removeEventListener("pointerup", up);
+              };
+              window.addEventListener("pointermove", move);
+              window.addEventListener("pointerup", up);
+            }}
+            className="hidden w-1.5 shrink-0 cursor-col-resize hover:bg-brand/10 lg:block"
+          />
+        )}
+        {sidebarState === "expanded" && (
+          <aside
+            className="hidden shrink-0 flex-col overflow-y-auto border-l border-border bg-panel lg:flex"
+            style={{ width: sidebarWidth }}
+          >
             <div className="flex items-center gap-1 border-b border-border px-2 py-1.5">
-              {(["watchlist", "trade", "ai", "alerts"] as const).map((t) => (
+              {RIGHT_TABS.map((t) => (
                 <button
-                  key={t}
-                  onClick={() => setRightTab(t)}
-                  className={`flex-1 rounded-md px-1.5 py-1 text-[10.5px] font-medium uppercase tracking-wide transition ${
-                    rightTab === t
+                  key={t.id}
+                  onClick={() => setRightTab(t.id)}
+                  className={`flex-1 rounded-[6px] px-1.5 py-1 text-[11px] font-medium uppercase tracking-wide transition ${
+                    rightTab === t.id
                       ? "bg-accent text-foreground"
                       : "text-muted-foreground hover:text-foreground"
                   }`}
                 >
-                  {t}
+                  {t.label}
                 </button>
               ))}
+              <button
+                title="Collapse sidebar"
+                onClick={() => setSidebarState("collapsed")}
+                className="rounded-[6px] p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <PanelRightClose className="h-3.5 w-3.5" />
+              </button>
             </div>
             {rightTab === "ai" ? (
               <AiSidePanel
@@ -2436,7 +2493,7 @@ function Studio() {
                   setProjectSpec(r.spec);
                   setCode(r.sgscript);
                   setDock("code");
-                  setDockOpen(true);
+                  openDock();
                   // Reuse the same chart slot across the whole build session so
                   // a follow-up edit replaces the indicator instead of stacking.
                   const key = builtKeyRef.current ?? `ai${Date.now()}`;
@@ -2466,7 +2523,7 @@ function Studio() {
                     .then((r) => {
                       setCode(r.code);
                       setDock("code");
-                      setDockOpen(true);
+                      openDock();
                       setNotice("Converted — press Add to Chart.");
                     })
                     .catch((e: unknown) =>
@@ -2495,7 +2552,7 @@ function Studio() {
                 onSubmit={(draft) => {
                   tradeMutation.mutate({ kind: "submit", draft });
                   setDock("positions");
-                  setDockOpen(true);
+                  openDock();
                 }}
                 onFlatten={() => tradeMutation.mutate({ kind: "flatten" })}
                 onReset={() => tradeMutation.mutate({ kind: "reset" })}
@@ -2509,64 +2566,6 @@ function Studio() {
               onSelect={(t) => setSymbol(t)}
             />
             )}
-            <div className="border-t border-border p-2">
-              <p className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-                On chart
-              </p>
-              {indicators.length === 0 && (
-                <p className="text-[11px] text-muted-foreground">
-                  No indicators loaded yet.
-                </p>
-              )}
-              <ul className="space-y-1">
-                {indicators.map((ind) => (
-                  <li
-                    key={ind.key}
-                    className="flex items-center gap-1.5 rounded px-1 py-0.5 text-[11px]"
-                  >
-                    <button
-                      onClick={() => {
-                        setEditingKey(ind.key);
-                        setCode(ind.code);
-                        setActiveInputs(ind.result.inputs);
-                        setSettings(ind.settings);
-                        setDock("code");
-                        setDockOpen(true);
-                      }}
-                      className="flex-1 truncate text-left hover:text-brand"
-                    >
-                      {ind.name}
-                    </button>
-                    <button
-                      onClick={() =>
-                        setIndicators((prev) =>
-                          prev.map((p) =>
-                            p.key === ind.key ? { ...p, visible: !p.visible } : p,
-                          ),
-                        )
-                      }
-                      className="text-muted-foreground hover:text-foreground"
-                    >
-                      {ind.visible ? (
-                        <Eye className="h-3 w-3" />
-                      ) : (
-                        <EyeOff className="h-3 w-3" />
-                      )}
-                    </button>
-                    <button
-                      onClick={() =>
-                        setIndicators((prev) =>
-                          prev.filter((p) => p.key !== ind.key),
-                        )
-                      }
-                      className="text-muted-foreground hover:text-destructive"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
           </aside>
         )}
 
