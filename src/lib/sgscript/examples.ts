@@ -198,12 +198,27 @@ export const EXAMPLES: { name: string; code: string }[] = [
 // @overlay false
 
 const len = input.int('Length', 14, { min: 2, max: 200 })
-const r = rsi(close, len)
+const rsiColor = input.color('RSI Color', '#a78bfa')
+const rsiWidth = input.int('RSI Width', 1, { min: 1, max: 4 })
 
-plotOsc(r, { title: 'RSI', color: '#a78bfa' })
-hline(70, { title: 'Overbought', color: 'rgba(239,68,68,0.5)', pane: 'osc' })
-hline(30, { title: 'Oversold', color: 'rgba(34,197,94,0.5)', pane: 'osc' })
-hline(50, { color: 'rgba(255,255,255,0.15)', pane: 'osc' })
+const showOverbought = input.bool('Show Overbought', true)
+const showOversold = input.bool('Show Oversold', true)
+const showMidline = input.bool('Show Midline', true)
+const overboughtLevel = input.int('Overbought Level', 70, { min: 50, max: 100 })
+const oversoldLevel = input.int('Oversold Level', 30, { min: 0, max: 50 })
+const overboughtColor = input.color('Overbought Color', 'rgba(239,68,68,0.5)')
+const oversoldColor = input.color('Oversold Color', 'rgba(34,197,94,0.5)')
+
+// This one never actually had a clutter problem — a single oscillator line
+// plus native axis-labeled reference levels, no text drawn across the pane
+// and nothing that accumulates over history. Settings here are for parity
+// with the other examples, not a density fix.
+const r = rsi(close, len)
+plotOsc(r, { title: 'RSI', color: rsiColor, width: rsiWidth })
+
+if (showOverbought) hline(overboughtLevel, { title: 'Overbought', color: overboughtColor, pane: 'osc' })
+if (showOversold) hline(oversoldLevel, { title: 'Oversold', color: oversoldColor, pane: 'osc' })
+if (showMidline) hline(50, { color: 'rgba(255,255,255,0.15)', pane: 'osc' })
 `,
   },
   {
