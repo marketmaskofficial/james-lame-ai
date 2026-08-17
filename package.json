@@ -11,7 +11,8 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "test:pine-parity": "tsx test/pine-parity/run.mjs",
-    "test:render-regression": "tsx test/render-regression/run.mjs"
+    "test:render-regression": "tsx test/render-regression/run.mjs",
+    "test:market": "tsx test/market/candles.test.mjs"
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.42",
