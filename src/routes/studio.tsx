@@ -394,7 +394,7 @@ function Studio() {
   const [menu, setMenu] = useState<null | "tf" | "type" | "settings">(null);
   const [favTfs, setFavTfs] = useState<string[]>(DEFAULT_FAVORITE_TIMEFRAMES);
   const [sidebarState, setSidebarState] = useState<"expanded" | "collapsed">("expanded");
-  const [sidebarWidth, setSidebarWidth] = useState(300);
+  const [sidebarWidth, setSidebarWidth] = useState(272);
   const [rightTab, setRightTab] = useState<RightTab>("watchlist");
   const controlsRef = useRef<ChartControls | null>(null);
   const onChartReady = useCallback((c: ChartControls) => {
@@ -1426,22 +1426,22 @@ function Studio() {
   return (
     <div ref={rootRef} className="flex h-screen flex-col bg-background text-foreground">
       {/* top bar */}
-      <header className="flex shrink-0 items-center gap-2 border-b border-border bg-sidebar px-3 py-1.5">
+      <header className="flex h-10 shrink-0 items-center gap-1.5 border-b border-border bg-sidebar px-2">
         <Link
           to="/app"
-          className="flex items-center gap-1 rounded-[6px] px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground"
           title="Back to chat"
         >
           <ArrowLeft className="h-3.5 w-3.5" />
         </Link>
-        <span className="hidden text-[13px] font-medium tracking-tight text-muted-foreground md:inline">
+        <span className="hidden shrink-0 text-[13px] font-medium tracking-tight text-muted-foreground md:inline">
           Chart Studio
         </span>
-        <div className="h-4 w-px bg-border" />
+        <div className="h-4 w-px shrink-0 bg-border" />
 
         <button
           onClick={() => setSymbolOpen(true)}
-          className="flex items-center gap-2 rounded-[6px] border border-border bg-card px-2.5 py-1 text-xs hover:border-brand"
+          className="flex h-8 shrink-0 items-center gap-2 rounded-[6px] border border-border bg-card px-2.5 text-xs hover:border-brand"
           title="Search markets (symbol)"
         >
           <Search className="h-3.5 w-3.5 text-muted-foreground" />
@@ -1452,12 +1452,12 @@ function Studio() {
         </button>
 
         {/* timeframe */}
-        <div className="flex items-center gap-0.5 rounded-[6px] border border-border bg-card p-0.5">
+        <div className="flex h-8 shrink-0 items-center gap-0.5 rounded-[6px] border border-border bg-card px-0.5">
           {favTfs.map((tf) => (
             <button
               key={tf}
               onClick={() => setIntervalStr(tf)}
-              className={`rounded-[4px] px-2 py-0.5 text-[11px] ${
+              className={`rounded-[4px] px-2 py-1 text-[11px] ${
                 interval === tf
                   ? "bg-brand text-brand-foreground"
                   : "text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -1469,7 +1469,7 @@ function Studio() {
           <div className="relative">
             <button
               onClick={() => setMenu((m) => (m === "tf" ? null : "tf"))}
-              className="flex items-center rounded-[4px] px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="flex items-center rounded-[4px] px-1.5 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
               title="All timeframes"
             >
               {favTfs.includes(interval) ? "" : interval}
@@ -1519,7 +1519,7 @@ function Studio() {
           <button
             onClick={() => setMenu((m) => (m === "type" ? null : "type"))}
             title="Chart type"
-            className="flex items-center gap-1 rounded-[6px] px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+            className="flex h-8 items-center gap-1 rounded-[6px] px-2 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
           >
             {CHART_TYPES.find((c) => c.id === chartType)?.label}
             <ChevronDown className="h-3 w-3" />
@@ -1551,7 +1551,7 @@ function Studio() {
             openDock();
           }}
           title="Indicators"
-          className="rounded-[6px] p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground"
         >
           <Sliders className="h-3.5 w-3.5" />
         </button>
@@ -1561,7 +1561,7 @@ function Studio() {
           <button
             onClick={() => setMenu((m) => (m === "settings" ? null : "settings"))}
             title="Chart settings"
-            className="rounded-[6px] p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground"
           >
             <Settings2 className="h-3.5 w-3.5" />
           </button>
@@ -1642,7 +1642,7 @@ function Studio() {
           <button
             onClick={() => setLive((v) => !v)}
             title={live ? "Pause live updates" : "Resume live updates"}
-            className={`flex items-center gap-1 rounded-[6px] px-2 py-0.5 ${
+            className={`flex h-8 items-center gap-1 rounded-[6px] px-2 ${
               live && liveStatus !== "offline"
                 ? "bg-brand/10 text-brand"
                 : "text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -1669,7 +1669,7 @@ function Studio() {
             onClick={() => void loadOlderHistory()}
             disabled={loadingHistory || bars.length === 0}
             title="Load older history"
-            className="hidden rounded-[6px] px-1.5 py-0.5 hover:bg-accent hover:text-foreground disabled:opacity-40 lg:inline-flex lg:items-center lg:gap-1"
+            className="hidden h-8 rounded-[6px] px-1.5 hover:bg-accent hover:text-foreground disabled:opacity-40 lg:inline-flex lg:items-center lg:gap-1"
           >
             {loadingHistory && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
             {bars.length} bars +
@@ -1680,28 +1680,28 @@ function Studio() {
           <button
             title="Fit chart"
             onClick={() => controlsRef.current?.fit()}
-            className="rounded-[6px] p-1 hover:bg-accent hover:text-foreground"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[6px] hover:bg-accent hover:text-foreground"
           >
             <Maximize2 className="h-3.5 w-3.5" />
           </button>
           <button
             title="Jump to latest bar"
             onClick={() => controlsRef.current?.toLatest()}
-            className="rounded-[6px] p-1 hover:bg-accent hover:text-foreground"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[6px] hover:bg-accent hover:text-foreground"
           >
             <ChevronsRight className="h-3.5 w-3.5" />
           </button>
           <button
             title="Replay (coming soon)"
             disabled
-            className="rounded-[6px] p-1 text-muted-foreground/40"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground/40"
           >
             <Rewind className="h-3.5 w-3.5" />
           </button>
           <button
             title={dockVisible ? "Hide editor panel" : "Show editor panel"}
             onClick={toggleDockCollapse}
-            className="rounded-[6px] p-1 hover:bg-accent hover:text-foreground"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[6px] hover:bg-accent hover:text-foreground"
           >
             {dockVisible ? (
               <PanelBottomClose className="h-3.5 w-3.5" />
@@ -1714,7 +1714,7 @@ function Studio() {
             onClick={() =>
               setSidebarState((s) => (s === "expanded" ? "collapsed" : "expanded"))
             }
-            className={`rounded-[6px] p-1 hover:bg-accent hover:text-foreground ${
+            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-[6px] hover:bg-accent hover:text-foreground ${
               sidebarState === "expanded" ? "text-brand" : ""
             }`}
           >
@@ -1727,7 +1727,7 @@ function Studio() {
           <button
             title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
             onClick={toggleFullscreen}
-            className="rounded-[6px] p-1 hover:bg-accent hover:text-foreground"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[6px] hover:bg-accent hover:text-foreground"
           >
             {isFullscreen ? (
               <Minimize className="h-3.5 w-3.5" />
@@ -1753,41 +1753,42 @@ function Studio() {
 
       <div className="flex min-h-0 flex-1">
         {/* drawing rail */}
-        <nav className="flex w-11 shrink-0 flex-col items-center gap-1 border-r border-border bg-sidebar py-2">
+        <nav className="flex w-[42px] shrink-0 flex-col items-center gap-0.5 border-r border-border bg-sidebar py-1.5">
           {TOOLS.map((t, i) => (
             <Fragment key={t.id}>
               {i > 0 && t.group !== TOOLS[i - 1].group && (
-                <div className="my-1 h-px w-6 bg-border" />
+                <div className="my-1 h-px w-5 bg-border" />
               )}
               <button
                 title={t.label}
                 onClick={() => setTool(t.id)}
-                className={`rounded-[6px] p-2 ${
+                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[6px] ${
                   tool === t.id
                     ? "bg-brand text-brand-foreground"
                     : "text-muted-foreground hover:bg-accent hover:text-foreground"
                 }`}
               >
-                <t.icon className="h-4 w-4" />
+                <t.icon className="h-[18px] w-[18px]" />
               </button>
             </Fragment>
           ))}
+          <div className="my-1 h-px w-5 bg-border" />
           <button
             title="Objects & styles"
             onClick={() => setObjectsOpen((v) => !v)}
-            className={`mt-2 rounded-[6px] p-2 ${
+            className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[6px] ${
               objectsOpen
                 ? "bg-accent text-foreground"
                 : "text-muted-foreground hover:bg-accent hover:text-foreground"
             }`}
           >
-            <Layers className="h-4 w-4" />
+            <Layers className="h-[18px] w-[18px]" />
           </button>
           {drawings.length > 0 && (
             <button
               title="Clear all drawings"
               onClick={() => setDrawings([])}
-              className="mt-2 rounded-[6px] p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground"
             >
               <span className="text-[10px]">clr</span>
             </button>
@@ -1805,7 +1806,13 @@ function Studio() {
               symbol={symbol}
               intervalLabel={timeframeLabel(interval)}
               crosshair={crosshair}
-              indicators={indicators}
+              latestBar={bars.length ? bars[bars.length - 1] : null}
+              indicators={indicators.map((i) => ({
+                key: i.key,
+                name: i.name,
+                visible: i.visible,
+                inputs: i.result.inputs,
+              }))}
               editingKey={editingKey}
               onSelectIndicator={(key) => {
                 const ind = indicators.find((i) => i.key === key);
@@ -1994,7 +2001,7 @@ function Studio() {
             <button
               onClick={toggleDockCollapse}
               title={dockVisible ? "Collapse panel" : "Expand panel"}
-              className="rounded-[6px] p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground"
             >
               {dockVisible ? (
                 <PanelBottomClose className="h-3.5 w-3.5" />
@@ -2005,7 +2012,7 @@ function Studio() {
             <button
               onClick={toggleDockMaximize}
               title={dockState === "maximized" ? "Restore panel" : "Maximize panel"}
-              className="rounded-[6px] p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground"
             >
               {dockState === "maximized" ? (
                 <ChevronsDown className="h-3.5 w-3.5" />
@@ -2021,7 +2028,7 @@ function Studio() {
                   setDock(d.id);
                   openDock();
                 }}
-                className={`rounded-[6px] px-2 py-1 text-[13px] ${
+                className={`flex h-7 items-center rounded-[6px] px-2 text-[13px] ${
                   dock === d.id
                     ? "bg-accent text-foreground"
                     : "text-muted-foreground hover:text-foreground"
@@ -2035,14 +2042,14 @@ function Studio() {
                 onClick={pasteFromClipboard}
                 disabled={running || translating}
                 title="Paste code from clipboard and plot it"
-                className="flex items-center gap-1 rounded-[6px] px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
+                className="flex h-7 items-center gap-1 rounded-[6px] px-2 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
               >
                 <ClipboardPaste className="h-3.5 w-3.5" /> Paste
               </button>
               <button
                 onClick={copyCode}
                 title="Copy this script"
-                className="rounded-[6px] p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 {copied ? (
                   <Check className="h-3.5 w-3.5 text-brand" />
@@ -2053,7 +2060,7 @@ function Studio() {
               <button
                 onClick={addToChart}
                 disabled={running || translating || bars.length === 0}
-                className="flex items-center gap-1 rounded-[6px] bg-brand px-2.5 py-1 text-[13px] font-medium text-brand-foreground disabled:opacity-50"
+                className="flex h-7 items-center gap-1 rounded-[6px] bg-brand px-2.5 text-[13px] font-medium text-brand-foreground disabled:opacity-50"
               >
                 {running || translating ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -2066,7 +2073,7 @@ function Studio() {
                 onClick={() => saveMut.mutate()}
                 disabled={!user || saveMut.isPending || !editingKey}
                 title={user ? "Save indicator" : "Sign in to save"}
-                className="rounded-[6px] p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
               >
                 <Save className="h-3.5 w-3.5" />
               </button>
@@ -2413,7 +2420,7 @@ function Studio() {
         </main>
 
         {sidebarState === "collapsed" && (
-          <aside className="hidden w-11 shrink-0 flex-col items-center gap-1 border-l border-border bg-panel py-2 lg:flex">
+          <aside className="hidden w-[42px] shrink-0 flex-col items-center gap-0.5 border-l border-border bg-panel py-1.5 lg:flex">
             {RIGHT_TABS.map((t) => (
               <button
                 key={t.id}
@@ -2422,13 +2429,13 @@ function Studio() {
                   setRightTab(t.id);
                   setSidebarState("expanded");
                 }}
-                className={`rounded-[6px] p-2 ${
+                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[6px] ${
                   rightTab === t.id
                     ? "bg-accent text-foreground"
                     : "text-muted-foreground hover:bg-accent hover:text-foreground"
                 }`}
               >
-                <t.icon className="h-4 w-4" />
+                <t.icon className="h-[18px] w-[18px]" />
               </button>
             ))}
           </aside>
@@ -2457,7 +2464,7 @@ function Studio() {
             className="hidden shrink-0 flex-col overflow-y-auto border-l border-border bg-panel lg:flex"
             style={{ width: sidebarWidth }}
           >
-            <div className="flex items-center gap-1 border-b border-border px-2 py-1.5">
+            <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-border px-1.5">
               {RIGHT_TABS.map((t) => (
                 <button
                   key={t.id}
@@ -2474,7 +2481,7 @@ function Studio() {
               <button
                 title="Collapse sidebar"
                 onClick={() => setSidebarState("collapsed")}
-                className="rounded-[6px] p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 <PanelRightClose className="h-3.5 w-3.5" />
               </button>

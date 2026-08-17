@@ -2,13 +2,24 @@ import { useState } from "react";
 import { Eye, EyeOff, Plus, Settings2, Trash2 } from "lucide-react";
 import { EXAMPLES } from "@/lib/sgscript/examples";
 import type { CrosshairInfo } from "@/components/studio/StudioChart";
+import type { Bar, InputSpec } from "@/lib/sgscript/types";
 
-export type LegendIndicator = { key: string; name: string; visible: boolean };
+export type LegendIndicator = {
+  key: string;
+  name: string;
+  visible: boolean;
+  /** Numeric inputs shown inline next to the name, e.g. "21 55" for a
+   * dual-EMA indicator — matches how a real terminal's legend surfaces an
+   * indicator's key parameters without opening its settings. */
+  inputs?: InputSpec[];
+};
 
 type Props = {
   symbol: string;
   intervalLabel: string;
   crosshair: CrosshairInfo | null;
+  /** Shown as the OHLC readout whenever the crosshair isn't over a bar. */
+  latestBar: Bar | null;
   indicators: LegendIndicator[];
   editingKey: string | null;
   onSelectIndicator: (key: string) => void;
@@ -28,6 +39,7 @@ export function ChartLegendStrip({
   symbol,
   intervalLabel,
   crosshair,
+  latestBar,
   indicators,
   editingKey,
   onSelectIndicator,
@@ -44,34 +56,42 @@ export function ChartLegendStrip({
         <span className="text-[13px] font-medium">
           {symbol} · {intervalLabel}
         </span>
-        {crosshair?.bar && (
-          <span className="flex items-center gap-2 font-mono text-[11px] text-muted-foreground">
-            {(["open", "high", "low", "close"] as const).map((k) => (
-              <span key={k}>
-                {k[0].toUpperCase()}
-                <span
-                  className={
-                    crosshair.bar!.close >= crosshair.bar!.open
-                      ? "ml-0.5 text-emerald-400"
-                      : "ml-0.5 text-red-400"
-                  }
-                >
-                  {crosshair.bar![k].toLocaleString("en-US", {
-                    maximumFractionDigits: crosshair.bar![k] >= 100 ? 2 : 6,
-                  })}
+        {(() => {
+          // Latest candle by default; the hovered candle takes over the
+          // instant the crosshair sits over one, same as a real terminal's
+          // OHLC readout — never blank, never stuck on a stale hover.
+          const ohlcBar = crosshair?.bar ?? latestBar;
+          if (!ohlcBar) return null;
+          return (
+            <span className="flex items-center gap-2 font-mono text-[11px] tabular-nums text-muted-foreground">
+              {(["open", "high", "low", "close"] as const).map((k) => (
+                <span key={k}>
+                  {k[0].toUpperCase()}
+                  <span
+                    className={
+                      ohlcBar.close >= ohlcBar.open
+                        ? "ml-0.5 text-emerald-400"
+                        : "ml-0.5 text-red-400"
+                    }
+                  >
+                    {ohlcBar[k].toLocaleString("en-US", {
+                      maximumFractionDigits: ohlcBar[k] >= 100 ? 2 : 6,
+                    })}
+                  </span>
                 </span>
-              </span>
-            ))}
-            {crosshair.bar.volume !== undefined && (
-              <span>V{Math.round(crosshair.bar.volume).toLocaleString()}</span>
-            )}
-            {crosshair.values.map((v) => (
-              <span key={v.title} style={{ color: v.color }}>
-                {v.title} {v.value.toFixed(4)}
-              </span>
-            ))}
-          </span>
-        )}
+              ))}
+              {ohlcBar.volume !== undefined && (
+                <span>V{Math.round(ohlcBar.volume).toLocaleString()}</span>
+              )}
+              {crosshair?.bar &&
+                crosshair.values.map((v) => (
+                  <span key={v.title} style={{ color: v.color }}>
+                    {v.title} {v.value.toFixed(4)}
+                  </span>
+                ))}
+            </span>
+          );
+        })()}
       </div>
 
       {indicators.map((ind) => (
@@ -83,9 +103,18 @@ export function ChartLegendStrip({
         >
           <button
             onClick={() => onSelectIndicator(ind.key)}
-            className="text-[12px] hover:text-brand"
+            className="flex items-center gap-1.5 text-[12px] hover:text-brand"
           >
-            {ind.name}
+            <span>{ind.name}</span>
+            {ind.inputs && ind.inputs.filter((i) => i.type === "number").length > 0 && (
+              <span className="font-mono text-[11px] text-muted-foreground">
+                {ind.inputs
+                  .filter((i) => i.type === "number")
+                  .slice(0, 3)
+                  .map((i) => String(i.value))
+                  .join(" ")}
+              </span>
+            )}
           </button>
           <span className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
             <button

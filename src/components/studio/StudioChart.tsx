@@ -3,6 +3,23 @@ import type { PointerEvent as ReactPointerEvent } from "react";
 import type { Bar, MarkerOut, RunResult } from "@/lib/sgscript/types";
 import { MARKER_PRESETS, DEFAULT_MAX_VISIBLE } from "@/lib/sgscript/style";
 
+/**
+ * Single source of truth for the chart's canvas-rendered chrome colors.
+ * Lightweight Charts takes literal color strings at option-set time (it
+ * draws to canvas, not DOM), so these can't be CSS custom properties like
+ * the rest of Chart Studio's surfaces — this object is the equivalent for
+ * the values that *can't* reach `var(--panel)`/`var(--border)` etc.
+ */
+const CHART_COLORS = {
+  gridLine: "rgba(255,255,255,0.035)",
+  axisBorder: "rgba(255,255,255,0.10)",
+  paneSeparator: "rgba(255,255,255,0.08)",
+  paneSeparatorHover: "rgba(230,184,0,0.18)",
+  crosshair: "rgba(230,184,0,0.35)",
+  bullishVolume: "rgba(34,197,94,0.32)",
+  bearishVolume: "rgba(239,68,68,0.32)",
+} as const;
+
 export type LoadedIndicator = {
   key: string;
   name: string;
@@ -229,6 +246,10 @@ export type ChartSettings = {
   downColor: string;
   showVolume: boolean;
 };
+
+/** Recent-bar window shown on a fresh dataset load — see the setVisibleLogicalRange
+ * call below for why this replaces fitContent() as the initial-view default. */
+const DEFAULT_VISIBLE_BARS = 200;
 
 export const DEFAULT_CHART_SETTINGS: ChartSettings = {
   grid: true,
@@ -517,17 +538,17 @@ export function StudioChart({
           // Subtle by default, only standing out on hover — same principle as
           // every other quiet-until-interacted chrome element in this UI.
           panes: {
-            separatorColor: "rgba(255,255,255,0.08)",
-            separatorHoverColor: "rgba(230,184,0,0.18)",
+            separatorColor: CHART_COLORS.paneSeparator,
+            separatorHoverColor: CHART_COLORS.paneSeparatorHover,
             enableResize: true,
           },
         },
         grid: {
-          vertLines: { color: "rgba(255,255,255,0.035)", style: 0 },
-          horzLines: { color: "rgba(255,255,255,0.035)", style: 0 },
+          vertLines: { color: CHART_COLORS.gridLine, style: 0 },
+          horzLines: { color: CHART_COLORS.gridLine, style: 0 },
         },
         rightPriceScale: {
-          borderColor: "rgba(255,255,255,0.10)",
+          borderColor: CHART_COLORS.axisBorder,
           borderVisible: true,
           entireTextOnly: true,
           ticksVisible: true,
@@ -540,7 +561,7 @@ export function StudioChart({
           secondsVisible: false,
           ticksVisible: true,
           rightOffset: 12,
-          barSpacing: 11,
+          barSpacing: 12,
           minBarSpacing: 0.6,
           fixLeftEdge: false,
           lockVisibleTimeRangeOnResize: true,
@@ -549,13 +570,13 @@ export function StudioChart({
         crosshair: {
           mode: 0,
           vertLine: {
-            color: "rgba(230,184,0,0.35)",
+            color: CHART_COLORS.crosshair,
             width: 1,
             style: 3,
             labelBackgroundColor: "#e6b800",
           },
           horzLine: {
-            color: "rgba(230,184,0,0.35)",
+            color: CHART_COLORS.crosshair,
             width: 1,
             style: 3,
             labelBackgroundColor: "#e6b800",
@@ -759,7 +780,7 @@ export function StudioChart({
     );
     chart
       .priceScale("sg-volume")
-      .applyOptions({ scaleMargins: { top: 0.82, bottom: 0.02 } });
+      .applyOptions({ scaleMargins: { top: 0.86, bottom: 0.02 } });
     volumeSeriesRef.current = v;
     volumeRevRef.current = "";
     setSeriesRevision((n) => n + 1);
@@ -799,7 +820,7 @@ export function StudioChart({
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
-    const line = settings.grid ? "rgba(255,255,255,0.04)" : "transparent";
+    const line = settings.grid ? CHART_COLORS.gridLine : "transparent";
     chart.applyOptions({
       grid: { vertLines: { color: line }, horzLines: { color: line } },
       crosshair: { mode: settings.crosshairMagnet ? 1 : 0 },
@@ -840,7 +861,21 @@ export function StudioChart({
     if (sameSet) s.update(point(last));
     else {
       s.setData(displayBars.map(point));
-      chartRef.current?.timeScale().fitContent();
+      // A fresh dataset (initial load or symbol switch) gets a deterministic
+      // "recent window" view instead of fitContent(), which crams every
+      // loaded bar (up to 500) into the pane at whatever spacing that takes —
+      // squeezing the deliberate barSpacing/rightOffset defaults and reading
+      // as a huge unused gap once the timeScale's own rightOffset padding is
+      // added on top of an already-cramped fit. Anchoring to the most recent
+      // DEFAULT_VISIBLE_BARS at the configured bar spacing keeps candles
+      // filling the pane naturally, with blank space landing on the right
+      // (for analysis/drawings) rather than the left.
+      const ts = chartRef.current?.timeScale();
+      const n = displayBars.length;
+      if (ts && n > 0) {
+        const window = Math.min(DEFAULT_VISIBLE_BARS, n);
+        ts.setVisibleLogicalRange({ from: n - window, to: n - 1 });
+      }
     }
     datasetRef.current = { first: displayBars[0].time, length: displayBars.length };
 
@@ -852,7 +887,7 @@ export function StudioChart({
         time: b.time as never,
         value: b.volume,
         color:
-          b.close >= b.open ? "rgba(34,197,94,0.42)" : "rgba(239,68,68,0.42)",
+          b.close >= b.open ? CHART_COLORS.bullishVolume : CHART_COLORS.bearishVolume,
 
       });
       if (rev === volumeRevRef.current || volumeRevRef.current.startsWith(`${bars[0]?.time}:`))

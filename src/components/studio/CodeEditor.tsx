@@ -4,21 +4,33 @@ type Props = { value: string; onChange: (v: string) => void; height?: string };
 
 // CodeMirror + the JS parser load lazily, and only in the browser.
 const Editor = lazy(async () => {
-  const [{ default: CM }, { javascript }, { oneDark }, { EditorView }] = await Promise.all([
-    import("@uiw/react-codemirror"),
-    import("@codemirror/lang-javascript"),
-    import("@codemirror/theme-one-dark"),
-    import("@codemirror/view"),
-  ]);
-  // Match the editor's surface to the app's own panel color and tighten line
-  // height, so it reads as part of the dock instead of an embedded widget
-  // with its own visibly different background.
+  const [{ default: CM }, { javascript }, { oneDark }, { EditorView, highlightActiveLine, highlightActiveLineGutter }] =
+    await Promise.all([
+      import("@uiw/react-codemirror"),
+      import("@codemirror/lang-javascript"),
+      import("@codemirror/theme-one-dark"),
+      import("@codemirror/view"),
+    ]);
+  // Match the editor's surface to the app's own panel color, tighten line
+  // height and darken/mute the gutter, so it reads as a Pine-Editor-style
+  // pane integrated with the dock instead of an embedded widget with its
+  // own visibly different chrome.
   const surface = EditorView.theme({
     "&": { backgroundColor: "var(--panel)" },
-    ".cm-gutters": { backgroundColor: "var(--panel)" },
-    ".cm-line": { lineHeight: "1.4" },
+    ".cm-gutters": {
+      backgroundColor: "var(--panel)",
+      color: "var(--muted-foreground)",
+      borderRight: "1px solid var(--border)",
+    },
+    ".cm-activeLineGutter": { backgroundColor: "var(--accent)" },
+    ".cm-activeLine": { backgroundColor: "rgba(255,255,255,0.03)" },
+    ".cm-line": { lineHeight: "1.35" },
+    "&, .cm-content": {
+      fontFamily:
+        "ui-monospace, 'SF Mono', 'Cascadia Code', Consolas, monospace",
+    },
   });
-  const extensions = [javascript(), surface];
+  const extensions = [javascript(), surface, highlightActiveLine(), highlightActiveLineGutter()];
   return {
     default: ({ value, onChange, height = "100%" }: Props) => (
       <CM
