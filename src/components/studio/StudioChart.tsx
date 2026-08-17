@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import type { Bar, MarkerOut, RunResult } from "@/lib/sgscript/types";
+import { MARKER_PRESETS, DEFAULT_MAX_VISIBLE } from "@/lib/sgscript/style";
 
 export type LoadedIndicator = {
   key: string;
@@ -966,7 +967,10 @@ export function StudioChart({
     }
 
     const markers = visible
-      .flatMap((i) => i.result.markers)
+      .flatMap((i) => {
+        const cap = i.result.limits?.markers ?? DEFAULT_MAX_VISIBLE.markers;
+        return i.result.markers.length > cap ? i.result.markers.slice(-cap) : i.result.markers;
+      })
       .concat(extraMarkers)
       .sort((a, b) => a.time - b.time)
       .slice(0, 2000)
@@ -988,7 +992,7 @@ export function StudioChart({
               : m.side === "buy"
                 ? "arrowUp"
                 : "arrowDown",
-        color: m.color ?? (m.side === "buy" ? "#22c55e" : "#ef4444"),
+        color: m.color ?? MARKER_PRESETS[m.side === "buy" ? "signal.buy" : "signal.sell"].color,
         text: m.text ?? "",
       }));
     markersRef.current?.setMarkers(markers);
@@ -1052,6 +1056,19 @@ export function StudioChart({
       return onCanvasX && onCanvasY;
     };
 
+    // Universal label collision suppression, chart-wide (not per-indicator —
+    // two different indicators' labels piling on the same spot is exactly
+    // the clutter this exists to prevent). A label() call that would land
+    // on top of an already-drawn one this frame is skipped rather than
+    // stacked; first-come-first-served by draw order is enough to stop the
+    // "labels pile on top of each other" failure mode without needing a
+    // full layout/repositioning pass.
+    const drawnLabelRects: Array<{ left: number; top: number; w: number; h: number }> = [];
+    const collidesWithDrawnLabel = (left: number, top: number, w: number, h: number) =>
+      drawnLabelRects.some(
+        (r) => left < r.left + r.w && left + w > r.left && top < r.top + r.h && top + h > r.top,
+      );
+
     // Keep the HTML trade-level rows glued to their price as the chart moves.
     for (const t of tradesRef.current) {
       const el = rowsRef.current.get(t.id);
@@ -1075,8 +1092,23 @@ export function StudioChart({
       stats.chartGeometryReady = geometryReady;
       statsByKey[ind.key] = stats;
 
-      stats.boxes.received += r.boxes.length;
-      for (const b of r.boxes) {
+      // Automatic density cap: applies whether or not the script ever
+      // called limitDrawings() — an indicator that never thought about
+      // "don't spam the chart with hundreds of old objects" still gets
+      // capped, keeping the newest (most relevant) objects. A script that
+      // did call limitDrawings() already trimmed r.boxes/etc at the source,
+      // so this is a no-op there (min(length, cap) === length).
+      const boxCap = ind.result.limits?.boxes ?? DEFAULT_MAX_VISIBLE.boxes;
+      const lineCap = ind.result.limits?.lines ?? DEFAULT_MAX_VISIBLE.lines;
+      const labelCap = ind.result.limits?.labels ?? DEFAULT_MAX_VISIBLE.labels;
+      const markerCap = ind.result.limits?.markers ?? DEFAULT_MAX_VISIBLE.markers;
+      const visBoxes = r.boxes.length > boxCap ? r.boxes.slice(-boxCap) : r.boxes;
+      const visLines = r.lines.length > lineCap ? r.lines.slice(-lineCap) : r.lines;
+      const visLabels = r.labels.length > labelCap ? r.labels.slice(-labelCap) : r.labels;
+      const visMarkers = r.markers.length > markerCap ? r.markers.slice(-markerCap) : r.markers;
+
+      stats.boxes.received += visBoxes.length;
+      for (const b of visBoxes) {
         if (b.hidden) continue;
         try {
           if (!geometryReady) {
@@ -1143,8 +1175,8 @@ export function StudioChart({
         }
       }
 
-      stats.lines.received += r.lines.length;
-      for (const l of r.lines) {
+      stats.lines.received += visLines.length;
+      for (const l of visLines) {
         try {
           if (!geometryReady) {
             stats.lines.waitingForGeometry++;
@@ -1181,9 +1213,19 @@ export function StudioChart({
           ctx.stroke();
           ctx.setLineDash([]);
           if (l.text) {
-            ctx.fillStyle = applyAlpha(l.color, l.opacity ?? 1);
-            ctx.font = `${LABEL_FONT_PX[l.textSize ?? "small"] ?? 10}px ui-sans-serif, system-ui`;
-            ctx.fillText(l.text, Math.min(x2, host.clientWidth - 60) + 4, yEnd - 3);
+            const fontPx = LABEL_FONT_PX[l.textSize ?? "small"] ?? 10;
+            ctx.font = `${fontPx}px ui-sans-serif, system-ui`;
+            const tx = Math.min(x2, host.clientWidth - 60) + 4;
+            const ty = yEnd - 3;
+            const tw = ctx.measureText(l.text).width;
+            // Same foreground-layer collision system as label() — a line's
+            // trailing-edge text shouldn't stack on another line's or a
+            // label()'s text either.
+            if (!collidesWithDrawnLabel(tx, ty - fontPx, tw, fontPx + 3)) {
+              ctx.fillStyle = applyAlpha(l.color, l.opacity ?? 1);
+              ctx.fillText(l.text, tx, ty);
+              drawnLabelRects.push({ left: tx, top: ty - fontPx, w: tw, h: fontPx + 3 });
+            }
           }
           ctx.restore();
           stats.lines.drawn++;
@@ -1193,8 +1235,8 @@ export function StudioChart({
       }
 
       // Labels keep the script's exact (multi-line) text, size and styling.
-      stats.labels.received += r.labels.length;
-      for (const lb of r.labels) {
+      stats.labels.received += visLabels.length;
+      for (const lb of visLabels) {
         try {
           if (!geometryReady) {
             stats.labels.waitingForGeometry++;
@@ -1222,6 +1264,14 @@ export function StudioChart({
             stats.labels.offscreen++;
             continue;
           }
+          if (collidesWithDrawnLabel(left, top, w, h)) {
+            // Not an error and not off-screen — a valid label that would
+            // have stacked on top of another one, same bucket semantics as
+            // "chose not to paint for a benign reason".
+            ctx.restore();
+            stats.labels.offscreen++;
+            continue;
+          }
           ctx.fillStyle = lb.color;
           ctx.beginPath();
           ctx.roundRect(left, top, w, h, 4);
@@ -1237,6 +1287,7 @@ export function StudioChart({
             ctx.fillText(t, left + 6, top + 5 + lh * (i + 1) - 3);
           });
           ctx.restore();
+          drawnLabelRects.push({ left, top, w, h });
           stats.labels.drawn++;
         } catch {
           stats.labels.failed++;
@@ -1312,8 +1363,8 @@ export function StudioChart({
       // per-object loop.
       stats.plots.received += r.plots.length;
       stats.plots.drawn += r.plots.length;
-      stats.markers.received += r.markers.length;
-      stats.markers.drawn += r.markers.length;
+      stats.markers.received += visMarkers.length;
+      stats.markers.drawn += visMarkers.length;
       stats.hlines.received += r.hlines.length;
       stats.hlines.drawn += r.hlines.length;
     }

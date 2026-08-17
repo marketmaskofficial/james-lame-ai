@@ -18,6 +18,17 @@ import type {
   StrategyOut,
 } from "./types";
 import { LIMITS } from "./types";
+import {
+  ZONE_PRESETS,
+  LINE_PRESETS,
+  PLOT_PRESETS,
+  MARKER_PRESETS,
+  clampOpacity,
+  clampWidth,
+  clampLabelText,
+  type LineRole,
+  type PlotRole,
+} from "./style";
 import * as std from "./stdlib";
 import * as smc from "./smc";
 
@@ -217,7 +228,7 @@ export function runScript(req: RunRequest): RunResult {
 
   function addPlot(
     series: Series | number,
-    opts: Partial<PlotOut> & { pane: "price" | "osc" },
+    opts: Partial<PlotOut> & { pane: "price" | "osc"; role?: PlotRole },
   ) {
     budget();
     if (plots.length >= LIMITS.maxPlots)
@@ -225,12 +236,13 @@ export function runScript(req: RunRequest): RunResult {
     const s = typeof series === "number" ? new Array(len).fill(series) : series;
     if (!Array.isArray(s)) throw new Error("plot() expects a series or number");
     const id = opts.id ?? nextId();
+    const preset = opts.role ? PLOT_PRESETS[opts.role] : undefined;
     plots.push({
       id,
       title: opts.title ?? `plot ${plots.length + 1}`,
-      color: opts.color ?? PALETTE[plots.length % PALETTE.length],
-      width: opts.width ?? 2,
-      opacity: opts.opacity ?? 1,
+      color: opts.color ?? preset?.color ?? PALETTE[plots.length % PALETTE.length],
+      width: clampWidth(opts.width, preset?.width ?? 2),
+      opacity: clampOpacity(opts.opacity),
       style: opts.style ?? "line",
       pane: opts.pane,
       values: toPoints(s),
@@ -238,11 +250,11 @@ export function runScript(req: RunRequest): RunResult {
     return id;
   }
 
-  const plot = (s: Series | number, o: Partial<PlotOut> = {}) =>
+  const plot = (s: Series | number, o: Partial<PlotOut> & { role?: PlotRole } = {}) =>
     addPlot(s, { ...o, pane: o.pane ?? (meta.overlay ? "price" : "osc") });
-  const plotOsc = (s: Series | number, o: Partial<PlotOut> = {}) =>
+  const plotOsc = (s: Series | number, o: Partial<PlotOut> & { role?: PlotRole } = {}) =>
     addPlot(s, { ...o, pane: "osc" });
-  const hist = (s: Series | number, o: Partial<PlotOut> = {}) =>
+  const hist = (s: Series | number, o: Partial<PlotOut> & { role?: PlotRole } = {}) =>
     addPlot(s, { ...o, style: "histogram", pane: o.pane ?? "osc" });
 
   function hline(price: number, o: Partial<HLineOut> = {}) {
@@ -254,8 +266,8 @@ export function runScript(req: RunRequest): RunResult {
       color: o.color ?? "rgba(255,255,255,0.28)",
       pane: o.pane ?? (meta.overlay ? "price" : "osc"),
       dashed: o.dashed ?? true,
-      ...(o.width ? { width: o.width } : {}),
-      ...(o.title ? { title: o.title } : {}),
+      ...(o.width ? { width: clampWidth(o.width, 1) } : {}),
+      ...(o.title ? { title: clampLabelText(o.title) } : {}),
     });
   }
 
@@ -296,13 +308,16 @@ export function runScript(req: RunRequest): RunResult {
       time1: barTime(index1),
       time2: barTime(index2),
       color: o.color ?? "rgba(56,189,248,0.16)",
-      opacity: o.opacity ?? 1,
+      // Safety clamps, not opinions: a value already inside the sane range
+      // is never touched. Catches things like a script that assumed Pine's
+      // 0-100 transparency scale instead of this runtime's 0-1 opacity.
+      opacity: clampOpacity(o.opacity),
       borderColor: o.borderColor ?? "rgba(56,189,248,0.55)",
-      borderWidth: o.borderWidth ?? 1,
+      borderWidth: clampWidth(o.borderWidth, 1),
       borderStyle: o.borderStyle ?? "solid",
       extend: o.extend ?? "none",
       state: o.state ?? "active",
-      ...(o.text ? { text: o.text } : {}),
+      ...(o.text ? { text: clampLabelText(o.text) } : {}),
       ...(o.textColor ? { textColor: o.textColor } : {}),
       ...(o.textSize ? { textSize: o.textSize } : {}),
       ...(o.hidden ? { hidden: true } : {}),
@@ -341,24 +356,25 @@ export function runScript(req: RunRequest): RunResult {
     index1: number,
     price2: number,
     index2: number,
-    o: Partial<LineOut> = {},
+    o: Partial<LineOut> & { role?: LineRole } = {},
   ) {
     budget();
     if (!Number.isFinite(price1) || !Number.isFinite(price2)) return;
     const style = o.style ?? (o.dashed ? "dashed" : "solid");
+    const preset = o.role ? LINE_PRESETS[o.role] : undefined;
     lines.push({
       id: nextId(),
       price1,
       price2,
       time1: barTime(index1),
       time2: barTime(index2),
-      color: o.color ?? "#e6b800",
-      width: o.width ?? 1,
-      opacity: o.opacity ?? 1,
+      color: o.color ?? preset?.color ?? "#e6b800",
+      width: clampWidth(o.width, preset?.width ?? 1),
+      opacity: clampOpacity(o.opacity, preset?.opacity ?? 1),
       dashed: style !== "solid",
       style,
       extend: o.extend ?? "none",
-      ...(o.text ? { text: o.text, textSize: o.textSize } : {}),
+      ...(o.text ? { text: clampLabelText(o.text), textSize: o.textSize } : {}),
     });
   }
 
@@ -393,6 +409,7 @@ export function runScript(req: RunRequest): RunResult {
     o: Partial<MarkerOut> = {},
   ) {
     const arr = Array.isArray(cond) ? cond : new Array(len).fill(cond);
+    const preset = MARKER_PRESETS[side === "buy" ? "signal.buy" : "signal.sell"];
     for (let i = 0; i < len; i++) {
       if (!arr[i]) continue;
       budget();
@@ -400,10 +417,12 @@ export function runScript(req: RunRequest): RunResult {
       markers.push({
         time: time[i],
         side,
-        ...(t ? { text: String(t) } : {}),
-        ...(o.color ? { color: o.color } : {}),
-        ...(o.shape ? { shape: o.shape } : {}),
-        ...(o.size ? { size: o.size } : {}),
+        ...(t ? { text: clampLabelText(String(t)) } : {}),
+        color: o.color ?? preset.color,
+        shape: o.shape ?? preset.shape,
+        // A "giant marker" default has never made sense on a candlestick
+        // chart — clamp instead of trusting an arbitrary script value.
+        ...(o.size ? { size: clampWidth(o.size, 12, 40) } : {}),
         ...(o.location ? { location: o.location } : {}),
       });
     }
@@ -631,17 +650,26 @@ export function runScript(req: RunRequest): RunResult {
           }
         }
         if (state === "mitigated" && o.hideFilled) continue;
-        const base = bull
-          ? (o.bullColor ?? "rgba(34,197,94,0.18)")
-          : (o.bearColor ?? "rgba(239,68,68,0.18)");
+        // Resolves through the universal zone presets — active vs inactive
+        // (mitigated) each have their own default opacity, so a script that
+        // never thinks about "old zones should fade" still gets that for
+        // free. Explicit script/input values always win over the preset.
+        const activePreset = ZONE_PRESETS[bull ? "zone.active.bullish" : "zone.active.bearish"];
+        const inactivePreset = ZONE_PRESETS[bull ? "zone.inactive.bullish" : "zone.inactive.bearish"];
+        const base = bull ? (o.bullColor ?? activePreset.color) : (o.bearColor ?? activePreset.color);
         const h = box(top, bottom, z.from, right, {
           color: state === "mitigated" ? (o.mitigatedColor ?? base) : base,
-          opacity: state === "mitigated" ? (o.mitigatedOpacity ?? o.opacity ?? 1) : (o.opacity ?? 1),
-          borderColor: o.borderColor ?? (bull ? "rgba(34,197,94,0.6)" : "rgba(239,68,68,0.6)"),
-          borderWidth: o.borderWidth,
+          opacity:
+            state === "mitigated"
+              ? (o.mitigatedOpacity ?? o.opacity ?? inactivePreset.opacity)
+              : (o.opacity ?? activePreset.opacity),
+          borderColor: o.borderColor ?? activePreset.borderColor,
+          borderWidth: o.borderWidth ?? activePreset.borderWidth,
           extend: state === "mitigated" || o.extend === false ? "none" : "right",
           state,
-          ...(o.text ? { text: o.text({ side: z.side, top, bottom }), textSize: o.textSize } : {}),
+          ...(o.text
+            ? { text: o.text({ side: z.side, top, bottom }), textSize: o.textSize ?? activePreset.textSize }
+            : {}),
         });
         if (h) out.push(h);
       }
@@ -727,9 +755,12 @@ export function runScript(req: RunRequest): RunResult {
     inputs,
     plots,
     hlines,
-    // Trimmed to the most recent N when the script opted in via
-    // limitDrawings() — keeps the newest objects, since those are the ones
-    // still relevant to current price action.
+    // Trimmed to the most recent N only when the script explicitly opted in
+    // via limitDrawings() — this is the runtime's ground-truth computed
+    // output (what pine-parity and any future analysis consumes), so it
+    // stays uncapped by default. The AUTOMATIC fallback cap (no script
+    // action needed) is a rendering concern, not a computation one — see
+    // DEFAULT_MAX_VISIBLE usage in StudioChart.tsx's drawOverlay().
     boxes: limits.boxes != null ? boxes.slice(-limits.boxes) : boxes,
     lines: limits.lines != null ? lines.slice(-limits.lines) : lines,
     labels: limits.labels != null ? labels.slice(-limits.labels) : labels,

@@ -110,6 +110,16 @@ VISUAL STYLE — the price chart is primary; drawings give context, never compet
   Mitigated Zones" and/or "Remove Zone After Mitigation" input; mitigated
   zones that stay visible should render heavily faded (zones()'s
   mitigatedOpacity, well below the active opacity), never at full strength.
+- signal()'s text is optional — leave it OUT by default. The marker's shape
+  and buy/sell color already say what happened; passing the same static
+  string ("Sweep Reversal", "BOS") to every marker just repeats identical
+  text at every single occurrence, which reads as clutter, not information
+  (canvas-drawn zone/line/label text can be de-duplicated automatically at
+  render time, but marker text is native to the charting library and can't
+  be — so this one has to be right in the generated script itself). Only
+  pass text when it's genuinely per-event (e.g. a computed reason string
+  that actually differs marker to marker), or when the user explicitly
+  asked for labeled markers.
 
 VISUAL PARITY CONTRACT (enforced by the validator)
 - Whatever the Pine twin draws, the SGScript MUST draw with the same primitive:
@@ -172,22 +182,19 @@ export const DEFAULT_SCRIPT = `// @name EMA Trend + Signals
 
 const fastLen = input.int('Fast EMA', 21, { min: 1, max: 400 })
 const slowLen = input.int('Slow EMA', 55, { min: 1, max: 400 })
-const fastColor = input.color('Fast EMA Color', '#e6b800')
-const slowColor = input.color('Slow EMA Color', '#38bdf8')
-const lineWidth = input.int('Line Width', 2, { min: 1, max: 4 })
 const fillColor = input.color('Fill Color', 'rgba(230,184,0,0.08)')
 const fillOpacity = input.float('Fill Opacity', 1, { min: 0, max: 1, step: 0.05 })
 const showSignals = input.bool('Show signals', true)
 
-// Already the cleanest of the built-in examples: two lines, a fill already
-// well under 10% opacity, and signals already gated behind their own
-// toggle. Settings here are for parity with the rest of the library, not
-// a density fix.
+// Line color/width come from the universal plot.primary/plot.secondary
+// presets; buy/sell marker color comes from signal()'s own side argument
+// automatically. Fill has no matching preset (an arbitrary two-plot fill
+// is genuinely indicator-specific), so it stays a real input.
 const fast = ema(close, fastLen)
 const slow = ema(close, slowLen)
 
-const a = plot(fast, { title: 'Fast EMA', color: fastColor, width: lineWidth })
-const b = plot(slow, { title: 'Slow EMA', color: slowColor, width: lineWidth })
+const a = plot(fast, { title: 'Fast EMA', role: 'plot.primary' })
+const b = plot(slow, { title: 'Slow EMA', role: 'plot.secondary' })
 fill(a, b, fillColor, fillOpacity)
 
 const up = crossover(fast, slow)
@@ -207,26 +214,22 @@ export const EXAMPLES: { name: string; code: string }[] = [
 // @overlay false
 
 const len = input.int('Length', 14, { min: 2, max: 200 })
-const rsiColor = input.color('RSI Color', '#a78bfa')
-const rsiWidth = input.int('RSI Width', 1, { min: 1, max: 4 })
-
 const showOverbought = input.bool('Show Overbought', true)
 const showOversold = input.bool('Show Oversold', true)
 const showMidline = input.bool('Show Midline', true)
 const overboughtLevel = input.int('Overbought Level', 70, { min: 50, max: 100 })
 const oversoldLevel = input.int('Oversold Level', 30, { min: 0, max: 50 })
-const overboughtColor = input.color('Overbought Color', 'rgba(239,68,68,0.5)')
-const oversoldColor = input.color('Oversold Color', 'rgba(34,197,94,0.5)')
 
 // This one never actually had a clutter problem — a single oscillator line
 // plus native axis-labeled reference levels, no text drawn across the pane
-// and nothing that accumulates over history. Settings here are for parity
-// with the other examples, not a density fix.
+// and nothing that accumulates over history. The line color comes from the
+// universal plot.primary preset; hline() reference levels don't have a
+// matching preset role yet, so their colors stay direct.
 const r = rsi(close, len)
-plotOsc(r, { title: 'RSI', color: rsiColor, width: rsiWidth })
+plotOsc(r, { title: 'RSI', role: 'plot.primary' })
 
-if (showOverbought) hline(overboughtLevel, { title: 'Overbought', color: overboughtColor, pane: 'osc' })
-if (showOversold) hline(oversoldLevel, { title: 'Oversold', color: oversoldColor, pane: 'osc' })
+if (showOverbought) hline(overboughtLevel, { title: 'Overbought', color: 'rgba(239,68,68,0.5)', pane: 'osc' })
+if (showOversold) hline(oversoldLevel, { title: 'Oversold', color: 'rgba(34,197,94,0.5)', pane: 'osc' })
 if (showMidline) hline(50, { color: 'rgba(255,255,255,0.15)', pane: 'osc' })
 `,
   },
@@ -244,18 +247,10 @@ const showMitigated = input.bool('Show Mitigated Zones', true)
 const removeAfterMitigation = input.bool('Remove Zone After Mitigation', false)
 const maxBull = input.int('Max Bullish Zones', 8, { min: 1, max: 50 })
 const maxBear = input.int('Max Bearish Zones', 8, { min: 1, max: 50 })
-const bullFill = input.color('Bullish Fill', 'rgba(34,197,94,0.15)')
-const bearFill = input.color('Bearish Fill', 'rgba(239,68,68,0.15)')
-const fillOpacity = input.float('Fill Opacity', 1, { min: 0, max: 1, step: 0.05 })
-const borderColor = input.color('Border Color', 'rgba(148,163,184,0.45)')
-const borderWidth = input.int('Border Width', 1, { min: 0, max: 4 })
-const labelSize = input.string('Label Size', 'tiny', { options: ['tiny', 'small', 'normal', 'large'] })
-const historicalOpacity = input.float('Historical Zone Opacity', 0.35, { min: 0, max: 1, step: 0.05 })
 
-// Candles stay the primary read: zones are a translucent 10-20%-opacity
-// fill, a thin border, no text and no arrows unless explicitly turned on,
-// and only the most recent zones per side are kept — see limitDrawings()
-// and the Max Bullish/Bearish Zones inputs below for how.
+// Fill/border/opacity/label-size all come from the universal zone.active /
+// zone.inactive presets automatically — zones() only needs to know what to
+// detect, when it's mitigated, and how many to keep per side.
 const a = atr(14)
 const gaps = []
 
@@ -283,13 +278,6 @@ if (showBull) visible.push(...bullGaps)
 if (showBear) visible.push(...bearGaps)
 
 zones(visible, {
-  bullColor: bullFill,
-  bearColor: bearFill,
-  opacity: fillOpacity,
-  mitigatedOpacity: historicalOpacity,
-  borderColor: borderColor,
-  borderWidth: borderWidth,
-  textSize: labelSize,
   extend: true,
   shrink: true,
   hideFilled: removeAfterMitigation || !showMitigated,
@@ -316,16 +304,8 @@ const showMitigated = input.bool('Show Mitigated Zones', true)
 const removeAfterMitigation = input.bool('Remove Zone After Mitigation', false)
 const maxBull = input.int('Max Bullish Zones', 8, { min: 1, max: 50 })
 const maxBear = input.int('Max Bearish Zones', 8, { min: 1, max: 50 })
-const bullFill = input.color('Bullish Fill', 'rgba(34,197,94,0.15)')
-const bearFill = input.color('Bearish Fill', 'rgba(239,68,68,0.15)')
-const fillOpacity = input.float('Fill Opacity', 1, { min: 0, max: 1, step: 0.05 })
-const borderColor = input.color('Border Color', 'rgba(148,163,184,0.45)')
-const borderWidth = input.int('Border Width', 1, { min: 0, max: 4 })
-const labelSize = input.string('Label Size', 'tiny', { options: ['tiny', 'small', 'normal', 'large'] })
-const historicalOpacity = input.float('Historical Zone Opacity', 0.35, { min: 0, max: 1, step: 0.05 })
-
-// Same visual system as Fair Value Gaps: a translucent zone behind candles,
-// no text/labels unless asked, only the most recent N zones per side.
+// Fill/border/opacity/label-size come from the universal zone.active /
+// zone.inactive presets automatically — same system as Fair Value Gaps.
 const disp = displacement(dispMult)
 const gaps = orderBlocks(disp)
 
@@ -336,13 +316,6 @@ if (showBull) visible.push(...bullGaps)
 if (showBear) visible.push(...bearGaps)
 
 zones(visible, {
-  bullColor: bullFill,
-  bearColor: bearFill,
-  opacity: fillOpacity,
-  mitigatedOpacity: historicalOpacity,
-  borderColor: borderColor,
-  borderWidth: borderWidth,
-  textSize: labelSize,
   extend: true,
   shrink: true,
   hideFilled: removeAfterMitigation || !showMitigated,
@@ -358,22 +331,16 @@ limitDrawings({ maxVisibleBoxes: maxBull + maxBear, maxVisibleLabels: maxBull + 
 // @overlay true
 
 const showVwap = input.bool('Show VWAP', true)
-const vwapColor = input.color('VWAP Color', '#38bdf8')
-const vwapWidth = input.int('VWAP Width', 2, { min: 1, max: 4 })
-
 const showPdh = input.bool('Show PDH', true)
 const showPdl = input.bool('Show PDL', true)
 const showLabels = input.bool('Show Labels', false)
 const maxDays = input.int('Max Days', 10, { min: 1, max: 60 })
-const pdhColor = input.color('PDH Color', 'rgba(239,68,68,0.6)')
-const pdlColor = input.color('PDL Color', 'rgba(34,197,94,0.6)')
-const lineWidth = input.int('Line Width', 1, { min: 1, max: 4 })
-const lineOpacity = input.float('Line Opacity', 1, { min: 0, max: 1, step: 0.05 })
-const labelSize = input.string('Label Size', 'tiny', { options: ['tiny', 'small', 'normal', 'large'] })
-
+// VWAP line color comes from plot.primary; PDH/PDL come from
+// level.resistance/level.support — a prior high is a candidate resistance,
+// a prior low a candidate support, so the fit is genuine, not forced.
 if (showVwap) {
   const v = vwap()
-  plot(v, { title: 'VWAP', color: vwapColor, width: vwapWidth })
+  plot(v, { title: 'VWAP', role: 'plot.primary' })
 }
 
 // Previous day high/low, each ray spanning exactly its own day (until the
@@ -394,16 +361,10 @@ for (let k = from; k < dayStarts.length; k++) {
   const pdh = d.high[i - 1]
   const pdl = d.low[i - 1]
   if (showPdh && Number.isFinite(pdh)) {
-    line(pdh, i, pdh, to, {
-      color: pdhColor, width: lineWidth, opacity: lineOpacity, dashed: true,
-      ...(showLabels ? { text: 'PDH', textSize: labelSize } : {}),
-    })
+    line(pdh, i, pdh, to, { role: 'level.resistance', dashed: true, ...(showLabels ? { text: 'PDH' } : {}) })
   }
   if (showPdl && Number.isFinite(pdl)) {
-    line(pdl, i, pdl, to, {
-      color: pdlColor, width: lineWidth, opacity: lineOpacity, dashed: true,
-      ...(showLabels ? { text: 'PDL', textSize: labelSize } : {}),
-    })
+    line(pdl, i, pdl, to, { role: 'level.support', dashed: true, ...(showLabels ? { text: 'PDL' } : {}) })
   }
 }
 
@@ -426,12 +387,14 @@ const maxBull = input.int('Max Bullish Breaks', 8, { min: 1, max: 50 })
 const maxBear = input.int('Max Bearish Breaks', 8, { min: 1, max: 50 })
 const bullColor = input.color('Bullish Line', '#22c55e')
 const bearColor = input.color('Bearish Line', '#ef4444')
-const lineWidth = input.int('Line Width', 1, { min: 1, max: 4 })
-const labelSize = input.string('Label Size', 'tiny', { options: ['tiny', 'small', 'normal', 'large'] })
 
-// Direction already reads from line color — text and markers are optional,
-// off by default, so one break doesn't announce itself through three
-// separate channels at once. Only the most recent breaks per side are kept.
+// A structure break doesn't fit the zone/level/plot preset taxonomy
+// cleanly, so bull/bear color stays a genuine indicator-specific choice —
+// width and label size still come from the universal safety-clamp
+// defaults. Direction already reads from line color — text and markers
+// are optional, off by default, so one break doesn't announce itself
+// through three separate channels at once. Only the most recent breaks
+// per side are kept.
 const ph = pivotHigh(left, right)
 const pl = pivotLow(left, right)
 
@@ -460,15 +423,13 @@ const visibleBear = showBear ? bearBreaks.slice(-maxBear) : []
 for (const b of visibleBull) {
   line(b.price, b.from, b.price, b.to, {
     color: bullColor,
-    width: lineWidth,
-    ...(showLabels ? { text: 'BOS', textSize: labelSize } : {}),
+    ...(showLabels ? { text: 'BOS' } : {}),
   })
 }
 for (const b of visibleBear) {
   line(b.price, b.from, b.price, b.to, {
     color: bearColor,
-    width: lineWidth,
-    ...(showLabels ? { text: 'BOS', textSize: labelSize } : {}),
+    ...(showLabels ? { text: 'BOS' } : {}),
   })
 }
 
