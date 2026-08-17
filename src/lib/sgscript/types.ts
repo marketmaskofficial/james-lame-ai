@@ -84,6 +84,12 @@ export type LineOut = {
   extend?: "none" | "right";
   text?: string;
   textSize?: "tiny" | "small" | "normal" | "large";
+  /** Which pane's price scale `price1`/`price2` are expressed in — defaults
+   * to "price". Needed for things like RSI divergence lines, whose
+   * coordinates are on the oscillator's 0-100 scale, not the symbol's price
+   * scale; drawing them against the wrong scale sends them wildly off-screen
+   * without any error, since the coordinate conversion itself succeeds. */
+  pane?: "price" | "osc";
 };
 
 export type LabelOut = {
@@ -100,6 +106,8 @@ export type LabelOut = {
   /** Vertical pixel nudge applied after price positioning. */
   offset?: number;
   position: "above" | "below";
+  /** Which pane `price` is expressed in — see LineOut.pane. */
+  pane?: "price" | "osc";
 };
 
 export type MarkerOut = {

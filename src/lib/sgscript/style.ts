@@ -154,3 +154,18 @@ export function clampLabelText(s: string | undefined, maxLen = 40): string | und
   if (s == null) return s;
   return s.length > maxLen ? `${s.slice(0, maxLen - 1)}…` : s;
 }
+
+/**
+ * There are exactly two valid panes. A script that means "not the price
+ * pane" is far more likely to have typed a plausible English word
+ * ("oscillator", "osc pane", "OSC") than the exact literal "osc" — and a
+ * strict equality check against that literal silently mis-routes anything
+ * else to the price pane with no error, exactly the failure class as
+ * Pine's 0-100 vs this runtime's 0-1 opacity scale. Normalize instead of
+ * trusting an exact string match: anything that isn't clearly "price"
+ * is treated as osc.
+ */
+export function normalizePane(v: unknown, fallback: "price" | "osc"): "price" | "osc" {
+  if (typeof v !== "string" || v.trim() === "") return fallback;
+  return v.trim().toLowerCase().startsWith("price") ? "price" : "osc";
+}

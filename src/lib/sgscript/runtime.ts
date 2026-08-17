@@ -26,6 +26,7 @@ import {
   clampOpacity,
   clampWidth,
   clampLabelText,
+  normalizePane,
   type LineRole,
   type PlotRole,
 } from "./style";
@@ -251,11 +252,11 @@ export function runScript(req: RunRequest): RunResult {
   }
 
   const plot = (s: Series | number, o: Partial<PlotOut> & { role?: PlotRole } = {}) =>
-    addPlot(s, { ...o, pane: o.pane ?? (meta.overlay ? "price" : "osc") });
+    addPlot(s, { ...o, pane: normalizePane(o.pane, meta.overlay ? "price" : "osc") });
   const plotOsc = (s: Series | number, o: Partial<PlotOut> & { role?: PlotRole } = {}) =>
     addPlot(s, { ...o, pane: "osc" });
   const hist = (s: Series | number, o: Partial<PlotOut> & { role?: PlotRole } = {}) =>
-    addPlot(s, { ...o, style: "histogram", pane: o.pane ?? "osc" });
+    addPlot(s, { ...o, style: "histogram", pane: normalizePane(o.pane, "osc") });
 
   function hline(price: number, o: Partial<HLineOut> = {}) {
     budget();
@@ -264,7 +265,7 @@ export function runScript(req: RunRequest): RunResult {
       id: nextId(),
       price,
       color: o.color ?? "rgba(255,255,255,0.28)",
-      pane: o.pane ?? (meta.overlay ? "price" : "osc"),
+      pane: normalizePane(o.pane, meta.overlay ? "price" : "osc"),
       dashed: o.dashed ?? true,
       ...(o.width ? { width: clampWidth(o.width, 1) } : {}),
       ...(o.title ? { title: clampLabelText(o.title) } : {}),
@@ -374,6 +375,7 @@ export function runScript(req: RunRequest): RunResult {
       dashed: style !== "solid",
       style,
       extend: o.extend ?? "none",
+      pane: normalizePane(o.pane, "price"),
       ...(o.text ? { text: clampLabelText(o.text), textSize: o.textSize } : {}),
     });
   }
@@ -398,6 +400,7 @@ export function runScript(req: RunRequest): RunResult {
       align: o.align ?? "center",
       offset: o.offset ?? 0,
       position: o.position ?? "above",
+      pane: normalizePane(o.pane, "price"),
       ...(o.borderColor ? { borderColor: o.borderColor } : {}),
     });
   }

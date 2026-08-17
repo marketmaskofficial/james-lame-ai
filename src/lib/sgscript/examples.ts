@@ -70,7 +70,12 @@ zones(list, { bullColor, bearColor, borderColor, borderWidth, opacity, mitigated
   // leave it undefined for no label at all (the clean default), and when
   // set, keep it to 1-3 words ("Bull FVG") — the renderer places it near the
   // zone's trailing edge itself, never repeat it across the zone's width.
-line(price1, index1, price2, index2, { color, width, opacity, style, extend:'right', text, textSize })
+line(price1, index1, price2, index2, { color, width, opacity, style, extend:'right', text, textSize, pane })
+  // pane: 'price'|'osc', defaults to 'price'. REQUIRED for oscillator-scale
+  // lines (e.g. RSI divergence trendlines drawn at RSI values, not the
+  // symbol's price) — without it the renderer maps the value against the
+  // main price scale and the line lands off-screen with no error at all,
+  // since the coordinate math itself is valid, just on the wrong scale.
 limitDrawings({ maxVisibleBoxes, maxVisibleLines, maxVisibleLabels, maxVisibleMarkers })
   // Universal density cap: trims each array to the most recent N (by
   // creation order) right before the run returns. Any indicator that can
@@ -79,9 +84,12 @@ limitDrawings({ maxVisibleBoxes, maxVisibleLines, maxVisibleLabels, maxVisibleMa
   // leave the chart to accumulate hundreds of stale drawings indefinitely.
 label(index, price, text, { color, textColor, borderColor,
       size:'tiny'|'small'|'normal'|'large', align:'left'|'center'|'right',
-      offset, position:'above'|'below' })
+      offset, position:'above'|'below', pane:'price'|'osc' })
   // text may contain \\n — multi-line labels render exactly as written, so port
   // Pine labels ("BUY A\\nEntry: ...\\nSL: ...\\nTP1: ...") verbatim.
+  // pane defaults to 'price' — set it to 'osc' when price is on an
+  // oscillator's own scale (e.g. an RSI value), same reason as line()'s
+  // pane option below.
 signal(boolArray, 'buy'|'sell', text?, { color, shape:'arrow'|'circle'|'square', location })
 fill(plotIdA, plotIdB, color, opacity)   // plot() returns its id
 log(...)                        // debug output

@@ -269,7 +269,7 @@ type ChartApi = {
   };
   priceScale: (id: string) => { applyOptions: (o: Record<string, unknown>) => void };
   subscribeCrosshairMove: (cb: (p: CrosshairParam) => void) => void;
-  panes: () => Array<{ setHeight: (h: number) => void }>;
+  panes: () => Array<{ setHeight: (h: number) => void; getHeight: () => number }>;
 };
 
 type CrosshairParam = {
@@ -1038,6 +1038,34 @@ export function StudioChart({
     const x = (logical: number | null) =>
       logical == null ? null : geometryReady ? logicalToPixel(ts, logical, host.clientWidth) : null;
     const y = (p: number) => price.priceToCoordinate(p);
+    // Oscillator-pane counterpart to y() — a value on an oscillator's own
+    // scale (e.g. an RSI reading) must convert through that pane's series,
+    // never the main price series: converting a 0-100-scale RSI value
+    // through a ~60,000-scale price series succeeds arithmetically but
+    // lands the result far off-canvas, with no error to signal why.
+    //
+    // priceToCoordinate() on an oscillator-pane series returns a coordinate
+    // relative to that pane's OWN local canvas (0 at the oscillator pane's
+    // own top edge), not the single full-height canvas this overlay draws
+    // on — so it has to be shifted down by every earlier pane's height, or
+    // an "osc" value lands near the top of the chart instead of inside the
+    // oscillator pane.
+    const osc = oscSeriesRef.current;
+    let oscPaneTop = 0;
+    if (osc) {
+      try {
+        const panes = chart.panes();
+        for (let i = 0; i < panes.length - 1; i++) oscPaneTop += panes[i].getHeight();
+      } catch {
+        oscPaneTop = 0;
+      }
+    }
+    const yFor = (p: number, pane?: "price" | "osc") => {
+      if (pane !== "osc") return y(p);
+      if (!osc) return null;
+      const local = osc.priceToCoordinate(p);
+      return local == null ? null : local + oscPaneTop;
+    };
 
     const { indicators: inds, drawings: draws } = stateRef.current;
     const planBoxes: Array<{ id: string; x: number; y: number }> = [];
@@ -1185,8 +1213,8 @@ export function StudioChart({
           const x1 = x(timeToLogical(l.time1));
           const x2raw =
             l.extend === "right" ? host.clientWidth : x(timeToLogical(l.time2));
-          const y1 = y(l.price1);
-          const y2 = y(l.price2);
+          const y1 = yFor(l.price1, l.pane);
+          const y2 = yFor(l.price2, l.pane);
           if (x1 == null || x2raw == null || y1 == null || y2 == null) {
             stats.lines.failed++;
             continue;
@@ -1243,7 +1271,7 @@ export function StudioChart({
             continue;
           }
           const cx = x(timeToLogical(lb.time));
-          const cy = y(lb.price);
+          const cy = yFor(lb.price, lb.pane);
           if (cx == null || cy == null) {
             stats.labels.failed++;
             continue;
