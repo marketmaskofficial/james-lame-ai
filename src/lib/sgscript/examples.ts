@@ -172,14 +172,23 @@ export const DEFAULT_SCRIPT = `// @name EMA Trend + Signals
 
 const fastLen = input.int('Fast EMA', 21, { min: 1, max: 400 })
 const slowLen = input.int('Slow EMA', 55, { min: 1, max: 400 })
+const fastColor = input.color('Fast EMA Color', '#e6b800')
+const slowColor = input.color('Slow EMA Color', '#38bdf8')
+const lineWidth = input.int('Line Width', 2, { min: 1, max: 4 })
+const fillColor = input.color('Fill Color', 'rgba(230,184,0,0.08)')
+const fillOpacity = input.float('Fill Opacity', 1, { min: 0, max: 1, step: 0.05 })
 const showSignals = input.bool('Show signals', true)
 
+// Already the cleanest of the built-in examples: two lines, a fill already
+// well under 10% opacity, and signals already gated behind their own
+// toggle. Settings here are for parity with the rest of the library, not
+// a density fix.
 const fast = ema(close, fastLen)
 const slow = ema(close, slowLen)
 
-const a = plot(fast, { title: 'Fast EMA', color: '#e6b800' })
-const b = plot(slow, { title: 'Slow EMA', color: '#38bdf8' })
-fill(a, b, 'rgba(230,184,0,0.08)')
+const a = plot(fast, { title: 'Fast EMA', color: fastColor, width: lineWidth })
+const b = plot(slow, { title: 'Slow EMA', color: slowColor, width: lineWidth })
+fill(a, b, fillColor, fillOpacity)
 
 const up = crossover(fast, slow)
 const dn = crossunder(fast, slow)
