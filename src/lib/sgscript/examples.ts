@@ -333,20 +333,57 @@ limitDrawings({ maxVisibleBoxes: maxBull + maxBear, maxVisibleLabels: maxBull + 
     code: `// @name VWAP + Daily Levels
 // @overlay true
 
-const v = vwap()
-plot(v, { title: 'VWAP', color: '#38bdf8', width: 2 })
+const showVwap = input.bool('Show VWAP', true)
+const vwapColor = input.color('VWAP Color', '#38bdf8')
+const vwapWidth = input.int('VWAP Width', 2, { min: 1, max: 4 })
 
-// Previous day high / low drawn as rays
+const showPdh = input.bool('Show PDH', true)
+const showPdl = input.bool('Show PDL', true)
+const showLabels = input.bool('Show Labels', false)
+const maxDays = input.int('Max Days', 10, { min: 1, max: 60 })
+const pdhColor = input.color('PDH Color', 'rgba(239,68,68,0.6)')
+const pdlColor = input.color('PDL Color', 'rgba(34,197,94,0.6)')
+const lineWidth = input.int('Line Width', 1, { min: 1, max: 4 })
+const lineOpacity = input.float('Line Opacity', 1, { min: 0, max: 1, step: 0.05 })
+const labelSize = input.string('Label Size', 'tiny', { options: ['tiny', 'small', 'normal', 'large'] })
+
+if (showVwap) {
+  const v = vwap()
+  plot(v, { title: 'VWAP', color: vwapColor, width: vwapWidth })
+}
+
+// Previous day high/low, each ray spanning exactly its own day (until the
+// next day boundary, or lastIndex for the current day) instead of a
+// hardcoded bar count that only happened to make sense at one timeframe.
+// Only the most recent Max Days are kept, not every day in the history.
 const d = htf('1d')
+const dayStarts = []
 for (let i = 1; i <= lastIndex; i++) {
   const newDay = Math.floor(time[i] / 86400) !== Math.floor(time[i - 1] / 86400)
-  if (!newDay) continue
+  if (newDay) dayStarts.push(i)
+}
+
+const from = Math.max(0, dayStarts.length - maxDays)
+for (let k = from; k < dayStarts.length; k++) {
+  const i = dayStarts[k]
+  const to = k + 1 < dayStarts.length ? dayStarts[k + 1] : lastIndex
   const pdh = d.high[i - 1]
   const pdl = d.low[i - 1]
-  const to = Math.min(lastIndex, i + 96)
-  if (Number.isFinite(pdh)) line(pdh, i, pdh, to, { color: 'rgba(239,68,68,0.6)', dashed: true, text: 'PDH' })
-  if (Number.isFinite(pdl)) line(pdl, i, pdl, to, { color: 'rgba(34,197,94,0.6)', dashed: true, text: 'PDL' })
+  if (showPdh && Number.isFinite(pdh)) {
+    line(pdh, i, pdh, to, {
+      color: pdhColor, width: lineWidth, opacity: lineOpacity, dashed: true,
+      ...(showLabels ? { text: 'PDH', textSize: labelSize } : {}),
+    })
+  }
+  if (showPdl && Number.isFinite(pdl)) {
+    line(pdl, i, pdl, to, {
+      color: pdlColor, width: lineWidth, opacity: lineOpacity, dashed: true,
+      ...(showLabels ? { text: 'PDL', textSize: labelSize } : {}),
+    })
+  }
 }
+
+limitDrawings({ maxVisibleLines: maxDays * 2 })
 `,
   },
   {
