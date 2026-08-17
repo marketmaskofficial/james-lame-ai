@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { useMutation } from "@tanstack/react-query";
-import { Info, Loader2, Play, Wand2 } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Info, Loader2, Play, Save, Trash2, Wand2 } from "lucide-react";
+import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { runBacktest } from "@/lib/backtest.functions";
+import { deleteBacktestRun, listBacktestRuns, saveBacktestRun } from "@/lib/backtest-runs.functions";
 import {
   DEFAULT_SETTINGS,
   EXECUTION_SEMANTICS,
@@ -21,6 +23,7 @@ const SUPPORTED: Interval[] = ["1m", "5m", "15m", "1h", "4h", "1d"];
 export type TesterProject = {
   name: string;
   strategy: StrategyOut;
+  code: string;
 };
 
 const STORE_KEY = "sg.studio.backtest";
@@ -38,6 +41,16 @@ function loadSettings(): BacktestSettings {
 const money = (n: number) =>
   `${n < 0 ? "-" : ""}$${Math.abs(n).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 const pct = (n: number) => `${n.toFixed(2)}%`;
+const r = (n: number | null) => (n === null ? "—" : `${n.toFixed(2)}R`);
+function duration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "—";
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
 
 /**
  * Strategy tester.
@@ -63,12 +76,36 @@ export function StrategyTester({
   onDefineRules: (suggestion: string) => void;
   onShowTrades: (trades: BacktestTrade[] | null) => void;
 }) {
-  const [tab, setTab] = useState<"project" | "examples">("project");
+  const [tab, setTab] = useState<"project" | "saved" | "examples">("project");
   const [settings, setSettings] = useState<BacktestSettings>(DEFAULT_SETTINGS);
   const [outcome, setOutcome] = useState<BacktestOutcome | null>(null);
   const [semantics, setSemantics] = useState(false);
   const [showTrades, setShowTrades] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+
+  const saveMutation = useMutation({
+    mutationFn: () => {
+      if (!project || !outcome?.ok) throw new Error("Nothing to save yet");
+      return saveBacktestRun({
+        data: {
+          strategyName: project.name,
+          code: project.code,
+          symbol,
+          interval,
+          settings: settings as unknown as Record<string, unknown>,
+          report: outcome as unknown as Record<string, unknown>,
+        },
+      });
+    },
+    onSuccess: () => {
+      setSaveMessage("Saved.");
+      void queryClient.invalidateQueries({ queryKey: ["backtest-runs"] });
+    },
+    onError: (e: unknown) =>
+      setSaveMessage(e instanceof Error ? e.message : "Could not save this run"),
+  });
 
   useEffect(() => setSettings(loadSettings()), []);
   useEffect(() => {
@@ -130,6 +167,7 @@ export function StrategyTester({
         {(
           [
             ["project", "Current project"],
+            ["saved", "Saved runs"],
             ["examples", "Examples"],
           ] as const
         ).map(([id, label]) => (
@@ -173,6 +211,8 @@ export function StrategyTester({
 
       {tab === "examples" ? (
         <ExampleTester symbol={symbol} interval={interval} signedIn={signedIn} />
+      ) : tab === "saved" ? (
+        <SavedRuns signedIn={signedIn} />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="flex flex-wrap items-center gap-2 border-b border-border px-2 py-1.5 text-[11px]">
@@ -188,19 +228,22 @@ export function StrategyTester({
             <select
               value={settings.sizing.mode}
               onChange={(e) => {
-                const mode = e.target.value as "fixed_qty" | "fixed_cash" | "percent_equity";
+                const mode = e.target.value as "fixed_qty" | "fixed_cash" | "percent_equity" | "risk_percent";
                 set(
                   "sizing",
                   mode === "fixed_qty"
                     ? { mode, qty: 1 }
                     : mode === "fixed_cash"
                       ? { mode, cash: 5000 }
-                      : { mode, percent: 10 },
+                      : mode === "risk_percent"
+                        ? { mode, percent: 1 }
+                        : { mode, percent: 10 },
                 );
               }}
               className="rounded border border-border bg-background px-1.5 py-1 outline-none focus:border-brand"
             >
               <option value="percent_equity">% of equity</option>
+              <option value="risk_percent">% risk (needs stop)</option>
               <option value="fixed_cash">Fixed $</option>
               <option value="fixed_qty">Fixed qty</option>
             </select>
@@ -220,7 +263,9 @@ export function StrategyTester({
                     ? { mode: "fixed_qty", qty: v }
                     : settings.sizing.mode === "fixed_cash"
                       ? { mode: "fixed_cash", cash: v }
-                      : { mode: "percent_equity", percent: v },
+                      : settings.sizing.mode === "risk_percent"
+                        ? { mode: "risk_percent", percent: v }
+                        : { mode: "percent_equity", percent: v },
                 )
               }
             />
@@ -247,7 +292,24 @@ export function StrategyTester({
             >
               <Play className="h-3 w-3" /> Backtest current project
             </button>
+            <button
+              disabled={!signedIn || !outcome?.ok || saveMutation.isPending}
+              onClick={() => {
+                setSaveMessage(null);
+                saveMutation.mutate();
+              }}
+              title={!signedIn ? "Sign in to save backtest runs" : "Save this run so you can compare it later"}
+              className="flex items-center gap-1 rounded-md border border-border px-2.5 py-1 font-medium hover:bg-accent disabled:opacity-50"
+            >
+              {saveMutation.isPending ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Save className="h-3 w-3" />
+              )}
+              Save run
+            </button>
             {error && <span className="text-destructive">{error}</span>}
+            {saveMessage && <span className="text-muted-foreground">{saveMessage}</span>}
           </div>
 
           <div className="min-h-0 flex-1 overflow-auto">
@@ -310,6 +372,14 @@ function Report({ report }: { report: BacktestReport }) {
     ["Avg trade", money(m.avgTrade)],
     ["Avg win", money(m.avgWin)],
     ["Avg loss", money(m.avgLoss)],
+    ["Win/loss ratio", m.winLossRatio === null ? "—" : m.winLossRatio.toFixed(2)],
+    ["Largest win", money(m.largestWin)],
+    ["Largest loss", money(m.largestLoss)],
+    ["Max win streak", String(m.maxWinStreak)],
+    ["Max loss streak", String(m.maxLossStreak)],
+    ["Avg hold time", duration(m.avgHoldingSeconds)],
+    ["Avg MFE", `${money(m.avgMfe)} (${r(m.avgMfeR)})`],
+    ["Avg MAE", `${money(m.avgMae)} (${r(m.avgMaeR)})`],
     ["Avg R", m.avgR === null ? "—" : `${m.avgR.toFixed(2)}R`],
     ["Expectancy", money(m.expectancy)],
   ];
@@ -328,6 +398,11 @@ function Report({ report }: { report: BacktestReport }) {
       </div>
 
       <div className="grid gap-2 border-b border-border p-2 sm:grid-cols-2">
+        <EquityChart curve={report.equityCurve} />
+        <DrawdownChart curve={report.drawdownCurve} />
+      </div>
+
+      <div className="grid gap-2 border-b border-border p-2 sm:grid-cols-2">
         <Breakdown title="Long trades" m={report.longMetrics} />
         <Breakdown title="Short trades" m={report.shortMetrics} />
       </div>
@@ -336,6 +411,14 @@ function Report({ report }: { report: BacktestReport }) {
         <div className="grid gap-2 border-b border-border p-2 sm:grid-cols-4">
           {report.sessionMetrics.map((s) => (
             <Breakdown key={s.session} title={s.session} m={s} />
+          ))}
+        </div>
+      )}
+
+      {report.dayOfWeekMetrics.length > 0 && (
+        <div className="grid grid-cols-3 gap-2 border-b border-border p-2 sm:grid-cols-7">
+          {report.dayOfWeekMetrics.map((d) => (
+            <Breakdown key={d.day} title={d.day} m={d} />
           ))}
         </div>
       )}
@@ -408,6 +491,73 @@ function Report({ report }: { report: BacktestReport }) {
   );
 }
 
+function EquityChart({ curve }: { curve: BacktestReport["equityCurve"] }) {
+  if (curve.length < 2) return null;
+  const data = curve.map((p) => ({ t: p.time, equity: p.equity }));
+  const up = curve[curve.length - 1].equity >= curve[0].equity;
+  return (
+    <div className="rounded border border-border/60 p-2">
+      <div className="text-[9px] uppercase tracking-wide text-muted-foreground">
+        Equity curve
+      </div>
+      <div className="h-24">
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart data={data} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
+            <XAxis dataKey="t" hide />
+            <YAxis hide domain={["dataMin", "dataMax"]} />
+            <Tooltip
+              formatter={(v: number) => money(v)}
+              labelFormatter={(t: number) => new Date(t * 1000).toLocaleString()}
+              contentStyle={{ fontSize: 10, padding: "2px 6px" }}
+            />
+            <Area
+              type="monotone"
+              dataKey="equity"
+              stroke={up ? "#34d399" : "#f87171"}
+              fill={up ? "#34d39933" : "#f8717133"}
+              strokeWidth={1.5}
+              isAnimationActive={false}
+            />
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+function DrawdownChart({ curve }: { curve: BacktestReport["drawdownCurve"] }) {
+  if (curve.length < 2) return null;
+  const data = curve.map((p) => ({ t: p.time, dd: -p.drawdownPct }));
+  return (
+    <div className="rounded border border-border/60 p-2">
+      <div className="text-[9px] uppercase tracking-wide text-muted-foreground">
+        Drawdown %
+      </div>
+      <div className="h-24">
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart data={data} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
+            <XAxis dataKey="t" hide />
+            <YAxis hide domain={["dataMin", 0]} />
+            <Tooltip
+              formatter={(v: number) => `${Math.abs(v).toFixed(2)}%`}
+              labelFormatter={(t: number) => new Date(t * 1000).toLocaleString()}
+              contentStyle={{ fontSize: 10, padding: "2px 6px" }}
+            />
+            <Area
+              type="monotone"
+              dataKey="dd"
+              stroke="#f87171"
+              fill="#f8717133"
+              strokeWidth={1.5}
+              isAnimationActive={false}
+            />
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
 function Breakdown({ title, m }: { title: string; m: Metrics }) {
   return (
     <div className="rounded border border-border/60 p-2 font-mono">
@@ -471,6 +621,104 @@ function DateField({
 }
 
 /** The two original presets, kept as runnable examples only. */
+/**
+ * Saved backtest runs — enough metadata bundled with each one (the exact
+ * SGScript, symbol/timeframe, settings, and full computed report) to
+ * compare results later ("1R vs 2R vs 3R") without re-running anything.
+ */
+function SavedRuns({ signedIn }: { signedIn: boolean }) {
+  const queryClient = useQueryClient();
+  const runsQuery = useQuery({
+    queryKey: ["backtest-runs"],
+    queryFn: () => listBacktestRuns(),
+    enabled: signedIn,
+  });
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => deleteBacktestRun({ data: { id } }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["backtest-runs"] }),
+  });
+
+  if (!signedIn) {
+    return (
+      <p className="p-4 text-center text-[11px] text-muted-foreground">
+        Sign in to save and compare backtest runs across sessions.
+      </p>
+    );
+  }
+  if (runsQuery.isLoading) {
+    return (
+      <p className="flex items-center justify-center gap-1.5 p-4 text-[11px] text-muted-foreground">
+        <Loader2 className="h-3 w-3 animate-spin" /> Loading saved runs…
+      </p>
+    );
+  }
+  const runs = runsQuery.data ?? [];
+  if (runs.length === 0) {
+    return (
+      <p className="p-4 text-center text-[11px] text-muted-foreground">
+        No saved runs yet — backtest your project, then "Save run" to keep it here.
+      </p>
+    );
+  }
+
+  return (
+    <div className="min-h-0 flex-1 overflow-auto text-[11px]">
+      <table className="w-full font-mono text-[11px]">
+        <thead>
+          <tr className="border-b border-border/60 text-left text-[10px] uppercase tracking-wide text-muted-foreground">
+            {["Saved", "Strategy", "Symbol", "Net P&L", "Return", "Trades", "Win rate", "Max DD", ""].map((h) => (
+              <th key={h} className="px-2 py-1.5">
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {runs.map((row) => {
+            const report = row.report as unknown as BacktestReport;
+            const m = report?.metrics;
+            return (
+              <tr key={row.id} className="border-b border-border/30">
+                <td className="px-2 py-1 text-muted-foreground">
+                  {new Date(row.created_at).toLocaleString()}
+                </td>
+                <td className="px-2 py-1">{row.strategy_name}</td>
+                <td className="px-2 py-1 text-muted-foreground">
+                  {row.symbol} · {row.interval}
+                </td>
+                {m ? (
+                  <>
+                    <td className={`px-2 py-1 ${m.netPnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                      {money(m.netPnl)}
+                    </td>
+                    <td className="px-2 py-1">{pct(m.returnPct)}</td>
+                    <td className="px-2 py-1">{m.totalTrades}</td>
+                    <td className="px-2 py-1">{pct(m.winRate)}</td>
+                    <td className="px-2 py-1">{pct(m.maxDrawdownPct)}</td>
+                  </>
+                ) : (
+                  <td className="px-2 py-1 text-muted-foreground" colSpan={4}>
+                    —
+                  </td>
+                )}
+                <td className="px-2 py-1">
+                  <button
+                    onClick={() => deleteMutation.mutate(row.id)}
+                    className="text-muted-foreground hover:text-destructive"
+                    title="Delete this saved run"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function ExampleTester({
   symbol,
   interval,

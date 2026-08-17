@@ -31,7 +31,8 @@ export const EXECUTION_SEMANTICS = [
 export type PositionSizing =
   | { mode: "fixed_qty"; qty: number }
   | { mode: "fixed_cash"; cash: number }
-  | { mode: "percent_equity"; percent: number };
+  | { mode: "percent_equity"; percent: number }
+  | { mode: "risk_percent"; percent: number };
 
 export type BacktestSettings = {
   startingCapital: number;
@@ -73,9 +74,21 @@ export type BacktestTrade = {
   exitReason: ExitReason;
   session: SessionName;
   comment: string;
+  /**
+   * Maximum adverse / favourable excursion while the trade was open, in
+   * account currency and (when an initial stop exists) as a multiple of the
+   * risk that stop defined at entry. Measured from the bar after entry
+   * through the exit bar, using each bar's intrabar high/low — the same
+   * OHLC-only assumption every other fill in this engine already makes.
+   */
+  mae: number;
+  mfe: number;
+  maeR: number | null;
+  mfeR: number | null;
 };
 
 export type SessionName = "Asia" | "London" | "New York" | "Other";
+export type DayOfWeek = "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun";
 
 export type BacktestReport = {
   ok: true;
@@ -89,10 +102,14 @@ export type BacktestReport = {
   instrument: Instrument;
   trades: BacktestTrade[];
   equityCurve: Array<{ time: number; equity: number }>;
+  /** Peak-to-current drawdown at every bar the engine marks equity to market. */
+  drawdownCurve: Array<{ time: number; drawdown: number; drawdownPct: number }>;
   metrics: Metrics;
   longMetrics: Metrics;
   shortMetrics: Metrics;
   sessionMetrics: Array<{ session: SessionName } & Metrics>;
+  dayOfWeekMetrics: Array<{ day: DayOfWeek } & Metrics>;
+  hourOfDayMetrics: Array<{ hourUtc: number } & Metrics>;
   /** Honest limitations that apply to this specific run. */
   limitations: string[];
 };
@@ -111,6 +128,18 @@ export type Metrics = {
   avgTrade: number;
   avgWin: number;
   avgLoss: number;
+  /** avgWin / |avgLoss|. Null when there are no losing trades to divide by. */
+  winLossRatio: number | null;
+  largestWin: number;
+  largestLoss: number;
+  maxWinStreak: number;
+  maxLossStreak: number;
+  /** Mean time in the trade, seconds, from fill to exit. */
+  avgHoldingSeconds: number;
+  avgMae: number;
+  avgMfe: number;
+  avgMaeR: number | null;
+  avgMfeR: number | null;
   avgR: number | null;
   expectancy: number;
   returnPct: number;
@@ -134,6 +163,25 @@ function sessionOf(timeSec: number): SessionName {
   return "Other";
 }
 
+const DAY_NAMES: DayOfWeek[] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+function dayOfWeekOf(timeSec: number): DayOfWeek {
+  return DAY_NAMES[new Date(timeSec * 1000).getUTCDay()];
+}
+function hourOfDayOf(timeSec: number): number {
+  return new Date(timeSec * 1000).getUTCHours();
+}
+
+/** Longest run of consecutive winning / losing trades, in declared (chronological) order. */
+function streaks(trades: BacktestTrade[]): { maxWinStreak: number; maxLossStreak: number } {
+  let win = 0, loss = 0, maxWin = 0, maxLoss = 0;
+  for (const t of trades) {
+    if (t.pnl > 0) { win++; loss = 0; } else { loss++; win = 0; }
+    if (win > maxWin) maxWin = win;
+    if (loss > maxLoss) maxLoss = loss;
+  }
+  return { maxWinStreak: maxWin, maxLossStreak: maxLoss };
+}
+
 function emptyMetrics(startingCapital: number): Metrics {
   return {
     netPnl: 0,
@@ -149,6 +197,16 @@ function emptyMetrics(startingCapital: number): Metrics {
     avgTrade: 0,
     avgWin: 0,
     avgLoss: 0,
+    winLossRatio: null,
+    largestWin: 0,
+    largestLoss: 0,
+    maxWinStreak: 0,
+    maxLossStreak: 0,
+    avgHoldingSeconds: 0,
+    avgMae: 0,
+    avgMfe: 0,
+    avgMaeR: null,
+    avgMfeR: null,
     avgR: null,
     expectancy: 0,
     returnPct: 0,
@@ -178,9 +236,12 @@ function computeMetrics(trades: BacktestTrade[], startingCapital: number): Metri
   }
 
   const rs = trades.map((t) => t.rMultiple).filter((r): r is number => r !== null);
+  const maeRs = trades.map((t) => t.maeR).filter((r): r is number => r !== null);
+  const mfeRs = trades.map((t) => t.mfeR).filter((r): r is number => r !== null);
   const winRate = (wins.length / trades.length) * 100;
   const avgWin = wins.length ? grossProfit / wins.length : 0;
   const avgLoss = losses.length ? -grossLoss / losses.length : 0;
+  const { maxWinStreak, maxLossStreak } = streaks(trades);
 
   return {
     netPnl,
@@ -196,6 +257,16 @@ function computeMetrics(trades: BacktestTrade[], startingCapital: number): Metri
     avgTrade: netPnl / trades.length,
     avgWin,
     avgLoss,
+    winLossRatio: avgLoss !== 0 ? avgWin / Math.abs(avgLoss) : null,
+    largestWin: wins.length ? Math.max(...wins.map((t) => t.pnl)) : 0,
+    largestLoss: losses.length ? Math.min(...losses.map((t) => t.pnl)) : 0,
+    maxWinStreak,
+    maxLossStreak,
+    avgHoldingSeconds: trades.reduce((s, t) => s + (t.exitTime - t.entryTime), 0) / trades.length,
+    avgMae: trades.reduce((s, t) => s + t.mae, 0) / trades.length,
+    avgMfe: trades.reduce((s, t) => s + t.mfe, 0) / trades.length,
+    avgMaeR: maeRs.length ? maeRs.reduce((s, r) => s + r, 0) / maeRs.length : null,
+    avgMfeR: mfeRs.length ? mfeRs.reduce((s, r) => s + r, 0) / mfeRs.length : null,
     avgR: rs.length ? rs.reduce((s, r) => s + r, 0) / rs.length : null,
     expectancy:
       (winRate / 100) * avgWin + (1 - winRate / 100) * avgLoss,
@@ -203,12 +274,38 @@ function computeMetrics(trades: BacktestTrade[], startingCapital: number): Metri
   };
 }
 
+/**
+ * Sizes a position from a percent of equity risked and the actual distance
+ * to the stop, rather than notional value — e.g. riskPercent 1 with a stop
+ * $50 away always risks 1% of equity, regardless of the instrument's price
+ * or the entry's distance-to-stop on any other trade.
+ */
+function riskBasedQty(
+  riskPercent: number,
+  equity: number,
+  entryPrice: number,
+  stopPrice: number,
+  inst: Instrument,
+): number {
+  const step = inst.qtyStep || 0.0001;
+  const riskCash = (equity * riskPercent) / 100;
+  const riskPerUnit = Math.abs(pnlPerUnit(inst, entryPrice - stopPrice));
+  if (!(riskPerUnit > 0)) return 0;
+  const raw = riskCash / riskPerUnit;
+  const q = Math.floor(raw / step) * step;
+  return Number.isFinite(q) && q > 0 ? Number(q.toFixed(8)) : 0;
+}
+
 function sizeFor(
   sizing: PositionSizing,
   equity: number,
   price: number,
   inst: Instrument,
+  stopPrice: number | null,
 ): number {
+  if (sizing.mode === "risk_percent") {
+    return stopPrice === null ? 0 : riskBasedQty(sizing.percent, equity, price, stopPrice, inst);
+  }
   const step = inst.qtyStep || 0.0001;
   let raw: number;
   if (sizing.mode === "fixed_qty") raw = sizing.qty;
@@ -230,8 +327,16 @@ type OpenTrade = {
   qty: number;
   stop: number | null;
   target: number | null;
+  /** Stop as declared at entry, frozen — never moved by trail/breakeven. The
+   * risk unit ("1R") is always measured against this, not the live `stop`. */
+  initialStop: number | null;
   /** Bar-indexed trailing-stop series, if the script declared one. */
   trail: number[] | null;
+  breakEvenAfterR: number | null;
+  breakEvenArmed: boolean;
+  /** Best/worst price reached while open (bars strictly after entry). */
+  mfeExtremePrice: number;
+  maeExtremePrice: number;
   comment: string;
 };
 
@@ -296,11 +401,14 @@ export function runBacktestEngine(args: {
   const slip = settings.slippageTicks * tick;
   const trades: BacktestTrade[] = [];
   const equityCurve: Array<{ time: number; equity: number }> = [];
+  const drawdownCurve: Array<{ time: number; drawdown: number; drawdownPct: number }> = [];
   let equity = settings.startingCapital;
+  let equityPeak = settings.startingCapital;
   const pos: { current: OpenTrade | null } = { current: null };
   let tradeId = 0;
   let gapFills = 0;
   let collisions = 0;
+  let riskSizingFallbacks = 0;
 
   const closeTrade = (
     bar: Bar,
@@ -318,6 +426,13 @@ export function runBacktestEngine(args: {
       open.stop !== null
         ? Math.abs(pnlPerUnit(inst, open.entryPrice - open.stop)) * open.qty
         : 0;
+    // "1R" for MAE/MFE is measured against the risk declared at entry, not
+    // whatever the stop has since moved to (trail/breakeven) — otherwise a
+    // breakeven-armed trade would nonsensically show 0R of adverse room left.
+    const initialRiskPerUnit =
+      open.initialStop !== null ? Math.abs(pnlPerUnit(inst, open.entryPrice - open.initialStop)) : 0;
+    const mae = Math.abs(pnlPerUnit(inst, open.maeExtremePrice - open.entryPrice)) * open.qty;
+    const mfe = Math.abs(pnlPerUnit(inst, open.mfeExtremePrice - open.entryPrice)) * open.qty;
     trades.push({
       id: ++tradeId,
       symbol,
@@ -335,6 +450,10 @@ export function runBacktestEngine(args: {
       exitReason: reason,
       session: sessionOf(open.entryTime),
       comment: open.comment,
+      mae,
+      mfe,
+      maeR: initialRiskPerUnit > 0 ? mae / (initialRiskPerUnit * open.qty) : null,
+      mfeR: initialRiskPerUnit > 0 ? mfe / (initialRiskPerUnit * open.qty) : null,
     });
     pos.current = null;
   };
@@ -344,25 +463,42 @@ export function runBacktestEngine(args: {
     bar: Bar,
     fillPrice: number,
   ) => {
+    // A signal that explicitly asked for risk-based sizing but declared no
+    // stop can't have that request honoured (there's no risk distance to
+    // size from) — falling back to the settings' sizing mode without saying
+    // so would silently trade a different size than the strategy asked for.
+    // Surface it every time this substitution happens, not just when the
+    // fallback also happens to fail.
+    const wantsRiskSizing = signal.riskPercent !== null || settings.sizing.mode === "risk_percent";
+    if (wantsRiskSizing && signal.stop === null) riskSizingFallbacks++;
+
     const qty =
       signal.qty && signal.qty > 0
         ? signal.qty
-        : sizeFor(settings.sizing, equity, fillPrice, inst);
+        : signal.riskPercent !== null && signal.stop !== null
+          ? riskBasedQty(signal.riskPercent, equity, fillPrice, signal.stop, inst)
+          : sizeFor(settings.sizing, equity, fillPrice, inst, signal.stop);
     if (qty <= 0) return;
     let target = signal.target;
     if (target === null && signal.targetR !== null && signal.stop !== null) {
       const r = Math.abs(fillPrice - signal.stop);
       target = signal.side === "long" ? fillPrice + r * signal.targetR : fillPrice - r * signal.targetR;
     }
+    const stop = signal.stop === null ? null : roundToTick(inst, signal.stop);
     pos.current = {
       side: signal.side,
       entryBar: bars.indexOf(bar),
       entryTime: bar.time,
       entryPrice: fillPrice,
       qty,
-      stop: signal.stop === null ? null : roundToTick(inst, signal.stop),
+      stop,
       target: target === null ? null : roundToTick(inst, target),
+      initialStop: stop,
       trail: signal.trail,
+      breakEvenAfterR: signal.breakEvenAfterR,
+      breakEvenArmed: false,
+      mfeExtremePrice: fillPrice,
+      maeExtremePrice: fillPrice,
       comment: signal.comment,
     };
   };
@@ -391,6 +527,37 @@ export function runBacktestEngine(args: {
                 : Math.min(held.stop, rounded);
         }
       }
+
+      // Track best/worst excursion using this bar's full range — same
+      // OHLC-only, no-tick-data assumption every other check here makes.
+      if (held.side === "long") {
+        if (bar.high > held.mfeExtremePrice) held.mfeExtremePrice = bar.high;
+        if (bar.low < held.maeExtremePrice) held.maeExtremePrice = bar.low;
+      } else {
+        if (bar.low < held.mfeExtremePrice) held.mfeExtremePrice = bar.low;
+        if (bar.high > held.maeExtremePrice) held.maeExtremePrice = bar.high;
+      }
+
+      // Move the stop to breakeven once favourable excursion reaches the
+      // declared R multiple — same ratchet-only-favourable rule as trail,
+      // measured against the risk frozen at entry, not a since-moved stop.
+      if (!held.breakEvenArmed && held.breakEvenAfterR !== null && held.initialStop !== null) {
+        const riskPerUnit = Math.abs(pnlPerUnit(inst, held.entryPrice - held.initialStop));
+        if (riskPerUnit > 0) {
+          const favorablePrice = held.side === "long" ? bar.high : bar.low;
+          const favorableMove = Math.abs(pnlPerUnit(inst, favorablePrice - held.entryPrice));
+          if (favorableMove / riskPerUnit >= held.breakEvenAfterR) {
+            held.stop =
+              held.stop === null
+                ? held.entryPrice
+                : held.side === "long"
+                  ? Math.max(held.stop, held.entryPrice)
+                  : Math.min(held.stop, held.entryPrice);
+            held.breakEvenArmed = true;
+          }
+        }
+      }
+
       const { stop, target, side } = held;
       const hitStop =
         stop !== null && (side === "long" ? bar.low <= stop : bar.high >= stop);
@@ -455,6 +622,13 @@ export function runBacktestEngine(args: {
             mark.qty
         : equity;
       equityCurve.push({ time: bar.time, equity: mtm });
+      if (mtm > equityPeak) equityPeak = mtm;
+      const dd = equityPeak - mtm;
+      drawdownCurve.push({
+        time: bar.time,
+        drawdown: dd,
+        drawdownPct: equityPeak > 0 ? (dd / equityPeak) * 100 : 0,
+      });
     }
   }
 
@@ -465,6 +639,7 @@ export function runBacktestEngine(args: {
   const longs = trades.filter((t) => t.direction === "long");
   const shorts = trades.filter((t) => t.direction === "short");
   const sessions: SessionName[] = ["Asia", "London", "New York", "Other"];
+  const days: DayOfWeek[] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
   const limitations = [
     "Fills are simulated on bar OHLC only — no tick or order-book data is available, so intrabar sequence is assumed conservatively.",
@@ -474,6 +649,11 @@ export function runBacktestEngine(args: {
         ]
       : []),
     ...(gapFills > 0 ? [`${gapFills} exit(s) filled on a gap through the level.`] : []),
+    ...(riskSizingFallbacks > 0
+      ? [
+          `${riskSizingFallbacks} entry signal(s) requested risk-based sizing but declared no stop — sized using the settings' position-sizing mode instead.`,
+        ]
+      : []),
     ...(inst.dataAvailable
       ? []
       : [`No market data provider is connected for ${inst.root}; contract maths only.`]),
@@ -492,6 +672,7 @@ export function runBacktestEngine(args: {
     instrument: inst,
     trades,
     equityCurve,
+    drawdownCurve,
     metrics: computeMetrics(trades, settings.startingCapital),
     longMetrics: computeMetrics(longs, settings.startingCapital),
     shortMetrics: computeMetrics(shorts, settings.startingCapital),
@@ -504,6 +685,22 @@ export function runBacktestEngine(args: {
         ),
       }))
       .filter((m) => m.totalTrades > 0),
+    dayOfWeekMetrics: days
+      .map((d) => ({
+        day: d,
+        ...computeMetrics(
+          trades.filter((t) => dayOfWeekOf(t.entryTime) === d),
+          settings.startingCapital,
+        ),
+      }))
+      .filter((m) => m.totalTrades > 0),
+    hourOfDayMetrics: Array.from({ length: 24 }, (_, hourUtc) => ({
+      hourUtc,
+      ...computeMetrics(
+        trades.filter((t) => hourOfDayOf(t.entryTime) === hourUtc),
+        settings.startingCapital,
+      ),
+    })).filter((m) => m.totalTrades > 0),
     limitations,
   };
 }

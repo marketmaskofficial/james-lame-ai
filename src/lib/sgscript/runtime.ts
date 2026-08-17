@@ -461,6 +461,10 @@ export function runScript(req: RunRequest): RunResult {
      */
     trail?: Series;
     qty?: number;
+    /** Move the stop to breakeven once profit reaches this multiple of the initial risk. Needs `stop`. */
+    breakEvenAfterR?: number;
+    /** Risk this percent of equity, sized from the distance to `stop`, instead of the settings' sizing mode. Needs `stop`. */
+    riskPercent?: number;
     comment?: string;
   };
 
@@ -490,6 +494,10 @@ export function runScript(req: RunRequest): RunResult {
             : null,
         trail: Array.isArray(o.trail) ? o.trail : null,
         qty: Number.isFinite(o.qty ?? NaN) ? (o.qty as number) : null,
+        breakEvenAfterR:
+          stop !== null && Number.isFinite(o.breakEvenAfterR ?? NaN) ? (o.breakEvenAfterR as number) : null,
+        riskPercent:
+          stop !== null && Number.isFinite(o.riskPercent ?? NaN) ? (o.riskPercent as number) : null,
         comment: o.comment ?? (side === "long" ? "Long" : "Short"),
       };
       strategyOut.entries.push(rec);

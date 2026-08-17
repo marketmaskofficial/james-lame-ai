@@ -154,6 +154,21 @@ export type StrategyEntryOut = {
   trail: number[] | null;
   /** Script-declared quantity override, if any. */
   qty: number | null;
+  /**
+   * Move the stop to breakeven (entry price) once the position has moved
+   * this many multiples of its initial risk (|entry - stop|) in its favour.
+   * Requires `stop` to be set; ignored otherwise. Like `trail`, only ever
+   * moves the stop in the position's favour, never loosens it.
+   */
+  breakEvenAfterR: number | null;
+  /**
+   * Position size as a percent of equity risked, derived from the distance
+   * to `stop` rather than notional value — e.g. riskPercent: 1 with a stop
+   * $50 away risks 1% of equity regardless of the instrument's price.
+   * Requires `stop`; the engine falls back to the sizing settings' mode
+   * when absent.
+   */
+  riskPercent: number | null;
   comment: string;
 };
 

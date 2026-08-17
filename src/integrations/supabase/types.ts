@@ -97,6 +97,45 @@ export type Database = {
         }
         Relationships: []
       }
+      backtest_runs: {
+        Row: {
+          code: string
+          created_at: string
+          id: string
+          interval: string
+          label: string | null
+          report: Json
+          settings: Json
+          strategy_name: string
+          symbol: string
+          user_id: string
+        }
+        Insert: {
+          code: string
+          created_at?: string
+          id?: string
+          interval: string
+          label?: string | null
+          report: Json
+          settings: Json
+          strategy_name: string
+          symbol: string
+          user_id: string
+        }
+        Update: {
+          code?: string
+          created_at?: string
+          id?: string
+          interval?: string
+          label?: string | null
+          report?: Json
+          settings?: Json
+          strategy_name?: string
+          symbol?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       broker_audit_log: {
         Row: {
           account_id: string | null

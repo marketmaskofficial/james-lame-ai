@@ -1353,7 +1353,7 @@ function Studio() {
       built ??
       indicators.find((i) => i.key === editingKey) ??
       indicators[indicators.length - 1];
-    return { name: active.result.meta.name, strategy: active.result.strategy };
+    return { name: active.result.meta.name, strategy: active.result.strategy, code: active.code };
   }, [indicators, editingKey]);
 
   // Backtest fills drawn on the chart so the rules can be verified visually.
