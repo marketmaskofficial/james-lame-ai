@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import {
@@ -35,7 +35,9 @@ import {
   TrendingUp,
   TrendingDown,
   Type as TypeIcon,
+  Maximize,
   Maximize2,
+  Minimize,
   ChevronsRight,
   PanelBottomClose,
   PanelBottomOpen,
@@ -146,23 +148,24 @@ export const Route = createFileRoute("/studio")({
   component: Studio,
 });
 
-const TOOLS: { id: DrawTool; icon: typeof MousePointer2; label: string }[] = [
-  { id: "cursor", icon: MousePointer2, label: "Cursor" },
-  { id: "select", icon: MousePointer2, label: "Select / move drawings" },
-  { id: "trend", icon: TrendingUp, label: "Trend line" },
-  { id: "ray", icon: Crosshair, label: "Ray" },
-  { id: "hline", icon: Minus, label: "Horizontal line" },
-  { id: "vline", icon: Minus, label: "Vertical line" },
-  { id: "rect", icon: Square, label: "Rectangle" },
-  { id: "fib", icon: Ruler, label: "Fib retracement" },
-  { id: "text", icon: TypeIcon, label: "Text" },
-  { id: "arrow", icon: ArrowUpRight, label: "Arrow" },
-  { id: "marker", icon: MapPin, label: "Marker" },
-  { id: "measure", icon: Pencil, label: "Measure" },
-  { id: "long", icon: TrendingUp, label: "Long position" },
-  { id: "short", icon: TrendingDown, label: "Short position" },
-  { id: "erase", icon: Trash2, label: "Erase" },
-
+/** `group` only drives a subtle divider between clusters in the toolbar — it
+ * has no effect on tool behaviour. */
+const TOOLS: { id: DrawTool; icon: typeof MousePointer2; label: string; group: string }[] = [
+  { id: "cursor", icon: MousePointer2, label: "Cursor", group: "select" },
+  { id: "select", icon: MousePointer2, label: "Select / move drawings", group: "select" },
+  { id: "trend", icon: TrendingUp, label: "Trend line", group: "shapes" },
+  { id: "ray", icon: Crosshair, label: "Ray", group: "shapes" },
+  { id: "hline", icon: Minus, label: "Horizontal line", group: "shapes" },
+  { id: "vline", icon: Minus, label: "Vertical line", group: "shapes" },
+  { id: "rect", icon: Square, label: "Rectangle", group: "shapes" },
+  { id: "fib", icon: Ruler, label: "Fib retracement", group: "annotate" },
+  { id: "text", icon: TypeIcon, label: "Text", group: "annotate" },
+  { id: "arrow", icon: ArrowUpRight, label: "Arrow", group: "annotate" },
+  { id: "marker", icon: MapPin, label: "Marker", group: "annotate" },
+  { id: "measure", icon: Pencil, label: "Measure", group: "annotate" },
+  { id: "long", icon: TrendingUp, label: "Long position", group: "position" },
+  { id: "short", icon: TrendingDown, label: "Short position", group: "position" },
+  { id: "erase", icon: Trash2, label: "Erase", group: "erase" },
 ];
 
 const CHART_TYPES: { id: ChartType; label: string }[] = [
@@ -382,6 +385,18 @@ function Studio() {
   const controlsRef = useRef<ChartControls | null>(null);
   const onChartReady = useCallback((c: ChartControls) => {
     controlsRef.current = c;
+  }, []);
+
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  useEffect(() => {
+    const onChange = () => setIsFullscreen(document.fullscreenElement === rootRef.current);
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+  const toggleFullscreen = useCallback(() => {
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void rootRef.current?.requestFullscreen();
   }, []);
 
   useEffect(() => setFavTfs(getFavoriteTimeframes()), []);
@@ -1376,7 +1391,7 @@ function Studio() {
   }, [backtestTrades]);
 
   return (
-    <div className="flex h-screen flex-col bg-background text-foreground">
+    <div ref={rootRef} className="flex h-screen flex-col bg-background text-foreground">
       {/* top bar */}
       <header className="flex shrink-0 items-center gap-3 border-b border-border bg-sidebar px-3 py-2">
         <Link
@@ -1466,6 +1481,7 @@ function Studio() {
         <div className="relative">
           <button
             onClick={() => setMenu((m) => (m === "type" ? null : "type"))}
+            title="Chart type"
             className="flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
           >
             {CHART_TYPES.find((c) => c.id === chartType)?.label}
@@ -1497,6 +1513,7 @@ function Studio() {
             setDock("saved");
             setDockOpen(true);
           }}
+          title="Open indicators panel"
           className="flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
         >
           <Sliders className="h-3.5 w-3.5" /> Indicators
@@ -1595,7 +1612,7 @@ function Studio() {
             }`}
           >
             <Radio
-              className={`h-3 w-3 ${
+              className={`h-3.5 w-3.5 ${
                 live && (liveStatus === "live" || liveStatus === "polling")
                   ? "animate-pulse"
                   : ""
@@ -1617,7 +1634,7 @@ function Studio() {
             title="Load older history"
             className="hidden rounded-md border border-border px-1.5 py-0.5 hover:text-foreground disabled:opacity-40 lg:inline-flex lg:items-center lg:gap-1"
           >
-            {loadingHistory && <Loader2 className="h-3 w-3 animate-spin" />}
+            {loadingHistory && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
             {bars.length} bars +
           </button>
           <button
@@ -1652,6 +1669,17 @@ function Studio() {
           >
             <Star className="h-3.5 w-3.5" />
           </button>
+          <button
+            title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+            onClick={toggleFullscreen}
+            className="rounded-md border border-border p-1 hover:text-foreground"
+          >
+            {isFullscreen ? (
+              <Minimize className="h-3.5 w-3.5" />
+            ) : (
+              <Maximize className="h-3.5 w-3.5" />
+            )}
+          </button>
         </div>
 
         <FeedbackButton
@@ -1671,19 +1699,23 @@ function Studio() {
       <div className="flex min-h-0 flex-1">
         {/* drawing rail */}
         <nav className="flex w-11 shrink-0 flex-col items-center gap-1 border-r border-border bg-sidebar py-2">
-          {TOOLS.map((t) => (
-            <button
-              key={t.id}
-              title={t.label}
-              onClick={() => setTool(t.id)}
-              className={`rounded-md p-2 ${
-                tool === t.id
-                  ? "bg-brand text-brand-foreground"
-                  : "text-muted-foreground hover:bg-accent hover:text-foreground"
-              }`}
-            >
-              <t.icon className="h-4 w-4" />
-            </button>
+          {TOOLS.map((t, i) => (
+            <Fragment key={t.id}>
+              {i > 0 && t.group !== TOOLS[i - 1].group && (
+                <div className="my-1 h-px w-6 bg-border" />
+              )}
+              <button
+                title={t.label}
+                onClick={() => setTool(t.id)}
+                className={`rounded-md p-2 ${
+                  tool === t.id
+                    ? "bg-brand text-brand-foreground"
+                    : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                }`}
+              >
+                <t.icon className="h-4 w-4" />
+              </button>
+            </Fragment>
           ))}
           <button
             title="Objects & styles"
@@ -1943,8 +1975,10 @@ function Studio() {
                 window.addEventListener("pointermove", move);
                 window.addEventListener("pointerup", up);
               }}
-              className="h-1 w-full cursor-row-resize bg-transparent hover:bg-brand/40"
-            />
+              className="group/resize flex h-2.5 w-full shrink-0 cursor-row-resize items-center justify-center hover:bg-brand/10"
+            >
+              <div className="h-1 w-10 rounded-full bg-border transition-colors group-hover/resize:bg-brand/70" />
+            </div>
           )}
           <div className="flex items-center gap-1 border-b border-border px-2 py-1.5">
             <button
@@ -2096,7 +2130,7 @@ function Studio() {
                         setCode(ex.code);
                         setEditingKey(null);
                       }}
-                      className="rounded-md border border-border px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+                      className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground"
                     >
                       {ex.name}
                     </button>

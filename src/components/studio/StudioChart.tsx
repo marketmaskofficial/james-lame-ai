@@ -542,13 +542,13 @@ export function StudioChart({
         crosshair: {
           mode: 0,
           vertLine: {
-            color: "rgba(230,184,0,0.55)",
+            color: "rgba(230,184,0,0.35)",
             width: 1,
             style: 3,
             labelBackgroundColor: "#e6b800",
           },
           horzLine: {
-            color: "rgba(230,184,0,0.55)",
+            color: "rgba(230,184,0,0.35)",
             width: 1,
             style: 3,
             labelBackgroundColor: "#e6b800",
@@ -656,7 +656,10 @@ export function StudioChart({
       borderDownColor: settings.downColor,
       wickUpColor: settings.upColor,
       wickDownColor: settings.downColor,
-      priceLineVisible: true,
+      // The current-price marker is the axis's own last-value label, not a
+      // line drawn across the whole pane — a full-width dashed line reads as
+      // clutter, not the axis-hugging convention real terminals use.
+      priceLineVisible: false,
       priceLineWidth: 1,
       priceLineStyle: 2,
       priceLineColor: "#e6b800",
@@ -669,12 +672,14 @@ export function StudioChart({
         upColor: settings.upColor,
         downColor: settings.downColor,
         thinBars: false,
+        priceLineVisible: false,
         priceLineColor: "#e6b800",
         priceLineStyle: 2,
       },
       line: {
         color: "#e6b800",
         lineWidth: 2,
+        priceLineVisible: false,
         priceLineColor: "#e6b800",
         priceLineStyle: 2,
       },
@@ -683,6 +688,7 @@ export function StudioChart({
         topColor: "rgba(230,184,0,0.28)",
         bottomColor: "rgba(230,184,0,0.01)",
         lineWidth: 2,
+        priceLineVisible: false,
         priceLineColor: "#e6b800",
         priceLineStyle: 2,
       },
