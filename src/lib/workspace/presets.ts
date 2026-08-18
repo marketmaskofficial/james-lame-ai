@@ -65,7 +65,7 @@ export const PRESETS: Record<"beginner" | "proOrderflow", WorkspaceLayout> = {
           kind: "tabs",
           id: "bottom-dock",
           tabs: [
-            inst("code-editor-1", "code-editor"),
+            { ...inst("code-editor-1", "code-editor"), pinned: true },
             inst("strategy-tester-1", "strategy-tester"),
             inst("positions-1", "positions"),
             inst("orders-1", "orders"),

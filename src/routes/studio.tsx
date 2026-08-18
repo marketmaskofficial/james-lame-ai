@@ -47,6 +47,9 @@ import {
   Star,
   Wallet,
   Wand2,
+  X,
+  MoreHorizontal,
+  GripVertical,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { fetchBars, TIMEFRAMES, timeframeLabel } from "@/lib/marketdata";
@@ -111,9 +114,22 @@ import { StrategyTester } from "@/components/studio/StrategyTester";
 import type { BacktestTrade } from "@/lib/backtest/engine";
 import { track } from "@/lib/telemetry";
 import type { AccountSnapshot, TradingAccount } from "@/lib/trading/types";
-import { findNodeById, WELL_KNOWN_NODE_IDS, type WidgetTypeId } from "@/lib/workspace/types";
+import {
+  findNodeById,
+  regionKindForNodeId,
+  WELL_KNOWN_NODE_IDS,
+  type WidgetTypeId,
+  type WorkspaceLayout,
+} from "@/lib/workspace/types";
 import { PRESETS } from "@/lib/workspace/presets";
 import { getWidgetDef } from "@/lib/workspace/widgetRegistry";
+import {
+  addWidgetToNode,
+  removeWidgetFromNode,
+  reorderWithinNode,
+  moveWidgetBetweenNodes,
+} from "@/lib/workspace/mutations";
+import { AddWidgetMenu } from "@/components/studio/AddWidgetMenu";
 import type { TradeLine } from "@/components/studio/StudioChart";
 import { getInstrument, pnlPerUnit } from "@/lib/trading/instruments";
 import {
@@ -190,6 +206,12 @@ type StudioIndicator = LoadedIndicator & {
   savedId?: string;
 };
 
+// Both unions now include every widget type placeable in EITHER region (not
+// just the region it originally shipped in), because UI-4c lets a widget
+// move sidebar<->dock. The tab-id string a widget maps to is the same
+// regardless of which region renders it (WIDGET_TAB_ID below), so widening
+// both unions to the shared full set is what makes a moved widget legally
+// settable via setDock/setRightTab without a runtime cast.
 type DockTab =
   | "code"
   | "tester"
@@ -198,42 +220,91 @@ type DockTab =
   | "history"
   | "journal"
   | "saved"
+  | "docs"
+  | "watchlist"
+  | "trade"
+  | "ai"
+  | "alerts";
+type RightTab =
+  | "watchlist"
+  | "trade"
+  | "ai"
+  | "alerts"
+  | "code"
+  | "tester"
+  | "positions"
+  | "orders"
+  | "history"
+  | "journal"
+  | "saved"
   | "docs";
-type RightTab = "watchlist" | "trade" | "ai" | "alerts";
 
 // This route's tab ids/icons predate the workspace registry and are threaded
 // through this file's state/switches everywhere below, so they stay as-is —
 // only the LIST (which tabs, in what order, with what label) now comes from
-// the registry's beginner preset instead of being duplicated as a literal.
-const RIGHT_TAB_BY_WIDGET: Partial<Record<WidgetTypeId, RightTab>> = {
+// the registry's tree instead of being duplicated as a literal. One shared
+// map covers both regions since the tab-id string per widget type doesn't
+// depend on which region it's rendered in.
+const WIDGET_TAB_ID: Partial<Record<WidgetTypeId, DockTab & RightTab>> = {
   watchlist: "watchlist",
   trade: "trade",
   "ai-builder": "ai",
   alerts: "alerts",
+  "code-editor": "code",
+  "strategy-tester": "tester",
+  positions: "positions",
+  orders: "orders",
+  history: "history",
+  journal: "journal",
+  "saved-indicators": "saved",
+  reference: "docs",
 };
-const RIGHT_TAB_ICONS: Record<RightTab, typeof Star> = {
+const TAB_ICON: Partial<Record<WidgetTypeId, typeof Star>> = {
   watchlist: Star,
   trade: Wallet,
-  ai: Wand2,
+  "ai-builder": Wand2,
   alerts: Bell,
+  "saved-indicators": Save,
+  history: History,
+  reference: BookOpen,
 };
 
 /**
- * Right-sidebar tab list — derived from PRESETS.beginner (UI-4b) instead of a
- * hand-written literal, so the workspace tree is the actual source of truth
- * for which panels render here, not a second copy of the same list.
+ * Tab list for one workspace-tree "tabs" node — used for both the right
+ * sidebar and bottom dock, live-derived from the current layout tree (not a
+ * one-time snapshot), so add/remove/reorder/move actually re-render.
  */
-const RIGHT_TABS: { id: RightTab; label: string; icon: typeof Star }[] = (() => {
-  const node = findNodeById(PRESETS.beginner.root, WELL_KNOWN_NODE_IDS.rightSidebar);
+type ComputedTab = {
+  id: DockTab & RightTab;
+  label: string;
+  icon: typeof Star;
+  instanceId: string;
+  pinned: boolean;
+  widgetTypeId: WidgetTypeId;
+  /** Whether this widget's renderableRegions includes the OTHER region — gates the "Move to…" affordance. */
+  canMoveToOtherRegion: boolean;
+};
+
+function computeTabsForNode(layout: WorkspaceLayout, nodeId: string): ComputedTab[] {
+  const node = findNodeById(layout.root, nodeId);
   if (!node || node.kind !== "tabs") return [];
-  const out: { id: RightTab; label: string; icon: typeof Star }[] = [];
+  const otherRegion = regionKindForNodeId(nodeId) === "sidebar" ? "dock" : "sidebar";
+  const out: ComputedTab[] = [];
   for (const t of node.tabs) {
-    const id = RIGHT_TAB_BY_WIDGET[t.widgetTypeId];
+    const id = WIDGET_TAB_ID[t.widgetTypeId];
     if (!id) continue;
-    out.push({ id, label: t.title ?? getWidgetDef(t.widgetTypeId).label, icon: RIGHT_TAB_ICONS[id] });
+    out.push({
+      id,
+      label: t.title ?? getWidgetDef(t.widgetTypeId).label,
+      icon: TAB_ICON[t.widgetTypeId] ?? Layers,
+      instanceId: t.instanceId,
+      pinned: Boolean(t.pinned),
+      widgetTypeId: t.widgetTypeId,
+      canMoveToOtherRegion: getWidgetDef(t.widgetTypeId).renderableRegions.includes(otherRegion),
+    });
   }
   return out;
-})();
+}
 
 // A script can run to completion (no throw, `result.ok`) while still
 // producing nothing visible — a session/condition that never fires, a
@@ -363,32 +434,6 @@ function logRenderOutcome(
   );
 }
 
-const DOCK_TAB_BY_WIDGET: Partial<Record<WidgetTypeId, DockTab>> = {
-  "code-editor": "code",
-  "strategy-tester": "tester",
-  positions: "positions",
-  orders: "orders",
-  history: "history",
-  journal: "journal",
-  "saved-indicators": "saved",
-  reference: "docs",
-};
-
-/**
- * Bottom-dock tab list — derived from PRESETS.beginner (UI-4b) instead of a
- * hand-written literal, same rationale as RIGHT_TABS above.
- */
-const DOCK_TABS: Array<{ id: DockTab; label: string }> = (() => {
-  const node = findNodeById(PRESETS.beginner.root, WELL_KNOWN_NODE_IDS.bottomDock);
-  if (!node || node.kind !== "tabs") return [];
-  const out: Array<{ id: DockTab; label: string }> = [];
-  for (const t of node.tabs) {
-    const id = DOCK_TAB_BY_WIDGET[t.widgetTypeId];
-    if (!id) continue;
-    out.push({ id, label: t.title ?? getWidgetDef(t.widgetTypeId).label });
-  }
-  return out;
-})();
 
 function Studio() {
 
@@ -421,6 +466,75 @@ function Studio() {
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [selectedDrawing, setSelectedDrawing] = useState<string | null>(null);
   const [objectsOpen, setObjectsOpen] = useState(false);
+
+  // UI-4c: live, mutable workspace layout tree — source of truth for which
+  // widgets are open in the sidebar/dock and in what order. No persistence
+  // yet (that's 4d): reloading the page always starts back at the Beginner
+  // preset, which is expected, not a bug.
+  const [layout, setLayout] = useState<WorkspaceLayout>(PRESETS.beginner);
+  const rightTabs = useMemo(
+    () => computeTabsForNode(layout, WELL_KNOWN_NODE_IDS.rightSidebar),
+    [layout],
+  );
+  const dockTabsList = useMemo(
+    () => computeTabsForNode(layout, WELL_KNOWN_NODE_IDS.bottomDock),
+    [layout],
+  );
+  const rightWidgetTypeIds = useMemo(() => {
+    const node = findNodeById(layout.root, WELL_KNOWN_NODE_IDS.rightSidebar);
+    return node && node.kind === "tabs" ? node.tabs.map((t) => t.widgetTypeId) : [];
+  }, [layout]);
+  const dockWidgetTypeIds = useMemo(() => {
+    const node = findNodeById(layout.root, WELL_KNOWN_NODE_IDS.bottomDock);
+    return node && node.kind === "tabs" ? node.tabs.map((t) => t.widgetTypeId) : [];
+  }, [layout]);
+
+  /** Keeps the legacy `dock`/`rightTab` selection state in sync with a node's activeInstanceId after any layout mutation that could change it. */
+  const syncActiveTab = useCallback((newLayout: WorkspaceLayout, nodeId: string) => {
+    const node = findNodeById(newLayout.root, nodeId);
+    if (!node || node.kind !== "tabs") return;
+    const active = node.tabs.find((t) => t.instanceId === node.activeInstanceId);
+    const id = active ? WIDGET_TAB_ID[active.widgetTypeId] : undefined;
+    if (!id) return;
+    if (nodeId === WELL_KNOWN_NODE_IDS.rightSidebar) setRightTab(id);
+    else if (nodeId === WELL_KNOWN_NODE_IDS.bottomDock) setDock(id);
+  }, []);
+
+  const addWidget = useCallback(
+    (nodeId: string, widgetTypeId: WidgetTypeId) => {
+      setLayout((prev) => {
+        const next = addWidgetToNode(prev, nodeId, widgetTypeId);
+        syncActiveTab(next, nodeId);
+        return next;
+      });
+    },
+    [syncActiveTab],
+  );
+  const removeWidget = useCallback(
+    (nodeId: string, instanceId: string) => {
+      setLayout((prev) => {
+        const next = removeWidgetFromNode(prev, nodeId, instanceId);
+        syncActiveTab(next, nodeId);
+        return next;
+      });
+    },
+    [syncActiveTab],
+  );
+  const reorderWidget = useCallback((nodeId: string, fromIndex: number, toIndex: number) => {
+    setLayout((prev) => reorderWithinNode(prev, nodeId, fromIndex, toIndex));
+  }, []);
+  const moveWidget = useCallback(
+    (instanceId: string, fromNodeId: string, toNodeId: string) => {
+      setLayout((prev) => {
+        const next = moveWidgetBetweenNodes(prev, instanceId, fromNodeId, toNodeId);
+        syncActiveTab(next, fromNodeId);
+        syncActiveTab(next, toNodeId);
+        return next;
+      });
+    },
+    [syncActiveTab],
+  );
+
   const [dock, setDock] = useState<DockTab>("code");
   const [dockHeight, setDockHeight] = useState(320);
   const [dockState, setDockState] = useState<"collapsed" | "normal" | "maximized">("normal");
@@ -2067,22 +2181,62 @@ function Studio() {
               )}
             </button>
             <div className="mx-0.5 h-4 w-px bg-border" />
-            {DOCK_TABS.map((d) => (
-              <button
-                key={d.id}
-                onClick={() => {
-                  setDock(d.id);
-                  openDock();
+            {dockTabsList.map((d, i) => (
+              <div
+                key={d.instanceId}
+                draggable
+                onDragStart={(e) => e.dataTransfer.setData("text/plain", String(i))}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const from = Number(e.dataTransfer.getData("text/plain"));
+                  if (!Number.isNaN(from)) reorderWidget(WELL_KNOWN_NODE_IDS.bottomDock, from, i);
                 }}
-                className={`flex h-7 items-center rounded-[6px] px-2 text-[13px] ${
-                  dock === d.id
-                    ? "bg-accent text-foreground"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
+                className="group/tab relative flex items-center"
               >
-                {d.label}
-              </button>
+                <button
+                  onClick={() => {
+                    setDock(d.id);
+                    openDock();
+                  }}
+                  className={`flex h-7 cursor-grab items-center gap-1 rounded-[6px] px-2 text-[13px] active:cursor-grabbing ${
+                    dock === d.id
+                      ? "bg-accent text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {d.label}
+                </button>
+                <span className="hidden items-center group-hover/tab:flex">
+                  {d.canMoveToOtherRegion && (
+                    <button
+                      title={`Move to right sidebar`}
+                      onClick={() => {
+                        moveWidget(d.instanceId, WELL_KNOWN_NODE_IDS.bottomDock, WELL_KNOWN_NODE_IDS.rightSidebar);
+                        setSidebarState("expanded");
+                      }}
+                      className="flex h-5 w-5 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+                    >
+                      <MoreHorizontal className="h-3 w-3" />
+                    </button>
+                  )}
+                  {!d.pinned && dockTabsList.length > 1 && (
+                    <button
+                      title="Close"
+                      onClick={() => removeWidget(WELL_KNOWN_NODE_IDS.bottomDock, d.instanceId)}
+                      className="flex h-5 w-5 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-destructive"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  )}
+                </span>
+              </div>
             ))}
+            <AddWidgetMenu
+              region="dock"
+              openWidgetTypeIds={dockWidgetTypeIds}
+              onAdd={(widgetTypeId) => addWidget(WELL_KNOWN_NODE_IDS.bottomDock, widgetTypeId)}
+            />
             <div className="ml-auto flex items-center gap-1">
               <button
                 onClick={pasteFromClipboard}
@@ -2462,12 +2616,93 @@ function Studio() {
                 onSelectSymbol={setSymbol}
               />
             )}
+
+          {/* Sidebar-native widgets, rendered here too when moved into the
+              dock (UI-4c "move between regions") — same components, just a
+              second mount point, since none of them assume sidebar width. */}
+          {dockVisible && dock === "watchlist" && (
+            <div className="min-h-0 flex-1 overflow-auto">
+              <WatchlistPanel activeSymbol={symbol} signedIn={!!user} onSelect={(t) => setSymbol(t)} />
+            </div>
+          )}
+          {dockVisible && dock === "trade" && (
+            <div className="min-h-0 flex-1 overflow-auto">
+              <TradingPanel
+                symbol={symbol}
+                timeframe={interval}
+                lastPrice={lastPrice}
+                snapshot={snapshot}
+                busy={tradeMutation.isPending}
+                error={tradeError}
+                signedIn={!!user}
+                onSubmit={(draft) => {
+                  tradeMutation.mutate({ kind: "submit", draft });
+                  setDock("positions");
+                  openDock();
+                }}
+                onFlatten={() => tradeMutation.mutate({ kind: "flatten" })}
+                onReset={() => tradeMutation.mutate({ kind: "reset" })}
+                prefill={prefill}
+              />
+            </div>
+          )}
+          {dockVisible && dock === "ai" && (
+            <div className="min-h-0 flex-1 overflow-auto">
+              <AiSidePanel
+                seedPrompt={aiSeed}
+                onSeedConsumed={() => setAiSeed(null)}
+                code={code}
+                symbol={symbol}
+                interval={interval}
+                signedIn={!!user}
+                converting={translating}
+                spec={projectSpec}
+                onBuilt={(r) => {
+                  setProjectSpec(r.spec);
+                  setCode(r.sgscript);
+                  setDock("code");
+                  openDock();
+                  const key = builtKeyRef.current ?? `ai${Date.now()}`;
+                  builtKeyRef.current = key;
+                  void (async () => {
+                    const err = await runCode(r.sgscript, { settings: {}, silent: true, key });
+                    if (err) {
+                      const err2 = await runSource(r.sgscript, { key });
+                      track(err2 ? "add_to_chart_failed" : "add_to_chart_succeeded", { repaired: true });
+                    } else {
+                      track("add_to_chart_succeeded", { repaired: false });
+                      setNotice(finalNotice("Indicator plotted on the chart."));
+                    }
+                  })();
+                }}
+                onConvert={() => {
+                  setTranslating(true);
+                  setRunError(null);
+                  setNotice("Converting to SGScript…");
+                  translateFn({ data: { source: code } })
+                    .then((r) => {
+                      setCode(r.code);
+                      setDock("code");
+                      openDock();
+                      setNotice("Converted — press Add to Chart.");
+                    })
+                    .catch((e: unknown) => setRunError(e instanceof Error ? e.message : "Conversion failed"))
+                    .finally(() => setTranslating(false));
+                }}
+              />
+            </div>
+          )}
+          {dockVisible && dock === "alerts" && (
+            <div className="min-h-0 flex-1 overflow-auto">
+              <AlertsSidePanel symbol={symbol} lastPrice={lastPrice} signedIn={!!user} />
+            </div>
+          )}
           </section>
         </main>
 
         {sidebarState === "collapsed" && (
           <aside className="hidden w-[42px] shrink-0 flex-col items-center gap-0.5 border-l border-border bg-panel py-1.5 lg:flex">
-            {RIGHT_TABS.map((t) => (
+            {rightTabs.map((t) => (
               <button
                 key={t.id}
                 title={t.label}
@@ -2511,19 +2746,69 @@ function Studio() {
             style={{ width: sidebarWidth }}
           >
             <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-border px-1.5">
-              {RIGHT_TABS.map((t) => (
-                <button
-                  key={t.id}
-                  onClick={() => setRightTab(t.id)}
-                  className={`flex-1 rounded-[6px] px-1.5 py-1 text-[11px] font-medium uppercase tracking-wide transition ${
-                    rightTab === t.id
-                      ? "bg-accent text-foreground"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  {t.label}
-                </button>
-              ))}
+              {/* Tabs size to their own content and the strip scrolls
+                  horizontally if it ever overflows, instead of every tab
+                  being squeezed into an equal flex-1 share (which is what
+                  truncated "WATCHLIST" down to "WAT…" even at the default
+                  4-tab width). Capability gating below caps the sidebar at
+                  its 4 built-in widgets — a 5th can't reach it without new
+                  cross-region rendering — so this only ever needs to fit
+                  those, comfortably, even at the narrowest 240px width. */}
+              <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
+                {rightTabs.map((t, i) => (
+                  <div
+                    key={t.instanceId}
+                    draggable
+                    onDragStart={(e) => e.dataTransfer.setData("text/plain", String(i))}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      const from = Number(e.dataTransfer.getData("text/plain"));
+                      if (!Number.isNaN(from)) reorderWidget(WELL_KNOWN_NODE_IDS.rightSidebar, from, i);
+                    }}
+                    className="group/tab flex shrink-0 items-center"
+                  >
+                    <button
+                      onClick={() => setRightTab(t.id)}
+                      className={`max-w-[110px] cursor-grab truncate rounded-[6px] px-1.5 py-1 text-left text-[11px] font-medium uppercase tracking-wide transition active:cursor-grabbing ${
+                        rightTab === t.id
+                          ? "bg-accent text-foreground"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {t.label}
+                    </button>
+                    {/* Zero width until hovered — flexbox reflow (grows the
+                        strip, shifts later tabs over), not overlap, so it
+                        never covers the label. */}
+                    <span className="flex w-0 shrink-0 items-center overflow-hidden opacity-0 transition-all group-hover/tab:w-9 group-hover/tab:opacity-100">
+                      {t.canMoveToOtherRegion && (
+                        <button
+                          title="Move to bottom panel"
+                          onClick={() => moveWidget(t.instanceId, WELL_KNOWN_NODE_IDS.rightSidebar, WELL_KNOWN_NODE_IDS.bottomDock)}
+                          className="flex h-4 w-4 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+                        >
+                          <MoreHorizontal className="h-2.5 w-2.5" />
+                        </button>
+                      )}
+                      {!t.pinned && rightTabs.length > 1 && (
+                        <button
+                          title="Close"
+                          onClick={() => removeWidget(WELL_KNOWN_NODE_IDS.rightSidebar, t.instanceId)}
+                          className="flex h-4 w-4 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-destructive"
+                        >
+                          <X className="h-2.5 w-2.5" />
+                        </button>
+                      )}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <AddWidgetMenu
+                region="sidebar"
+                openWidgetTypeIds={rightWidgetTypeIds}
+                onAdd={(widgetTypeId) => addWidget(WELL_KNOWN_NODE_IDS.rightSidebar, widgetTypeId)}
+              />
               <button
                 title="Collapse sidebar"
                 onClick={() => setSidebarState("collapsed")}
@@ -2612,12 +2897,33 @@ function Studio() {
                 prefill={prefill}
               />
 
-            ) : (
+            ) : rightTab === "watchlist" ? (
             <WatchlistPanel
               activeSymbol={symbol}
               signedIn={!!user}
               onSelect={(t) => setSymbol(t)}
             />
+            ) : (
+              // A dock-native widget (Code/Strategy tester/Positions/Orders/
+              // History/Journal/Saved/Reference) moved into the sidebar via
+              // UI-4c's "move between regions" action. Its content isn't
+              // built to render in the sidebar's narrower layout yet — an
+              // honest limitation, not a silent blank panel or fake content.
+              <div className="flex flex-1 flex-col items-center justify-center gap-2 p-4 text-center">
+                <p className="text-[11px] text-muted-foreground">
+                  This widget isn't available in the compact sidebar view yet.
+                </p>
+                <button
+                  onClick={() => {
+                    const active = rightTabs.find((t) => t.id === rightTab);
+                    if (active)
+                      moveWidget(active.instanceId, WELL_KNOWN_NODE_IDS.rightSidebar, WELL_KNOWN_NODE_IDS.bottomDock);
+                  }}
+                  className="rounded-[6px] border border-border px-2 py-1 text-[11px] hover:bg-accent"
+                >
+                  Move to bottom panel
+                </button>
+              </div>
             )}
           </aside>
         )}

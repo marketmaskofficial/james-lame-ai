@@ -57,6 +57,16 @@ export type WidgetTypeDef = {
    * "coming-soon" widget; this is the honest substitute for that.
    */
   comingSoonReason?: string;
+  /**
+   * Which existing regions this widget type has REAL rendering wired up for
+   * today — not an aspiration, a fact about the current codebase. A region
+   * move/add is only ever offered (and only ever succeeds at the mutator
+   * level — see mutations.ts) when the destination is in this list, so the
+   * "this widget isn't available here yet" fallback can never be the result
+   * of a normal UI-driven move; it only exists as defensive last-resort
+   * insurance against a future bug.
+   */
+  renderableRegions: Array<"sidebar" | "dock">;
 };
 
 /**
@@ -69,6 +79,14 @@ export type WidgetInstance = {
   widgetTypeId: WidgetTypeId;
   /** User override of the registry's default label, if renamed. */
   title?: string;
+  /**
+   * When true, this specific open instance can't be closed — a property of
+   * how a layout USES a widget (an instance placed by a preset), not of the
+   * widget type itself, since nothing is inherently "required" globally.
+   * Enforced by `removeWidgetFromNode`, not just the UI, so it can't be
+   * bypassed by calling the mutator directly.
+   */
+  pinned?: boolean;
 };
 
 export type LayoutNode =
@@ -129,5 +147,17 @@ export function findNodeById(node: LayoutNode, id: string): LayoutNode | null {
       if (found) return found;
     }
   }
+  return null;
+}
+
+/**
+ * Maps a "tabs" node id to the capability-region label a WidgetTypeDef's
+ * `renderableRegions` speaks in. Returns null for node ids that aren't one
+ * of the two customizable regions (e.g. the fixed chart area) — capability
+ * gating only applies to regions a widget can actually be added/moved into.
+ */
+export function regionKindForNodeId(nodeId: string): "sidebar" | "dock" | null {
+  if (nodeId === WELL_KNOWN_NODE_IDS.rightSidebar) return "sidebar";
+  if (nodeId === WELL_KNOWN_NODE_IDS.bottomDock) return "dock";
   return null;
 }

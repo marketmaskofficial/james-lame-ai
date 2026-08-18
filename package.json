@@ -13,7 +13,8 @@
     "test:pine-parity": "tsx test/pine-parity/run.mjs",
     "test:render-regression": "tsx test/render-regression/run.mjs",
     "test:market": "tsx test/market/candles.test.mjs",
-    "test:backtest": "tsx test/backtest/engine.test.mjs"
+    "test:backtest": "tsx test/backtest/engine.test.mjs",
+    "test:workspace": "tsx test/workspace/tree.test.mjs"
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.42",

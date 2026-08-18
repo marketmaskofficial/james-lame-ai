@@ -18,78 +18,101 @@ export const WIDGET_REGISTRY: Record<WidgetTypeId, WidgetTypeDef> = {
     category: "core",
     availability: "available",
     allowMultipleInstances: true,
+    // Not placeable via the sidebar/dock add-widget system at all (it's the
+    // fixed chart-area node) — value is unused but structurally required.
+    renderableRegions: ["dock"],
   },
   watchlist: {
     id: "watchlist",
     label: "Watchlist",
     category: "core",
     availability: "available",
+    renderableRegions: ["sidebar", "dock"],
   },
   trade: {
     id: "trade",
     label: "Trade",
     category: "account",
     availability: "available",
+    renderableRegions: ["sidebar", "dock"],
   },
   "ai-builder": {
     id: "ai-builder",
     label: "AI",
     category: "core",
     availability: "available",
+    renderableRegions: ["sidebar", "dock"],
   },
   alerts: {
     id: "alerts",
     label: "Alerts",
     category: "core",
     availability: "available",
+    renderableRegions: ["sidebar", "dock"],
   },
+  // The remaining "available" widgets below are dock-only: studio.tsx's
+  // sidebar branch has real rendering code for exactly watchlist/trade/
+  // ai-builder/alerts (checked directly, not assumed) and nothing else —
+  // every one of these hits the generic "not available in the sidebar yet"
+  // fallback regardless of how simple or complex its own content is, so
+  // marking any of them sidebar-capable without first building that
+  // rendering would defeat the whole point of this capability list. That's
+  // full cross-region rendering work, explicitly out of scope here.
   "code-editor": {
     id: "code-editor",
     label: "Code",
     category: "core",
     availability: "available",
+    renderableRegions: ["dock"],
   },
   "strategy-tester": {
     id: "strategy-tester",
     label: "Strategy tester",
     category: "core",
     availability: "available",
+    renderableRegions: ["dock"],
   },
   positions: {
     id: "positions",
     label: "Positions",
     category: "account",
     availability: "available",
+    renderableRegions: ["dock"],
   },
   orders: {
     id: "orders",
     label: "Orders",
     category: "account",
     availability: "available",
+    renderableRegions: ["dock"],
   },
   history: {
     id: "history",
     label: "History",
     category: "account",
     availability: "available",
+    renderableRegions: ["dock"],
   },
   journal: {
     id: "journal",
     label: "Journal",
     category: "account",
     availability: "available",
+    renderableRegions: ["dock"],
   },
   "saved-indicators": {
     id: "saved-indicators",
     label: "Saved",
     category: "core",
     availability: "available",
+    renderableRegions: ["dock"],
   },
   reference: {
     id: "reference",
     label: "Reference",
     category: "core",
     availability: "available",
+    renderableRegions: ["dock"],
   },
   scanner: {
     id: "scanner",
@@ -97,6 +120,7 @@ export const WIDGET_REGISTRY: Record<WidgetTypeId, WidgetTypeDef> = {
     category: "analysis",
     availability: "coming-soon",
     comingSoonReason: "Needs a market-wide screening data source that isn't connected yet.",
+    renderableRegions: ["dock"],
   },
   news: {
     id: "news",
@@ -104,6 +128,7 @@ export const WIDGET_REGISTRY: Record<WidgetTypeId, WidgetTypeDef> = {
     category: "analysis",
     availability: "coming-soon",
     comingSoonReason: "Needs a licensed news feed that isn't connected yet.",
+    renderableRegions: ["dock"],
   },
   dom: {
     id: "dom",
@@ -111,6 +136,7 @@ export const WIDGET_REGISTRY: Record<WidgetTypeId, WidgetTypeDef> = {
     category: "orderflow",
     availability: "coming-soon",
     comingSoonReason: "Needs a live Level 2 order-book data source that isn't connected yet.",
+    renderableRegions: ["dock"],
   },
   footprint: {
     id: "footprint",
@@ -118,6 +144,7 @@ export const WIDGET_REGISTRY: Record<WidgetTypeId, WidgetTypeDef> = {
     category: "orderflow",
     availability: "coming-soon",
     comingSoonReason: "Needs tick-level bid/ask trade data that isn't connected yet.",
+    renderableRegions: ["dock"],
   },
   "time-sales": {
     id: "time-sales",
@@ -125,6 +152,7 @@ export const WIDGET_REGISTRY: Record<WidgetTypeId, WidgetTypeDef> = {
     category: "orderflow",
     availability: "coming-soon",
     comingSoonReason: "Needs a live trade-tape data source that isn't connected yet.",
+    renderableRegions: ["dock"],
   },
   heatmap: {
     id: "heatmap",
@@ -132,6 +160,7 @@ export const WIDGET_REGISTRY: Record<WidgetTypeId, WidgetTypeDef> = {
     category: "analysis",
     availability: "coming-soon",
     comingSoonReason: "Needs cross-market real-time data that isn't connected yet.",
+    renderableRegions: ["dock"],
   },
   "volume-profile": {
     id: "volume-profile",
@@ -139,6 +168,7 @@ export const WIDGET_REGISTRY: Record<WidgetTypeId, WidgetTypeDef> = {
     category: "analysis",
     availability: "coming-soon",
     comingSoonReason: "Needs tick-level volume-at-price data that isn't connected yet.",
+    renderableRegions: ["dock"],
   },
 };
 
