@@ -130,6 +130,15 @@ import {
   moveWidgetBetweenNodes,
 } from "@/lib/workspace/mutations";
 import { AddWidgetMenu } from "@/components/studio/AddWidgetMenu";
+import { LayoutMenu } from "@/components/studio/LayoutMenu";
+import {
+  CURRENT_LAYOUT_ID,
+  defaultLocalStore,
+  loadLocalStore,
+  saveLocalStore,
+  initialWorkspaceLayout,
+  type LocalWorkspaceStore,
+} from "@/lib/workspace/persistence";
 import type { TradeLine } from "@/components/studio/StudioChart";
 import { getInstrument, pnlPerUnit } from "@/lib/trading/instruments";
 import {
@@ -468,10 +477,109 @@ function Studio() {
   const [objectsOpen, setObjectsOpen] = useState(false);
 
   // UI-4c: live, mutable workspace layout tree — source of truth for which
-  // widgets are open in the sidebar/dock and in what order. No persistence
-  // yet (that's 4d): reloading the page always starts back at the Beginner
-  // preset, which is expected, not a bug.
+  // widgets are open in the sidebar/dock and in what order.
+  // UI-4d: persisted locally (localStorage) so add/remove/reorder/move
+  // customizations, and any named saved layouts, survive a reload. Signed-in
+  // Supabase persistence (src/lib/workspace-layouts.functions.ts) exists but
+  // isn't wired into this initial-load path yet — local storage is the only
+  // source of truth today, exactly like every other piece of Chart Studio's
+  // per-device UI state.
+  // Initialized with safe, SSR-identical defaults (PRESETS.beginner) — NOT
+  // read from localStorage here, which would read real client-only data
+  // during the very first client render (before hydration reconciles
+  // against the server's markup) and produce a genuine hydration mismatch,
+  // since the server never has localStorage to read at all. Loading the
+  // real persisted store happens in the mount effect below instead, exactly
+  // matching how the pre-existing `sg.studio.layout` persistence already
+  // does it elsewhere in this file (read in an effect, not an initializer).
+  const [workspaceStore, setWorkspaceStore] = useState<LocalWorkspaceStore>(() => defaultLocalStore());
   const [layout, setLayout] = useState<WorkspaceLayout>(PRESETS.beginner);
+  useEffect(() => {
+    const store = loadLocalStore();
+    const initial = initialWorkspaceLayout(store);
+    // initialWorkspaceLayout prefers defaultLayoutId over the stored active
+    // pointer — if that's what actually got loaded, activeLayoutId must
+    // reflect it too, or the Layouts menu would show "Current (unsaved)" as
+    // active while a different, named layout is really on screen.
+    const usedDefault = store.defaultLayoutId && store.layouts.some((l) => l.id === store.defaultLayoutId);
+    setWorkspaceStore(usedDefault ? { ...store, activeLayoutId: store.defaultLayoutId as string } : store);
+    setLayout(initial);
+  }, []);
+
+  // Mirror the live tree into the store's scratch slot whenever it changes —
+  // this is what "Current (unsaved)" means, and what makes a reload land
+  // back on it without the user having to name/save anything first. Named
+  // layouts (layouts[]) are NOT touched by this — they only change when the
+  // user explicitly saves again (see saveActiveNamedLayout below).
+  useEffect(() => {
+    setWorkspaceStore((prev) => (prev.currentLayout === layout ? prev : { ...prev, currentLayout: layout }));
+  }, [layout]);
+
+  // Persist the whole store — named layouts, active/default pointers, and
+  // the mirrored scratch slot — whenever any of it changes. The only place
+  // that writes to localStorage; every action below just calls
+  // setWorkspaceStore and this effect does the actual autosave.
+  useEffect(() => {
+    saveLocalStore(workspaceStore);
+  }, [workspaceStore]);
+
+  const switchToLayout = useCallback(
+    (id: string) => {
+      if (id === CURRENT_LAYOUT_ID) {
+        setLayout(workspaceStore.currentLayout);
+        setWorkspaceStore((prev) => ({ ...prev, activeLayoutId: CURRENT_LAYOUT_ID }));
+        return;
+      }
+      const found = workspaceStore.layouts.find((l) => l.id === id);
+      if (!found) return;
+      setLayout(found);
+      setWorkspaceStore((prev) => ({ ...prev, activeLayoutId: id }));
+    },
+    [workspaceStore],
+  );
+  const saveAsNewLayout = useCallback(
+    (name: string) => {
+      const id = crypto.randomUUID();
+      const saved: WorkspaceLayout = { ...layout, id, name, isPreset: false };
+      setWorkspaceStore((prev) => ({ ...prev, layouts: [...prev.layouts, saved], activeLayoutId: id }));
+    },
+    [layout],
+  );
+  const saveActiveNamedLayout = useCallback(() => {
+    setWorkspaceStore((prev) => {
+      if (prev.activeLayoutId === CURRENT_LAYOUT_ID) return prev;
+      const layouts = prev.layouts.map((l) =>
+        l.id === prev.activeLayoutId ? { ...layout, id: l.id, name: l.name, isPreset: false } : l,
+      );
+      return { ...prev, layouts };
+    });
+  }, [layout]);
+  const renameLayout = useCallback((id: string, name: string) => {
+    setWorkspaceStore((prev) => ({
+      ...prev,
+      layouts: prev.layouts.map((l) => (l.id === id ? { ...l, name } : l)),
+    }));
+  }, []);
+  const deleteLayout = useCallback(
+    (id: string) => {
+      const wasActive = workspaceStore.activeLayoutId === id;
+      setWorkspaceStore((prev) => ({
+        ...prev,
+        layouts: prev.layouts.filter((l) => l.id !== id),
+        activeLayoutId: prev.activeLayoutId === id ? CURRENT_LAYOUT_ID : prev.activeLayoutId,
+        defaultLayoutId: prev.defaultLayoutId === id ? null : prev.defaultLayoutId,
+      }));
+      if (wasActive) setLayout(workspaceStore.currentLayout);
+    },
+    [workspaceStore],
+  );
+  const setDefaultLayout = useCallback((id: string | null) => {
+    setWorkspaceStore((prev) => ({ ...prev, defaultLayoutId: id }));
+  }, []);
+  const resetToBeginner = useCallback(() => {
+    setLayout(PRESETS.beginner);
+    setWorkspaceStore((prev) => ({ ...prev, activeLayoutId: CURRENT_LAYOUT_ID }));
+  }, []);
   const rightTabs = useMemo(
     () => computeTabsForNode(layout, WELL_KNOWN_NODE_IDS.rightSidebar),
     [layout],
@@ -1884,6 +1992,18 @@ function Studio() {
               <PanelRightOpen className="h-3.5 w-3.5" />
             )}
           </button>
+          <LayoutMenu
+            layouts={workspaceStore.layouts}
+            activeLayoutId={workspaceStore.activeLayoutId}
+            defaultLayoutId={workspaceStore.defaultLayoutId}
+            onSwitch={switchToLayout}
+            onSaveAsNew={saveAsNewLayout}
+            onSaveActive={saveActiveNamedLayout}
+            onRename={renameLayout}
+            onDelete={deleteLayout}
+            onSetDefault={setDefaultLayout}
+            onResetToBeginner={resetToBeginner}
+          />
           <button
             title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
             onClick={toggleFullscreen}
