@@ -111,6 +111,9 @@ import { StrategyTester } from "@/components/studio/StrategyTester";
 import type { BacktestTrade } from "@/lib/backtest/engine";
 import { track } from "@/lib/telemetry";
 import type { AccountSnapshot, TradingAccount } from "@/lib/trading/types";
+import { findNodeById, WELL_KNOWN_NODE_IDS, type WidgetTypeId } from "@/lib/workspace/types";
+import { PRESETS } from "@/lib/workspace/presets";
+import { getWidgetDef } from "@/lib/workspace/widgetRegistry";
 import type { TradeLine } from "@/components/studio/StudioChart";
 import { getInstrument, pnlPerUnit } from "@/lib/trading/instruments";
 import {
@@ -198,12 +201,39 @@ type DockTab =
   | "docs";
 type RightTab = "watchlist" | "trade" | "ai" | "alerts";
 
-const RIGHT_TABS: { id: RightTab; label: string; icon: typeof Star }[] = [
-  { id: "watchlist", label: "Watchlist", icon: Star },
-  { id: "trade", label: "Trade", icon: Wallet },
-  { id: "ai", label: "AI", icon: Wand2 },
-  { id: "alerts", label: "Alerts", icon: Bell },
-];
+// This route's tab ids/icons predate the workspace registry and are threaded
+// through this file's state/switches everywhere below, so they stay as-is —
+// only the LIST (which tabs, in what order, with what label) now comes from
+// the registry's beginner preset instead of being duplicated as a literal.
+const RIGHT_TAB_BY_WIDGET: Partial<Record<WidgetTypeId, RightTab>> = {
+  watchlist: "watchlist",
+  trade: "trade",
+  "ai-builder": "ai",
+  alerts: "alerts",
+};
+const RIGHT_TAB_ICONS: Record<RightTab, typeof Star> = {
+  watchlist: Star,
+  trade: Wallet,
+  ai: Wand2,
+  alerts: Bell,
+};
+
+/**
+ * Right-sidebar tab list — derived from PRESETS.beginner (UI-4b) instead of a
+ * hand-written literal, so the workspace tree is the actual source of truth
+ * for which panels render here, not a second copy of the same list.
+ */
+const RIGHT_TABS: { id: RightTab; label: string; icon: typeof Star }[] = (() => {
+  const node = findNodeById(PRESETS.beginner.root, WELL_KNOWN_NODE_IDS.rightSidebar);
+  if (!node || node.kind !== "tabs") return [];
+  const out: { id: RightTab; label: string; icon: typeof Star }[] = [];
+  for (const t of node.tabs) {
+    const id = RIGHT_TAB_BY_WIDGET[t.widgetTypeId];
+    if (!id) continue;
+    out.push({ id, label: t.title ?? getWidgetDef(t.widgetTypeId).label, icon: RIGHT_TAB_ICONS[id] });
+  }
+  return out;
+})();
 
 // A script can run to completion (no throw, `result.ok`) while still
 // producing nothing visible — a session/condition that never fires, a
@@ -333,16 +363,32 @@ function logRenderOutcome(
   );
 }
 
-const DOCK_TABS: Array<{ id: DockTab; label: string }> = [
-  { id: "code", label: "Code" },
-  { id: "tester", label: "Strategy tester" },
-  { id: "positions", label: "Positions" },
-  { id: "orders", label: "Orders" },
-  { id: "history", label: "History" },
-  { id: "journal", label: "Journal" },
-  { id: "saved", label: "Saved" },
-  { id: "docs", label: "Reference" },
-];
+const DOCK_TAB_BY_WIDGET: Partial<Record<WidgetTypeId, DockTab>> = {
+  "code-editor": "code",
+  "strategy-tester": "tester",
+  positions: "positions",
+  orders: "orders",
+  history: "history",
+  journal: "journal",
+  "saved-indicators": "saved",
+  reference: "docs",
+};
+
+/**
+ * Bottom-dock tab list — derived from PRESETS.beginner (UI-4b) instead of a
+ * hand-written literal, same rationale as RIGHT_TABS above.
+ */
+const DOCK_TABS: Array<{ id: DockTab; label: string }> = (() => {
+  const node = findNodeById(PRESETS.beginner.root, WELL_KNOWN_NODE_IDS.bottomDock);
+  if (!node || node.kind !== "tabs") return [];
+  const out: Array<{ id: DockTab; label: string }> = [];
+  for (const t of node.tabs) {
+    const id = DOCK_TAB_BY_WIDGET[t.widgetTypeId];
+    if (!id) continue;
+    out.push({ id, label: t.title ?? getWidgetDef(t.widgetTypeId).label });
+  }
+  return out;
+})();
 
 function Studio() {
 
