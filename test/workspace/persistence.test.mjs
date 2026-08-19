@@ -197,6 +197,35 @@ function withWarnCapture(fn) {
   ok("safeParse: a split collapses to its one surviving child", result.root.kind === "tabs" && result.root.id === "b");
 }
 
+{
+  // The exact resilience gate applied to local data is reused verbatim for a
+  // Supabase `workspace_layouts.layout` jsonb column value (UI-4d cloud
+  // sync) -- simulate a DB round-trip (JSON.parse(JSON.stringify(...)), same
+  // as the JSON-store round-trip test above) of a layout referencing a
+  // since-removed widget type, as if the app shipped a newer registry than
+  // when the row was saved.
+  const cloudRow = {
+    version: 1,
+    name: "Cloud Layout",
+    maximizedNodeId: null,
+    collapsedNodeIds: [],
+    root: {
+      kind: "tabs",
+      id: "bottom-dock",
+      tabs: [
+        { instanceId: "gone-1", widgetTypeId: "retired-widget-type" },
+        { instanceId: "journal-1", widgetTypeId: "journal" },
+      ],
+      activeInstanceId: "gone-1",
+    },
+  };
+  const result = safeParseWorkspaceLayout(JSON.parse(JSON.stringify(cloudRow)));
+  ok(
+    "safeParse: a cloud row's layout column repairs a removed widget type identically to local data",
+    result.root.kind === "tabs" && result.root.tabs.length === 1 && result.root.tabs[0].widgetTypeId === "journal",
+  );
+}
+
 // ---- migrateWorkspaceLayout -------------------------------------------------
 
 {

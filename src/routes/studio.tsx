@@ -137,8 +137,17 @@ import {
   loadLocalStore,
   saveLocalStore,
   initialWorkspaceLayout,
+  safeParseWorkspaceLayout,
+  hasMigratedToCloud,
+  markMigratedToCloud,
   type LocalWorkspaceStore,
 } from "@/lib/workspace/persistence";
+import {
+  saveWorkspaceLayout,
+  listWorkspaceLayouts,
+  deleteWorkspaceLayout,
+  setDefaultWorkspaceLayout,
+} from "@/lib/workspace-layouts.functions";
 import type { TradeLine } from "@/components/studio/StudioChart";
 import { getInstrument, pnlPerUnit } from "@/lib/trading/instruments";
 import {
@@ -448,6 +457,7 @@ function Studio() {
 
   const { user } = useAuth();
   const qc = useQueryClient();
+  const signedIn = !!user;
 
   const [symbol, setSymbol] = useState("BTCUSDT");
   const [interval, setIntervalStr] = useState<string>("15m");
@@ -523,6 +533,83 @@ function Studio() {
     saveLocalStore(workspaceStore);
   }, [workspaceStore]);
 
+  // Cloud sync (UI-4d, signed-in half). Signed-out behavior above is
+  // completely untouched -- everything below only ever runs when signedIn.
+  // Reads always prefer the cloud once signed in; the only writes are the
+  // one-time local->cloud import below and explicit user actions (save/
+  // rename/set-default/delete) -- there is no automatic background push of
+  // local state, so a stale local copy can never silently clobber something
+  // newer server-side.
+  const [cloudSyncError, setCloudSyncError] = useState<string | null>(null);
+  const cloudReconciled = useRef(false);
+  const cloudLayoutsQuery = useQuery({
+    queryKey: ["workspace-layouts", user?.id],
+    queryFn: () => listWorkspaceLayouts(),
+    enabled: signedIn,
+    retry: 1,
+  });
+
+  useEffect(() => {
+    if (!signedIn) {
+      cloudReconciled.current = false; // re-arm for the next sign-in
+      return;
+    }
+    if (!cloudLayoutsQuery.isSuccess || cloudReconciled.current) return;
+    cloudReconciled.current = true;
+
+    const rows = cloudLayoutsQuery.data;
+    (async () => {
+      try {
+        if (rows.length > 0) {
+          // Cloud is authoritative -- parse every row through the same
+          // resilience gate local data already goes through, so a
+          // malformed `layout` JSONB value degrades exactly like a
+          // corrupted localStorage value does (repair or fall back to
+          // Beginner, never throw).
+          const parsed: WorkspaceLayout[] = rows.map((r) => ({
+            ...safeParseWorkspaceLayout(r.layout),
+            id: r.id,
+            name: r.name,
+          }));
+          const defaultRow = rows.find((r) => r.is_default);
+          const activeId = (defaultRow ?? rows[0]).id as string;
+          const active = parsed.find((p) => p.id === activeId) ?? parsed[0];
+          setWorkspaceStore((prev) => ({
+            ...prev,
+            layouts: parsed,
+            activeLayoutId: activeId,
+            defaultLayoutId: (defaultRow?.id as string | undefined) ?? null,
+          }));
+          setLayout(active);
+          setCloudSyncError(null);
+        } else if (!hasMigratedToCloud() && workspaceStore.layouts.length > 0) {
+          // First sign-in with local customizations already made, and
+          // nothing in the cloud yet -- import once, then treat the cloud
+          // as authoritative from here on.
+          for (const l of workspaceStore.layouts) {
+            await saveWorkspaceLayout({
+              data: { name: l.name, layout: l as unknown as Record<string, unknown> },
+            });
+          }
+          markMigratedToCloud();
+          await qc.invalidateQueries({ queryKey: ["workspace-layouts", user?.id] });
+          cloudReconciled.current = false; // let the refetch's result run through this effect again
+        } else {
+          markMigratedToCloud();
+        }
+      } catch {
+        // Network/server failure: keep whatever's already showing (the
+        // local cache) and surface it honestly instead of pretending to
+        // have synced.
+        setCloudSyncError("Couldn't sync with your account — showing your local layouts.");
+      }
+    })();
+    // workspaceStore.layouts is read only for the one-time-import branch,
+    // deliberately not a dependency -- this effect is keyed on the sign-in
+    // transition and the cloud query settling, not on local edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signedIn, cloudLayoutsQuery.isSuccess, cloudLayoutsQuery.data, qc, user?.id]);
+
   const switchToLayout = useCallback(
     (id: string) => {
       if (id === CURRENT_LAYOUT_ID) {
@@ -538,30 +625,80 @@ function Studio() {
     [workspaceStore],
   );
   const saveAsNewLayout = useCallback(
-    (name: string) => {
+    async (name: string) => {
+      if (signedIn) {
+        try {
+          const res = await saveWorkspaceLayout({
+            data: { name, layout: layout as unknown as Record<string, unknown> },
+          });
+          const saved: WorkspaceLayout = { ...layout, id: res.id, name, isPreset: false };
+          setWorkspaceStore((prev) => ({ ...prev, layouts: [...prev.layouts, saved], activeLayoutId: res.id }));
+          setCloudSyncError(null);
+        } catch {
+          setCloudSyncError("Couldn't save to your account -- try again.");
+        }
+        return;
+      }
       const id = crypto.randomUUID();
       const saved: WorkspaceLayout = { ...layout, id, name, isPreset: false };
       setWorkspaceStore((prev) => ({ ...prev, layouts: [...prev.layouts, saved], activeLayoutId: id }));
     },
-    [layout],
+    [layout, signedIn],
   );
-  const saveActiveNamedLayout = useCallback(() => {
-    setWorkspaceStore((prev) => {
-      if (prev.activeLayoutId === CURRENT_LAYOUT_ID) return prev;
-      const layouts = prev.layouts.map((l) =>
-        l.id === prev.activeLayoutId ? { ...layout, id: l.id, name: l.name, isPreset: false } : l,
-      );
-      return { ...prev, layouts };
-    });
-  }, [layout]);
-  const renameLayout = useCallback((id: string, name: string) => {
+  const saveActiveNamedLayout = useCallback(async () => {
+    if (workspaceStore.activeLayoutId === CURRENT_LAYOUT_ID) return;
+    const existing = workspaceStore.layouts.find((l) => l.id === workspaceStore.activeLayoutId);
+    if (!existing) return;
+    const updated: WorkspaceLayout = { ...layout, id: existing.id, name: existing.name, isPreset: false };
+    if (signedIn) {
+      try {
+        await saveWorkspaceLayout({
+          data: { id: updated.id, name: updated.name, layout: updated as unknown as Record<string, unknown> },
+        });
+        setCloudSyncError(null);
+      } catch {
+        setCloudSyncError("Couldn't save to your account -- try again.");
+        return; // server write failed -- don't let local state drift ahead of the cloud
+      }
+    }
     setWorkspaceStore((prev) => ({
       ...prev,
-      layouts: prev.layouts.map((l) => (l.id === id ? { ...l, name } : l)),
+      layouts: prev.layouts.map((l) => (l.id === updated.id ? updated : l)),
     }));
-  }, []);
+  }, [layout, signedIn, workspaceStore]);
+  const renameLayout = useCallback(
+    async (id: string, name: string) => {
+      const existing = workspaceStore.layouts.find((l) => l.id === id);
+      if (!existing) return;
+      if (signedIn) {
+        try {
+          await saveWorkspaceLayout({
+            data: { id, name, layout: existing as unknown as Record<string, unknown> },
+          });
+          setCloudSyncError(null);
+        } catch {
+          setCloudSyncError("Couldn't rename in your account -- try again.");
+          return;
+        }
+      }
+      setWorkspaceStore((prev) => ({
+        ...prev,
+        layouts: prev.layouts.map((l) => (l.id === id ? { ...l, name } : l)),
+      }));
+    },
+    [signedIn, workspaceStore],
+  );
   const deleteLayout = useCallback(
-    (id: string) => {
+    async (id: string) => {
+      if (signedIn) {
+        try {
+          await deleteWorkspaceLayout({ data: { id } });
+          setCloudSyncError(null);
+        } catch {
+          setCloudSyncError("Couldn't delete from your account -- try again.");
+          return; // keep it locally too, so local and cloud don't drift apart
+        }
+      }
       const wasActive = workspaceStore.activeLayoutId === id;
       setWorkspaceStore((prev) => ({
         ...prev,
@@ -571,11 +708,23 @@ function Studio() {
       }));
       if (wasActive) setLayout(workspaceStore.currentLayout);
     },
-    [workspaceStore],
+    [workspaceStore, signedIn],
   );
-  const setDefaultLayout = useCallback((id: string | null) => {
-    setWorkspaceStore((prev) => ({ ...prev, defaultLayoutId: id }));
-  }, []);
+  const setDefaultLayout = useCallback(
+    async (id: string | null) => {
+      if (signedIn) {
+        try {
+          await setDefaultWorkspaceLayout({ data: { id } });
+          setCloudSyncError(null);
+        } catch {
+          setCloudSyncError("Couldn't update your default layout -- try again.");
+          return;
+        }
+      }
+      setWorkspaceStore((prev) => ({ ...prev, defaultLayoutId: id }));
+    },
+    [signedIn],
+  );
   const resetToBeginner = useCallback(() => {
     setLayout(PRESETS.beginner);
     setWorkspaceStore((prev) => ({ ...prev, activeLayoutId: CURRENT_LAYOUT_ID }));
@@ -2003,6 +2152,8 @@ function Studio() {
             onDelete={deleteLayout}
             onSetDefault={setDefaultLayout}
             onResetToBeginner={resetToBeginner}
+            signedIn={signedIn}
+            syncError={cloudSyncError}
           />
           <button
             title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}

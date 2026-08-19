@@ -25,6 +25,33 @@ import { WIDGET_REGISTRY } from "./widgetRegistry";
 export const WORKSPACE_STORAGE_KEY = "sg.studio.workspace-layout-v1";
 
 /**
+ * Tracks, per-browser, whether this browser's local named layouts have
+ * already been imported into the cloud once for the signed-in user. A plain
+ * flag (not a LocalWorkspaceStore field) so the one-time-import logic stays
+ * decoupled from the store's own load/save/repair path — it only needs a
+ * yes/no, never participates in schema migration or repair.
+ */
+const MIGRATED_FLAG_KEY = "sg.studio.workspace-migrated-v1";
+
+export function hasMigratedToCloud(): boolean {
+  if (!isBrowser()) return false;
+  try {
+    return window.localStorage.getItem(MIGRATED_FLAG_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+export function markMigratedToCloud(): void {
+  if (!isBrowser()) return;
+  try {
+    window.localStorage.setItem(MIGRATED_FLAG_KEY, "true");
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+/**
  * Sentinel `activeLayoutId` meaning "use `currentLayout`, not a named entry
  * in `layouts[]`". This is the always-autosaving scratch slot — editing it
  * (UI-4c's add/remove/reorder/move) is what makes a customization survive a

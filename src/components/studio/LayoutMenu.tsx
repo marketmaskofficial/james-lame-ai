@@ -14,6 +14,10 @@ type Props = {
   onDelete: (id: string) => void;
   onSetDefault: (id: string | null) => void;
   onResetToBeginner: () => void;
+  /** Whether named layouts are cloud-synced (signed in) or local-only. */
+  signedIn?: boolean;
+  /** Non-blocking sync failure message, if the last cloud read/write failed. */
+  syncError?: string | null;
 };
 
 /**
@@ -33,6 +37,8 @@ export function LayoutMenu({
   onDelete,
   onSetDefault,
   onResetToBeginner,
+  signedIn,
+  syncError,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [savingAs, setSavingAs] = useState(false);
@@ -63,6 +69,15 @@ export function LayoutMenu({
         <>
           <div className="fixed inset-0 z-30" onClick={closeAll} />
           <div className="absolute right-0 z-40 mt-1 w-64 rounded-[8px] border border-border bg-popover p-1 shadow-xl">
+            {syncError ? (
+              <div className="mb-1 rounded bg-destructive/10 px-2 py-1 text-[10.5px] leading-snug text-destructive">
+                {syncError}
+              </div>
+            ) : !signedIn ? (
+              <div className="mb-1 px-2 py-1 text-[10.5px] text-muted-foreground">
+                Local only — sign in to sync layouts across devices.
+              </div>
+            ) : null}
             <button
               onClick={() => {
                 onSwitch(CURRENT_LAYOUT_ID);

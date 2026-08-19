@@ -47,7 +47,7 @@ export const listWorkspaceLayouts = createServerFn({ method: "GET" })
     const { data, error } = await context.supabase
       .from("workspace_layouts")
       .select(SELECT)
-      .order("created_at", { ascending: false })
+      .order("updated_at", { ascending: false })
       .limit(100);
     if (error) throw new Error(error.message);
     return data ?? [];
