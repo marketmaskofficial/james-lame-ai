@@ -121,7 +121,7 @@ import {
   type WidgetTypeId,
   type WorkspaceLayout,
 } from "@/lib/workspace/types";
-import { PRESETS } from "@/lib/workspace/presets";
+import { PRESETS, PRESET_ORDER, isPresetLocked, type PresetId } from "@/lib/workspace/presets";
 import { getWidgetDef } from "@/lib/workspace/widgetRegistry";
 import {
   addWidgetToNode,
@@ -725,10 +725,15 @@ function Studio() {
     },
     [signedIn],
   );
-  const resetToBeginner = useCallback(() => {
-    setLayout(PRESETS.beginner);
-    setWorkspaceStore((prev) => ({ ...prev, activeLayoutId: CURRENT_LAYOUT_ID }));
-  }, []);
+  const presetOptions = useMemo(
+    () =>
+      PRESET_ORDER.map((id) => ({
+        id,
+        name: PRESETS[id].name,
+        locked: isPresetLocked(PRESETS[id]),
+      })),
+    [],
+  );
   const rightTabs = useMemo(
     () => computeTabsForNode(layout, WELL_KNOWN_NODE_IDS.rightSidebar),
     [layout],
@@ -756,6 +761,17 @@ function Studio() {
     if (nodeId === WELL_KNOWN_NODE_IDS.rightSidebar) setRightTab(id);
     else if (nodeId === WELL_KNOWN_NODE_IDS.bottomDock) setDock(id);
   }, []);
+
+  const switchToPreset = useCallback(
+    (presetId: PresetId) => {
+      const next = PRESETS[presetId];
+      setLayout(next);
+      syncActiveTab(next, WELL_KNOWN_NODE_IDS.rightSidebar);
+      syncActiveTab(next, WELL_KNOWN_NODE_IDS.bottomDock);
+      setWorkspaceStore((prev) => ({ ...prev, activeLayoutId: CURRENT_LAYOUT_ID }));
+    },
+    [syncActiveTab],
+  );
 
   const addWidget = useCallback(
     (nodeId: string, widgetTypeId: WidgetTypeId) => {
@@ -2151,7 +2167,8 @@ function Studio() {
             onRename={renameLayout}
             onDelete={deleteLayout}
             onSetDefault={setDefaultLayout}
-            onResetToBeginner={resetToBeginner}
+            presets={presetOptions}
+            onSwitchPreset={switchToPreset}
             signedIn={signedIn}
             syncError={cloudSyncError}
           />

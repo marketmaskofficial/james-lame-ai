@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Plus } from "lucide-react";
 import { listWidgetDefs } from "@/lib/workspace/widgetRegistry";
-import type { WidgetTypeId } from "@/lib/workspace/types";
+import type { WidgetTypeDef, WidgetTypeId } from "@/lib/workspace/types";
 
 type Props = {
   /** Which region this menu is adding into — filters to widgets that can actually render there. */
@@ -10,6 +10,14 @@ type Props = {
   openWidgetTypeIds: WidgetTypeId[];
   onAdd: (widgetTypeId: WidgetTypeId) => void;
 };
+
+/** Display order + human-readable headers for WidgetTypeDef.category. */
+const CATEGORY_ORDER: { id: WidgetTypeDef["category"]; label: string }[] = [
+  { id: "core", label: "Core" },
+  { id: "account", label: "Account" },
+  { id: "analysis", label: "Analysis" },
+  { id: "orderflow", label: "Order Flow" },
+];
 
 /**
  * "+" trigger + popover listing widget types available for one region.
@@ -46,28 +54,39 @@ export function AddWidgetMenu({ region, openWidgetTypeIds, onAdd }: Props) {
                 Everything available is already open here.
               </p>
             )}
-            {defs.map((d) =>
-              d.availability === "available" ? (
-                <button
-                  key={d.id}
-                  onClick={() => {
-                    onAdd(d.id);
-                    setOpen(false);
-                  }}
-                  className="block w-full truncate rounded px-2 py-1 text-left text-[11px] hover:bg-accent"
-                >
-                  {d.label}
-                </button>
-              ) : (
-                <div
-                  key={d.id}
-                  title={d.comingSoonReason}
-                  className="block w-full cursor-not-allowed truncate rounded px-2 py-1 text-left text-[11px] text-muted-foreground/50"
-                >
-                  {d.label} <span className="italic">(coming soon)</span>
+            {CATEGORY_ORDER.map(({ id: categoryId, label }) => {
+              const inCategory = defs.filter((d) => d.category === categoryId);
+              if (inCategory.length === 0) return null;
+              return (
+                <div key={categoryId}>
+                  <p className="px-2 pb-0.5 pt-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
+                    {label}
+                  </p>
+                  {inCategory.map((d) =>
+                    d.availability === "available" ? (
+                      <button
+                        key={d.id}
+                        onClick={() => {
+                          onAdd(d.id);
+                          setOpen(false);
+                        }}
+                        className="block w-full truncate rounded px-2 py-1 text-left text-[11px] hover:bg-accent"
+                      >
+                        {d.label}
+                      </button>
+                    ) : (
+                      <div
+                        key={d.id}
+                        title={d.comingSoonReason}
+                        className="block w-full cursor-not-allowed truncate rounded px-2 py-1 text-left text-[11px] text-muted-foreground/50"
+                      >
+                        {d.label} <span className="italic">(coming soon)</span>
+                      </div>
+                    ),
+                  )}
                 </div>
-              ),
-            )}
+              );
+            })}
           </div>
         </>
       )}

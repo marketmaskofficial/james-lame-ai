@@ -1,7 +1,10 @@
 import { useState } from "react";
-import { Check, LayoutGrid, Pencil, RotateCcw, Save, Star, Trash2, X } from "lucide-react";
+import { Check, LayoutGrid, Lock, Pencil, Save, Star, Trash2, X } from "lucide-react";
 import type { WorkspaceLayout } from "@/lib/workspace/types";
+import type { PresetId } from "@/lib/workspace/presets";
 import { CURRENT_LAYOUT_ID } from "@/lib/workspace/persistence";
+
+export type PresetOption = { id: PresetId; name: string; locked: boolean };
 
 type Props = {
   layouts: WorkspaceLayout[];
@@ -13,7 +16,9 @@ type Props = {
   onRename: (id: string, name: string) => void;
   onDelete: (id: string) => void;
   onSetDefault: (id: string | null) => void;
-  onResetToBeginner: () => void;
+  /** Code-defined presets (Beginner first), for the merged Presets section. */
+  presets: PresetOption[];
+  onSwitchPreset: (id: PresetId) => void;
   /** Whether named layouts are cloud-synced (signed in) or local-only. */
   signedIn?: boolean;
   /** Non-blocking sync failure message, if the last cloud read/write failed. */
@@ -36,7 +41,8 @@ export function LayoutMenu({
   onRename,
   onDelete,
   onSetDefault,
-  onResetToBeginner,
+  presets,
+  onSwitchPreset,
   signedIn,
   syncError,
 }: Props) {
@@ -238,15 +244,35 @@ export function LayoutMenu({
               </button>
             )}
 
-            <button
-              onClick={() => {
-                onResetToBeginner();
-                closeAll();
-              }}
-              className="flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
-            >
-              <RotateCcw className="h-3 w-3" /> Reset to Beginner
-            </button>
+            <div className="my-1 h-px bg-border" />
+            <p className="px-2 pb-0.5 pt-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
+              Presets
+            </p>
+            {presets.map((p) =>
+              p.locked ? (
+                <div
+                  key={p.id}
+                  title="Coming soon — needs data sources that aren't connected yet."
+                  className="flex w-full cursor-not-allowed items-center justify-between rounded px-2 py-1 text-left text-[11px] text-muted-foreground/50"
+                >
+                  <span className="truncate">{p.name}</span>
+                  <span className="flex shrink-0 items-center gap-1 text-[10px] italic">
+                    <Lock className="h-2.5 w-2.5" /> soon
+                  </span>
+                </div>
+              ) : (
+                <button
+                  key={p.id}
+                  onClick={() => {
+                    onSwitchPreset(p.id);
+                    closeAll();
+                  }}
+                  className="flex w-full items-center justify-between rounded px-2 py-1 text-left text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+                >
+                  <span className="truncate">{p.name}</span>
+                </button>
+              ),
+            )}
           </div>
         </>
       )}
