@@ -60,7 +60,7 @@ import {
   resolveSymbol,
   toggleFavoriteTimeframe,
 } from "@/lib/symbols";
-import { subscribeKlines, type LiveStatus } from "@/lib/live-feed";
+import type { LiveStatus } from "@/lib/live-feed";
 
 import type { Bar, InputSpec, RunResult } from "@/lib/sgscript/types";
 import { runIndicator } from "@/lib/sgscript/client";
@@ -102,6 +102,7 @@ import {
 import { AccountBar, EnvBadge } from "@/components/studio/AccountBar";
 import { FeedbackButton } from "@/components/FeedbackButton";
 import { ChartLegendStrip } from "@/components/studio/ChartLegendStrip";
+import { ChartInstance } from "@/components/studio/ChartInstance";
 import { LayoutTree } from "@/components/studio/LayoutTree";
 
 import { mergeLiveBar, prependBars } from "@/lib/market/candles";
@@ -231,6 +232,29 @@ type StudioIndicator = LoadedIndicator & {
   code: string;
   settings: Record<string, number | boolean | string>;
   savedId?: string;
+};
+
+/**
+ * UI-4g-1: the shape of one chart's rendering-relevant state, keyed by its
+ * workspace-tree `instanceId` (see `chartInstances` below). Exactly one
+ * entry exists today (there is still only one chart, `WELL_KNOWN_NODE_IDS
+ * .chartArea`'s single tab) — the underlying `symbol`/`interval`/etc. state
+ * variables in the component are still the actual source of truth for this
+ * phase (they're deeply read by backtest/trading/drawing logic elsewhere on
+ * this page, which is out of this phase's scope to also relocate); this
+ * type and the memo that builds it exist to prove the state is genuinely
+ * addressable by instance id — driven by the real tree, not a hardcoded
+ * literal — before UI-4g-2 adds a second chart that needs a second real
+ * entry here.
+ */
+type ChartInstanceState = {
+  symbol: string;
+  interval: string;
+  chartType: ChartType;
+  chartSettings: ChartSettings;
+  indicators: StudioIndicator[];
+  bars: Bar[];
+  drawings: Drawing[];
 };
 
 // Both unions now include every widget type placeable in EITHER region (not
@@ -1332,22 +1356,16 @@ function Studio() {
     }
   }, [bars, symbol, interval, loadingHistory]);
 
-  // ---- live tick feed -----------------------------------------------------
-  useEffect(() => {
-    if (!live) {
-      setLiveStatus("offline");
-      return;
-    }
-    setLiveStatus("connecting");
-    const stop = subscribeKlines(symbol, interval, {
-      onStatus: setLiveStatus,
-      onBar: (bar) => {
-        setLastPrice(bar.close);
-        setBars((prev) => mergeLiveBar(prev, bar));
-      },
-    });
-    return stop;
-  }, [symbol, interval, live]);
+  // ---- live tick feed -------------------------------------------------
+  // UI-4g-1: the subscription lifecycle itself now lives in <ChartInstance>
+  // (wrapping <StudioChart> in renderChartArea below) instead of this
+  // page-level effect, which assumed exactly one chart. `bars`/`lastPrice`
+  // stay owned here — read by backtest/trading logic elsewhere on this page
+  // — and are updated via this stable callback passed down as a prop.
+  const onLiveBar = useCallback((bar: Bar) => {
+    setLastPrice(bar.close);
+    setBars((prev) => mergeLiveBar(prev, bar));
+  }, []);
 
 
   // ---- drawings persistence ----------------------------------------------
@@ -2188,6 +2206,27 @@ function Studio() {
     );
   };
 
+  // UI-4g-1: the chart-area leaf's real instanceId from the tree, not a
+  // hardcoded literal — this is what makes chartInstances genuinely
+  // instance-keyed rather than a relabeled singleton. Falls back to a stable
+  // literal only if the leaf is ever somehow missing its one tab (shouldn't
+  // happen — chart-area is a protected leaf with a structural floor of 1).
+  const chartInstanceId = useMemo(() => {
+    const node = findNodeById(layout.root, WELL_KNOWN_NODE_IDS.chartArea);
+    return node && node.kind === "tabs" ? node.tabs[0]?.instanceId ?? "chart-1" : "chart-1";
+  }, [layout]);
+  const chartInstances = useMemo<Record<string, ChartInstanceState>>(
+    () => ({
+      [chartInstanceId]: { symbol, interval, chartType, chartSettings, indicators, bars, drawings },
+    }),
+    [chartInstanceId, symbol, interval, chartType, chartSettings, indicators, bars, drawings],
+  );
+  // UI-4g-1 has exactly one entry — this read exists so renderChartArea (and
+  // its UI-4g-2 successor, once a second chart-hosting leaf can exist) goes
+  // through the instance-keyed record rather than the flat variables
+  // directly, even though today they're the same values.
+  const activeChartInstance = chartInstances[chartInstanceId];
+
   const renderChartArea = () => (
     <div
       className={`relative min-h-0 overflow-hidden ${
@@ -2196,11 +2235,11 @@ function Studio() {
     >
       {renderDropOverlay(WELL_KNOWN_NODE_IDS.chartArea)}
       <ChartLegendStrip
-        symbol={symbol}
-        intervalLabel={timeframeLabel(interval)}
+        symbol={activeChartInstance.symbol}
+        intervalLabel={timeframeLabel(activeChartInstance.interval)}
         crosshair={crosshair}
-        latestBar={bars.length ? bars[bars.length - 1] : null}
-        indicators={indicators.map((i) => ({
+        latestBar={activeChartInstance.bars.length ? activeChartInstance.bars[activeChartInstance.bars.length - 1] : null}
+        indicators={activeChartInstance.indicators.map((i) => ({
           key: i.key,
           name: i.name,
           visible: i.visible,
@@ -2249,51 +2288,60 @@ function Studio() {
           {barsError}
         </div>
       ) : (
-        <StudioChart
-          bars={bars}
-          indicators={indicators}
-          tool={tool}
-          drawings={drawings}
-          onAddDrawing={addDrawing}
-          onRemoveDrawing={removeDrawing}
-          onUpdateDrawing={updateDrawing}
-          selectedId={selectedDrawing}
-          onSelectDrawing={setSelectedDrawing}
-          hasOscPane={hasOscPane}
-          extraMarkers={backtestMarkers}
-          tradeLines={tradeLines}
-          trades={chartTrades}
-          instrument={{
-            tickSize: getInstrument(symbol).tickSize,
-            valuePerPoint: pnlPerUnit(getInstrument(symbol), 1),
-          }}
-          onTradeDrag={(t, price) => dragTradeMutation.mutate({ t, price })}
-          onChartPrice={(price, screen) =>
-            setChartMenu({ price, x: screen.x, y: screen.y })
-          }
-          onPlanOrder={(plan: PositionPlan) => {
-            setPrefill({
-              nonce: Date.now(),
-              side: plan.side,
-              type: "limit",
-              limitPrice: plan.entry,
-              stopLoss: plan.stop,
-              takeProfit: plan.target,
-            });
-            setRightTab("trade");
-            openSidebar();
-          }}
-          chartType={chartType}
-          settings={chartSettings}
-          onCrosshair={setCrosshair}
-          onReady={onChartReady}
-          onRenderStats={handleRenderStats}
-        />
+        <ChartInstance
+          instanceId={chartInstanceId}
+          symbol={activeChartInstance.symbol}
+          interval={activeChartInstance.interval}
+          live={live}
+          onLiveBar={onLiveBar}
+          onStatusChange={setLiveStatus}
+        >
+          <StudioChart
+            bars={activeChartInstance.bars}
+            indicators={activeChartInstance.indicators}
+            tool={tool}
+            drawings={activeChartInstance.drawings}
+            onAddDrawing={addDrawing}
+            onRemoveDrawing={removeDrawing}
+            onUpdateDrawing={updateDrawing}
+            selectedId={selectedDrawing}
+            onSelectDrawing={setSelectedDrawing}
+            hasOscPane={hasOscPane}
+            extraMarkers={backtestMarkers}
+            tradeLines={tradeLines}
+            trades={chartTrades}
+            instrument={{
+              tickSize: getInstrument(activeChartInstance.symbol).tickSize,
+              valuePerPoint: pnlPerUnit(getInstrument(activeChartInstance.symbol), 1),
+            }}
+            onTradeDrag={(t, price) => dragTradeMutation.mutate({ t, price })}
+            onChartPrice={(price, screen) =>
+              setChartMenu({ price, x: screen.x, y: screen.y })
+            }
+            onPlanOrder={(plan: PositionPlan) => {
+              setPrefill({
+                nonce: Date.now(),
+                side: plan.side,
+                type: "limit",
+                limitPrice: plan.entry,
+                stopLoss: plan.stop,
+                takeProfit: plan.target,
+              });
+              setRightTab("trade");
+              openSidebar();
+            }}
+            chartType={activeChartInstance.chartType}
+            settings={activeChartInstance.chartSettings}
+            onCrosshair={setCrosshair}
+            onReady={onChartReady}
+            onRenderStats={handleRenderStats}
+          />
+        </ChartInstance>
       )}
 
       {objectsOpen && (
         <DrawingInspector
-          drawings={drawings}
+          drawings={activeChartInstance.drawings}
           selectedId={selectedDrawing}
           onSelect={setSelectedDrawing}
           onUpdate={updateDrawing}
