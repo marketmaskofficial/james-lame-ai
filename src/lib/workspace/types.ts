@@ -123,10 +123,22 @@ export type WorkspaceLayout = {
  * bottom dock) maps onto, so the existing collapse/maximize toolbar buttons
  * can eventually target this tree with zero behavior change — same ids,
  * just read from a tree instead of separate booleans.
+ *
+ * `chartColumn` (UI-4f-1) is the split node that actually groups chart-area
+ * + bottom-dock into one column — this is what studio.tsx's real DOM has
+ * always done (a `<main>` containing the chart div stacked above the dock
+ * section, with the sidebar as a separate full-height sibling), which does
+ * NOT match the `root`/`mainRow` shape originally declared in UI-4a
+ * (`root` = column[mainRow, bottomDock], `mainRow` = row[chartArea,
+ * rightSidebar] — a shape nothing ever actually rendered, since nothing
+ * walked "split" nodes before UI-4f-1). `mainRow` is kept here, unused by
+ * current presets, purely so `persistence.ts` can still recognize and
+ * repair that legacy shape in any already-persisted saved layout.
  */
 export const WELL_KNOWN_NODE_IDS = {
   root: "workspace-root",
   mainRow: "main-row",
+  chartColumn: "chart-column",
   chartArea: "chart-area",
   rightSidebar: "right-sidebar",
   bottomDock: "bottom-dock",

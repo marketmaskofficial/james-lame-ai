@@ -7,16 +7,25 @@
  * picker can show "Orderflow Pro (coming soon)" honestly instead of that
  * concept not existing anywhere.
  *
- * Note on `sizes`: today's real UI sizes the sidebar/dock in absolute pixels
- * (`sidebarWidth`/`dockHeight` state in studio.tsx) with the chart taking
- * the flex remainder — not proportional weights. studio.tsx only ever reads
- * the `right-sidebar` and `bottom-dock` "tabs" nodes out of this tree (see
- * `WELL_KNOWN_NODE_IDS`/`findNodeById` usage there) — there is no rendering
- * for any third region or for the `root`/`main-row` split structure beyond
- * those two lookups. Every preset below places widgets only into those two
- * regions for that reason; `orderflowPro`'s extra `dom-panel` column is
- * inert data (kept for continuity with its existing shape) until real
- * multi-pane rendering exists.
+ * Topology (UI-4f-1): `root` is a ROW split of `[chart-column, right-sidebar]`
+ * (plus `dom-panel` for the locked orderflowPro preview), and `chart-column`
+ * is a COLUMN split of `[chart-area, bottom-dock]` — this matches what
+ * studio.tsx's DOM has always actually rendered (chart stacked above the
+ * dock, with the sidebar as a separate full-height column beside both), now
+ * that `LayoutTree` genuinely walks this structure instead of the three
+ * regions being hardcoded JSX. Earlier phases (UI-4a-4e) declared a
+ * different shape here — `root` = column[`main-row`, bottom-dock], `main-row`
+ * = row[chart-area, right-sidebar] — which was never actually wrong to have
+ * shipped, since nothing rendered "split" nodes before UI-4f-1; it just
+ * doesn't match reality now that something does. `safeParseWorkspaceLayout`
+ * (persistence.ts) transparently repairs any already-persisted saved layout
+ * still using that old shape into this one, preserving every widget/tab
+ * exactly, so no user-visible change or migration step is needed.
+ *
+ * Note on `sizes`: still illustrative proportions, not literally read yet —
+ * studio.tsx's real UI still sizes the sidebar/dock in absolute pixels
+ * (`sidebarWidth`/`dockHeight` state) with the chart taking the flex
+ * remainder. Reading `sizes` for actual pane sizing is UI-4f-2.
  */
 
 import type { WidgetTypeId, WorkspaceLayout } from "./types";
@@ -53,14 +62,14 @@ export const PRESETS: Record<PresetId, WorkspaceLayout> = {
     root: {
       kind: "split",
       id: "workspace-root",
-      direction: "column",
-      sizes: [0.78, 0.22],
+      direction: "row",
+      sizes: [0.82, 0.18],
       children: [
         {
           kind: "split",
-          id: "main-row",
-          direction: "row",
-          sizes: [0.82, 0.18],
+          id: "chart-column",
+          direction: "column",
+          sizes: [0.78, 0.22],
           children: [
             {
               kind: "tabs",
@@ -70,31 +79,31 @@ export const PRESETS: Record<PresetId, WorkspaceLayout> = {
             },
             {
               kind: "tabs",
-              id: "right-sidebar",
+              id: "bottom-dock",
               tabs: [
-                inst("watchlist-1", "watchlist"),
-                inst("trade-1", "trade"),
-                inst("ai-builder-1", "ai-builder"),
-                inst("alerts-1", "alerts"),
+                { ...inst("code-editor-1", "code-editor"), pinned: true },
+                inst("strategy-tester-1", "strategy-tester"),
+                inst("positions-1", "positions"),
+                inst("orders-1", "orders"),
+                inst("history-1", "history"),
+                inst("journal-1", "journal"),
+                inst("saved-indicators-1", "saved-indicators"),
+                inst("reference-1", "reference"),
               ],
-              activeInstanceId: "watchlist-1",
+              activeInstanceId: "code-editor-1",
             },
           ],
         },
         {
           kind: "tabs",
-          id: "bottom-dock",
+          id: "right-sidebar",
           tabs: [
-            { ...inst("code-editor-1", "code-editor"), pinned: true },
-            inst("strategy-tester-1", "strategy-tester"),
-            inst("positions-1", "positions"),
-            inst("orders-1", "orders"),
-            inst("history-1", "history"),
-            inst("journal-1", "journal"),
-            inst("saved-indicators-1", "saved-indicators"),
-            inst("reference-1", "reference"),
+            inst("watchlist-1", "watchlist"),
+            inst("trade-1", "trade"),
+            inst("ai-builder-1", "ai-builder"),
+            inst("alerts-1", "alerts"),
           ],
-          activeInstanceId: "code-editor-1",
+          activeInstanceId: "watchlist-1",
         },
       ],
     },
@@ -109,14 +118,14 @@ export const PRESETS: Record<PresetId, WorkspaceLayout> = {
     root: {
       kind: "split",
       id: "workspace-root",
-      direction: "column",
-      sizes: [0.78, 0.22],
+      direction: "row",
+      sizes: [0.82, 0.18],
       children: [
         {
           kind: "split",
-          id: "main-row",
-          direction: "row",
-          sizes: [0.82, 0.18],
+          id: "chart-column",
+          direction: "column",
+          sizes: [0.78, 0.22],
           children: [
             {
               kind: "tabs",
@@ -126,21 +135,21 @@ export const PRESETS: Record<PresetId, WorkspaceLayout> = {
             },
             {
               kind: "tabs",
-              id: "right-sidebar",
-              tabs: [inst("ai-builder-1", "ai-builder")],
-              activeInstanceId: "ai-builder-1",
+              id: "bottom-dock",
+              tabs: [
+                { ...inst("code-editor-1", "code-editor"), pinned: true },
+                inst("strategy-tester-1", "strategy-tester"),
+                inst("saved-indicators-1", "saved-indicators"),
+              ],
+              activeInstanceId: "code-editor-1",
             },
           ],
         },
         {
           kind: "tabs",
-          id: "bottom-dock",
-          tabs: [
-            { ...inst("code-editor-1", "code-editor"), pinned: true },
-            inst("strategy-tester-1", "strategy-tester"),
-            inst("saved-indicators-1", "saved-indicators"),
-          ],
-          activeInstanceId: "code-editor-1",
+          id: "right-sidebar",
+          tabs: [inst("ai-builder-1", "ai-builder")],
+          activeInstanceId: "ai-builder-1",
         },
       ],
     },
@@ -155,14 +164,14 @@ export const PRESETS: Record<PresetId, WorkspaceLayout> = {
     root: {
       kind: "split",
       id: "workspace-root",
-      direction: "column",
-      sizes: [0.72, 0.28],
+      direction: "row",
+      sizes: [0.82, 0.18],
       children: [
         {
           kind: "split",
-          id: "main-row",
-          direction: "row",
-          sizes: [0.82, 0.18],
+          id: "chart-column",
+          direction: "column",
+          sizes: [0.72, 0.28],
           children: [
             {
               kind: "tabs",
@@ -172,22 +181,22 @@ export const PRESETS: Record<PresetId, WorkspaceLayout> = {
             },
             {
               kind: "tabs",
-              id: "right-sidebar",
-              tabs: [inst("watchlist-1", "watchlist")],
-              activeInstanceId: "watchlist-1",
+              id: "bottom-dock",
+              tabs: [
+                { ...inst("code-editor-1", "code-editor"), pinned: true },
+                inst("strategy-tester-1", "strategy-tester"),
+                inst("saved-indicators-1", "saved-indicators"),
+                inst("journal-1", "journal"),
+              ],
+              activeInstanceId: "strategy-tester-1",
             },
           ],
         },
         {
           kind: "tabs",
-          id: "bottom-dock",
-          tabs: [
-            { ...inst("code-editor-1", "code-editor"), pinned: true },
-            inst("strategy-tester-1", "strategy-tester"),
-            inst("saved-indicators-1", "saved-indicators"),
-            inst("journal-1", "journal"),
-          ],
-          activeInstanceId: "strategy-tester-1",
+          id: "right-sidebar",
+          tabs: [inst("watchlist-1", "watchlist")],
+          activeInstanceId: "watchlist-1",
         },
       ],
     },
@@ -202,13 +211,13 @@ export const PRESETS: Record<PresetId, WorkspaceLayout> = {
     root: {
       kind: "split",
       id: "workspace-root",
-      direction: "column",
+      direction: "row",
       sizes: [0.78, 0.22],
       children: [
         {
           kind: "split",
-          id: "main-row",
-          direction: "row",
+          id: "chart-column",
+          direction: "column",
           sizes: [0.78, 0.22],
           children: [
             {
@@ -219,21 +228,21 @@ export const PRESETS: Record<PresetId, WorkspaceLayout> = {
             },
             {
               kind: "tabs",
-              id: "right-sidebar",
-              tabs: [
-                inst("watchlist-1", "watchlist"),
-                inst("trade-1", "trade"),
-                inst("alerts-1", "alerts"),
-              ],
-              activeInstanceId: "trade-1",
+              id: "bottom-dock",
+              tabs: [inst("positions-1", "positions"), inst("orders-1", "orders")],
+              activeInstanceId: "positions-1",
             },
           ],
         },
         {
           kind: "tabs",
-          id: "bottom-dock",
-          tabs: [inst("positions-1", "positions"), inst("orders-1", "orders")],
-          activeInstanceId: "positions-1",
+          id: "right-sidebar",
+          tabs: [
+            inst("watchlist-1", "watchlist"),
+            inst("trade-1", "trade"),
+            inst("alerts-1", "alerts"),
+          ],
+          activeInstanceId: "trade-1",
         },
       ],
     },
@@ -248,14 +257,14 @@ export const PRESETS: Record<PresetId, WorkspaceLayout> = {
     root: {
       kind: "split",
       id: "workspace-root",
-      direction: "column",
-      sizes: [0.7, 0.3],
+      direction: "row",
+      sizes: [0.6, 0.2, 0.2],
       children: [
         {
           kind: "split",
-          id: "main-row",
-          direction: "row",
-          sizes: [0.6, 0.2, 0.2],
+          id: "chart-column",
+          direction: "column",
+          sizes: [0.7, 0.3],
           children: [
             {
               kind: "tabs",
@@ -265,32 +274,32 @@ export const PRESETS: Record<PresetId, WorkspaceLayout> = {
             },
             {
               kind: "tabs",
-              id: "dom-panel",
-              tabs: [inst("dom-1", "dom")],
-              activeInstanceId: "dom-1",
-            },
-            {
-              kind: "tabs",
-              id: "right-sidebar",
+              id: "bottom-dock",
               tabs: [
-                inst("watchlist-1", "watchlist"),
-                inst("trade-1", "trade"),
-                inst("alerts-1", "alerts"),
+                inst("time-sales-1", "time-sales"),
+                inst("footprint-1", "footprint"),
+                inst("positions-1", "positions"),
+                inst("orders-1", "orders"),
               ],
-              activeInstanceId: "watchlist-1",
+              activeInstanceId: "time-sales-1",
             },
           ],
         },
         {
           kind: "tabs",
-          id: "bottom-dock",
+          id: "dom-panel",
+          tabs: [inst("dom-1", "dom")],
+          activeInstanceId: "dom-1",
+        },
+        {
+          kind: "tabs",
+          id: "right-sidebar",
           tabs: [
-            inst("time-sales-1", "time-sales"),
-            inst("footprint-1", "footprint"),
-            inst("positions-1", "positions"),
-            inst("orders-1", "orders"),
+            inst("watchlist-1", "watchlist"),
+            inst("trade-1", "trade"),
+            inst("alerts-1", "alerts"),
           ],
-          activeInstanceId: "time-sales-1",
+          activeInstanceId: "watchlist-1",
         },
       ],
     },

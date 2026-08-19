@@ -102,6 +102,7 @@ import {
 import { AccountBar, EnvBadge } from "@/components/studio/AccountBar";
 import { FeedbackButton } from "@/components/FeedbackButton";
 import { ChartLegendStrip } from "@/components/studio/ChartLegendStrip";
+import { LayoutTree } from "@/components/studio/LayoutTree";
 
 import { mergeLiveBar, prependBars } from "@/lib/market/candles";
 import { TradingTables } from "@/components/studio/TradingTables";
@@ -118,6 +119,7 @@ import {
   findNodeById,
   regionKindForNodeId,
   WELL_KNOWN_NODE_IDS,
+  type LayoutNode,
   type WidgetTypeId,
   type WorkspaceLayout,
 } from "@/lib/workspace/types";
@@ -1856,6 +1858,1001 @@ function Studio() {
     ]);
   }, [backtestTrades]);
 
+  // UI-4f-1: the three leaf regions' rendering, unchanged from before
+  // LayoutTree existed -- same DOM, same classNames, same handlers -- just
+  // invoked from the recursive tree walk (see `renderLeaf` below) instead
+  // of being positioned by static JSX. Resize/collapse/maximize mechanics
+  // and everything about each widget's own content stay exactly as they
+  // were; only the STRUCTURE connecting these three regions is now
+  // genuinely tree-driven.
+  const renderChartArea = () => (
+    <div
+      className={`relative min-h-0 overflow-hidden ${
+        dockState === "maximized" ? "flex-none basis-14" : "flex-1"
+      }`}
+    >
+      <ChartLegendStrip
+        symbol={symbol}
+        intervalLabel={timeframeLabel(interval)}
+        crosshair={crosshair}
+        latestBar={bars.length ? bars[bars.length - 1] : null}
+        indicators={indicators.map((i) => ({
+          key: i.key,
+          name: i.name,
+          visible: i.visible,
+          inputs: i.result.inputs,
+        }))}
+        editingKey={editingKey}
+        onSelectIndicator={(key) => {
+          const ind = indicators.find((i) => i.key === key);
+          if (!ind) return;
+          setEditingKey(key);
+          setCode(ind.code);
+          setActiveInputs(ind.result.inputs);
+          setSettings(ind.settings);
+          setDock("code");
+        }}
+        onToggleVisible={(key) =>
+          setIndicators((prev) =>
+            prev.map((p) => (p.key === key ? { ...p, visible: !p.visible } : p)),
+          )
+        }
+        onRemoveIndicator={(key) =>
+          setIndicators((prev) => prev.filter((p) => p.key !== key))
+        }
+        onOpenSettings={(key) => {
+          const ind = indicators.find((i) => i.key === key);
+          if (!ind) return;
+          setEditingKey(key);
+          setCode(ind.code);
+          setActiveInputs(ind.result.inputs);
+          setSettings(ind.settings);
+          setDock("code");
+          openDock();
+        }}
+        onPickTemplate={(templateCode) => {
+          setEditingKey(null);
+          setCode(templateCode ?? DEFAULT_SCRIPT);
+          setDock("code");
+          openDock();
+          // Start a fresh AI build session too.
+          setProjectSpec(null);
+          builtKeyRef.current = null;
+        }}
+      />
+      {barsError ? (
+        <div className="flex h-full items-center justify-center text-xs text-destructive">
+          {barsError}
+        </div>
+      ) : (
+        <StudioChart
+          bars={bars}
+          indicators={indicators}
+          tool={tool}
+          drawings={drawings}
+          onAddDrawing={addDrawing}
+          onRemoveDrawing={removeDrawing}
+          onUpdateDrawing={updateDrawing}
+          selectedId={selectedDrawing}
+          onSelectDrawing={setSelectedDrawing}
+          hasOscPane={hasOscPane}
+          extraMarkers={backtestMarkers}
+          tradeLines={tradeLines}
+          trades={chartTrades}
+          instrument={{
+            tickSize: getInstrument(symbol).tickSize,
+            valuePerPoint: pnlPerUnit(getInstrument(symbol), 1),
+          }}
+          onTradeDrag={(t, price) => dragTradeMutation.mutate({ t, price })}
+          onChartPrice={(price, screen) =>
+            setChartMenu({ price, x: screen.x, y: screen.y })
+          }
+          onPlanOrder={(plan: PositionPlan) => {
+            setPrefill({
+              nonce: Date.now(),
+              side: plan.side,
+              type: "limit",
+              limitPrice: plan.entry,
+              stopLoss: plan.stop,
+              takeProfit: plan.target,
+            });
+            setRightTab("trade");
+            openSidebar();
+          }}
+          chartType={chartType}
+          settings={chartSettings}
+          onCrosshair={setCrosshair}
+          onReady={onChartReady}
+          onRenderStats={handleRenderStats}
+        />
+      )}
+
+      {objectsOpen && (
+        <DrawingInspector
+          drawings={drawings}
+          selectedId={selectedDrawing}
+          onSelect={setSelectedDrawing}
+          onUpdate={updateDrawing}
+          onRemove={removeDrawing}
+          onDuplicate={duplicateDrawing}
+          onClose={() => setObjectsOpen(false)}
+        />
+      )}
+
+      {/* Right-click trading menu: places the clicked price in the ticket. */}
+      {chartMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setChartMenu(null)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setChartMenu(null);
+            }}
+          />
+          <div
+            className="absolute z-50 w-52 overflow-hidden rounded-[8px] border border-border bg-panel py-1 text-xs shadow-xl"
+            style={{ left: chartMenu.x, top: chartMenu.y }}
+          >
+            <div className="px-2.5 py-1 font-mono text-[11px] text-muted-foreground">
+              {chartMenu.price.toLocaleString("en-US", {
+                maximumFractionDigits: 6,
+              })}
+            </div>
+            {(
+              [
+                ["buy", "limit", "Buy limit here"],
+                ["sell", "limit", "Sell limit here"],
+                ["buy", "stop", "Buy stop here"],
+                ["sell", "stop", "Sell stop here"],
+              ] as const
+            ).map(([side, type, label]) => (
+              <button
+                key={label}
+                onClick={() => {
+                  setPrefill({
+                    nonce: Date.now(),
+                    side,
+                    type,
+                    ...(type === "limit"
+                      ? { limitPrice: chartMenu.price }
+                      : { stopPrice: chartMenu.price }),
+                  });
+                  setRightTab("trade");
+                  openSidebar();
+                  setChartMenu(null);
+                }}
+                className={`block w-full px-2.5 py-1.5 text-left hover:bg-accent ${
+                  side === "buy" ? "text-emerald-400" : "text-red-400"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+
+  const renderBottomDock = () => (
+    <section
+      className={`flex shrink-0 flex-col border-t border-border bg-panel ${
+        dockState === "maximized" ? "flex-1" : ""
+      }`}
+      style={dockState === "normal" ? { height: dockHeight, minHeight: 160 } : undefined}
+    >
+    {dockState === "normal" && (
+      <div
+        onPointerDown={(e) => {
+          e.preventDefault();
+          const startY = e.clientY;
+          const startH = dockHeight;
+          const move = (ev: PointerEvent) =>
+            setDockHeight(
+              Math.min(
+                Math.max(160, startH + (startY - ev.clientY)),
+                window.innerHeight - 240,
+              ),
+            );
+          const up = () => {
+            window.removeEventListener("pointermove", move);
+            window.removeEventListener("pointerup", up);
+          };
+          window.addEventListener("pointermove", move);
+          window.addEventListener("pointerup", up);
+        }}
+        className="group/resize flex h-2.5 w-full shrink-0 cursor-row-resize items-center justify-center hover:bg-brand/10"
+      >
+        <div className="h-1 w-10 rounded-full bg-border transition-colors group-hover/resize:bg-brand/70" />
+      </div>
+    )}
+    <div className="flex h-10 items-center gap-1 border-b border-border px-2">
+      <button
+        onClick={toggleDockCollapse}
+        title={dockVisible ? "Collapse panel" : "Expand panel"}
+        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground"
+      >
+        {dockVisible ? (
+          <PanelBottomClose className="h-3.5 w-3.5" />
+        ) : (
+          <PanelBottomOpen className="h-3.5 w-3.5" />
+        )}
+      </button>
+      <button
+        onClick={toggleDockMaximize}
+        title={dockState === "maximized" ? "Restore panel" : "Maximize panel"}
+        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground"
+      >
+        {dockState === "maximized" ? (
+          <ChevronsDown className="h-3.5 w-3.5" />
+        ) : (
+          <ChevronsUp className="h-3.5 w-3.5" />
+        )}
+      </button>
+      <div className="mx-0.5 h-4 w-px bg-border" />
+      {dockTabsList.map((d, i) => (
+        <div
+          key={d.instanceId}
+          draggable
+          onDragStart={(e) => e.dataTransfer.setData("text/plain", String(i))}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault();
+            const from = Number(e.dataTransfer.getData("text/plain"));
+            if (!Number.isNaN(from)) reorderWidget(WELL_KNOWN_NODE_IDS.bottomDock, from, i);
+          }}
+          className="group/tab relative flex items-center"
+        >
+          <button
+            onClick={() => {
+              setDock(d.id);
+              openDock();
+            }}
+            className={`flex h-7 cursor-grab items-center gap-1 rounded-[6px] px-2 text-[13px] active:cursor-grabbing ${
+              dock === d.id
+                ? "bg-accent text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {d.label}
+          </button>
+          <span className="hidden items-center group-hover/tab:flex">
+            {d.canMoveToOtherRegion && (
+              <button
+                title={`Move to right sidebar`}
+                onClick={() => {
+                  moveWidget(d.instanceId, WELL_KNOWN_NODE_IDS.bottomDock, WELL_KNOWN_NODE_IDS.rightSidebar);
+                  setSidebarState("expanded");
+                }}
+                className="flex h-5 w-5 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <MoreHorizontal className="h-3 w-3" />
+              </button>
+            )}
+            {!d.pinned && dockTabsList.length > 1 && (
+              <button
+                title="Close"
+                onClick={() => removeWidget(WELL_KNOWN_NODE_IDS.bottomDock, d.instanceId)}
+                className="flex h-5 w-5 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-destructive"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            )}
+          </span>
+        </div>
+      ))}
+      <AddWidgetMenu
+        region="dock"
+        openWidgetTypeIds={dockWidgetTypeIds}
+        onAdd={(widgetTypeId) => addWidget(WELL_KNOWN_NODE_IDS.bottomDock, widgetTypeId)}
+      />
+      <div className="ml-auto flex items-center gap-1">
+        <button
+          onClick={pasteFromClipboard}
+          disabled={running || translating}
+          title="Paste code from clipboard and plot it"
+          className="flex h-7 items-center gap-1 rounded-[6px] px-2 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
+        >
+          <ClipboardPaste className="h-3.5 w-3.5" /> Paste
+        </button>
+        <button
+          onClick={copyCode}
+          title="Copy this script"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground"
+        >
+          {copied ? (
+            <Check className="h-3.5 w-3.5 text-brand" />
+          ) : (
+            <Copy className="h-3.5 w-3.5" />
+          )}
+        </button>
+        <button
+          onClick={addToChart}
+          disabled={running || translating || bars.length === 0}
+          className="flex h-7 items-center gap-1 rounded-[6px] bg-brand px-2.5 text-[13px] font-medium text-brand-foreground disabled:opacity-50"
+        >
+          {running || translating ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Play className="h-3.5 w-3.5" />
+          )}
+          Add to Chart
+        </button>
+        <button
+          onClick={() => saveMut.mutate()}
+          disabled={!user || saveMut.isPending || !editingKey}
+          title={user ? "Save indicator" : "Sign in to save"}
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
+        >
+          <Save className="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+    </div>
+
+    {dockVisible && dock === "code" && (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <CodeEditor value={code} onChange={setCode} />
+        </div>
+
+        {activeInputs.length > 0 && (
+          <div className="max-h-56 shrink-0 overflow-auto border-t border-border p-3">
+            <p className="mb-2 text-[11px] font-medium text-muted-foreground">
+              Settings
+            </p>
+            <div className="space-y-2">
+              {activeInputs.map((inp) => (
+                <label
+                  key={inp.name}
+                  className="flex items-center justify-between gap-2 text-[11px]"
+                >
+                  <span className="text-muted-foreground">{inp.label}</span>
+                  {inp.type === "bool" ? (
+                    <input
+                      type="checkbox"
+                      checked={Boolean(settings[inp.name])}
+                      onChange={(e) =>
+                        setSettings((s) => ({
+                          ...s,
+                          [inp.name]: e.target.checked,
+                        }))
+                      }
+                    />
+                  ) : (
+                    <input
+                      type={inp.type === "number" ? "number" : "text"}
+                      value={String(settings[inp.name] ?? "")}
+                      min={inp.min}
+                      max={inp.max}
+                      step={inp.step}
+                      onChange={(e) =>
+                        setSettings((s) => ({
+                          ...s,
+                          [inp.name]:
+                            inp.type === "number"
+                              ? Number(e.target.value)
+                              : e.target.value,
+                        }))
+                      }
+                      className="w-28 rounded border border-border bg-card px-2 py-1 outline-none focus:border-brand"
+                    />
+                  )}
+                </label>
+              ))}
+            </div>
+            <button
+              onClick={addToChart}
+              className="mt-3 w-full rounded-[6px] border border-border py-1 text-[11px] hover:bg-accent"
+            >
+              Apply settings
+            </button>
+          </div>
+        )}
+
+        {(notice || runError) && (
+          <div
+            onClick={() => setNoticeExpanded((v) => !v)}
+            className={`shrink-0 cursor-pointer border-t border-border px-2 py-1 text-[11px] ${
+              noticeExpanded ? "" : "truncate"
+            } ${runError ? "text-destructive" : "text-muted-foreground"}`}
+          >
+            {runError ?? notice}
+          </div>
+        )}
+      </div>
+    )}
+
+    {dockVisible && dock === "saved" && (
+      <div className="min-h-0 flex-1 overflow-auto p-3">
+        {!user && (
+          <p className="text-xs text-muted-foreground">
+            <Link to="/auth" className="text-brand underline">
+              Sign in
+            </Link>{" "}
+            to save indicators to your account.
+          </p>
+        )}
+        {user && savedQuery.isLoading && (
+          <p className="text-xs text-muted-foreground">Loading…</p>
+        )}
+        {user && savedQuery.data?.length === 0 && (
+          <p className="text-xs text-muted-foreground">
+            No saved indicators yet. Write one and press the save icon.
+          </p>
+        )}
+        <ul className="space-y-1.5">
+          {savedQuery.data?.map((row) => (
+            <li
+              key={row.id}
+              className="rounded-md border border-border bg-card px-2.5 py-2"
+            >
+              <div className="flex items-center gap-2">
+                <span className="flex-1 truncate text-xs">{row.name}</span>
+                <button
+                  title="Add to chart"
+                  onClick={() =>
+                    void runCode(row.code, {
+                      settings: (row.settings ?? {}) as Record<
+                        string,
+                        number | boolean | string
+                      >,
+                      key: `saved-${row.id}`,
+                      savedId: row.id,
+                    }).then(() => setCode(row.code))
+                  }
+                  className="rounded p-1 text-muted-foreground hover:text-brand"
+                >
+                  <Play className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  title="Edit code"
+                  onClick={() => {
+                    setCode(row.code);
+                    setEditingKey(`saved-${row.id}`);
+                    setDock("code");
+                  }}
+                  className="rounded p-1 text-muted-foreground hover:text-foreground"
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  title="Rename"
+                  onClick={() => {
+                    const name = window.prompt("Rename indicator", row.name);
+                    if (name?.trim())
+                      renameMut.mutate({ id: row.id, name: name.trim() });
+                  }}
+                  className="rounded p-1 text-muted-foreground hover:text-foreground"
+                >
+                  <TypeIcon className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  title="Duplicate"
+                  onClick={() => duplicateMut.mutate(row.id)}
+                  className="rounded p-1 text-muted-foreground hover:text-foreground"
+                >
+                  <CopyPlus className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  title="Version history"
+                  onClick={() =>
+                    setHistoryFor((cur) => (cur === row.id ? null : row.id))
+                  }
+                  className={`rounded p-1 hover:text-foreground ${historyFor === row.id ? "text-brand" : "text-muted-foreground"}`}
+                >
+                  <History className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  title="Delete"
+                  onClick={() => deleteMut.mutate(row.id)}
+                  className="rounded p-1 text-muted-foreground hover:text-destructive"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              <p className="mt-1 text-[10px] text-muted-foreground">
+                Updated {new Date(row.updated_at).toLocaleString()}
+              </p>
+              {historyFor === row.id && (
+                <div className="mt-2 space-y-1 border-t border-border pt-2">
+                  {versionsQuery.isLoading && (
+                    <p className="text-[10px] text-muted-foreground">
+                      Loading history…
+                    </p>
+                  )}
+                  {versionsQuery.data?.length === 0 && (
+                    <p className="text-[10px] text-muted-foreground">
+                      No saved versions yet — save again to create one.
+                    </p>
+                  )}
+                  {versionsQuery.data?.map((v) => (
+                    <div
+                      key={v.id}
+                      className="flex items-center gap-2 text-[10px] text-muted-foreground"
+                    >
+                      <span className="font-mono text-foreground">
+                        v{v.version}
+                      </span>
+                      <span className="flex-1 truncate">
+                        {v.changelog ?? "Snapshot"}
+                      </span>
+                      <button
+                        title="Load this version into the editor"
+                        onClick={() => {
+                          setCode(v.code);
+                          setDock("code");
+                          setNotice(`Loaded v${v.version} into the editor.`);
+                        }}
+                        className="rounded p-1 hover:text-foreground"
+                      >
+                        <Pencil className="h-3 w-3" />
+                      </button>
+                      <button
+                        title="Restore this version"
+                        onClick={() =>
+                          restoreMut.mutate({
+                            indicatorId: row.id,
+                            version: v.version,
+                          })
+                        }
+                        className="rounded p-1 hover:text-brand"
+                      >
+                        <RotateCcw className="h-3 w-3" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      </div>
+    )}
+
+    {dockVisible && dock === "docs" && (
+      <div className="min-h-0 flex-1 overflow-auto p-3">
+        <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
+          <BookOpen className="h-3.5 w-3.5 text-brand" /> SGScript reference
+        </div>
+        <p className="mb-3 text-[11px] leading-relaxed text-muted-foreground">
+          Pine Script only runs on TradingView, so Signal Goat indicators run
+          in our own runtime: SGScript. Ask the AI for an SGScript indicator,
+          or paste Pine and press{" "}
+          <span className="inline-flex items-center gap-1 text-brand">
+            <Wand2 className="h-3 w-3" /> convert
+          </span>{" "}
+          below.
+        </p>
+        <button
+          onClick={() => {
+            setTranslating(true);
+            setRunError(null);
+            setNotice("Converting to SGScript…");
+            translateFn({ data: { source: code } })
+              .then((r) => {
+                setCode(r.code);
+                setDock("code");
+                setNotice("Converted — press Add to Chart.");
+              })
+              .catch((e: unknown) =>
+                setRunError(
+                  e instanceof Error ? e.message : "Conversion failed",
+                ),
+              )
+              .finally(() => setTranslating(false));
+          }}
+          disabled={!user || translating}
+          className="mb-3 flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-40"
+        >
+          {translating ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <Wand2 className="h-3 w-3" />
+          )}
+          Convert editor code to SGScript
+        </button>
+        <pre className="whitespace-pre-wrap break-words rounded-md border border-border bg-card p-3 text-[10.5px] leading-relaxed text-muted-foreground">
+          {SGSCRIPT_REFERENCE}
+        </pre>
+      </div>
+    )}
+
+    {dockVisible && dock === "tester" && (
+      <StrategyTester
+        symbol={symbol}
+        interval={interval}
+        signedIn={!!user}
+        bars={bars}
+        project={testerProject}
+        onShowTrades={setBacktestTrades}
+        onDefineRules={(suggestion) => {
+          openSidebar();
+          setRightTab("ai");
+          setAiSeed(suggestion);
+        }}
+      />
+    )}
+
+    {dockVisible && dock === "journal" && (
+      <JournalPanel
+        accountId={accountId}
+        symbol={symbol}
+        timeframe={interval}
+        signedIn={!!user}
+      />
+    )}
+
+    {dockVisible &&
+      (dock === "positions" || dock === "orders" || dock === "history") && (
+        <TradingTables
+          snapshot={snapshot}
+          busy={tradeMutation.isPending}
+          tab={dock}
+          showTabs={false}
+          onClosePosition={(id) => tradeMutation.mutate({ kind: "close", id })}
+          onCancelOrder={(id) => tradeMutation.mutate({ kind: "cancel", id })}
+          onBreakeven={(id) => tradeMutation.mutate({ kind: "breakeven", id })}
+          onReverse={(id) => tradeMutation.mutate({ kind: "reverse", id })}
+          onModifyOrder={(id) => {
+            const order = snapshot?.orders.find((o) => o.id === id);
+            if (!order) return;
+            const current =
+              order.order_type === "stop" || order.order_type === "stop_limit"
+                ? order.stop_price
+                : order.limit_price;
+            const next = window.prompt(
+              `New price for ${order.side.toUpperCase()} ${order.symbol}`,
+              current === null || current === undefined ? "" : String(current),
+            );
+            const price = Number(next);
+            if (!next || !Number.isFinite(price) || price <= 0) return;
+            dragTradeMutation.mutate({
+              t: { id: `ord:${id}` } as ChartTrade,
+              price,
+            });
+          }}
+          onFlattenAll={() => tradeMutation.mutate({ kind: "flatten" })}
+          onCancelAll={() => {
+            for (const o of snapshot?.orders ?? [])
+              if (
+                ["working", "accepted", "created", "partially_filled"].includes(
+                  o.status,
+                )
+              )
+                tradeMutation.mutate({ kind: "cancel", id: o.id });
+          }}
+          onSelectSymbol={setSymbol}
+        />
+      )}
+
+    {/* Sidebar-native widgets, rendered here too when moved into the
+        dock (UI-4c "move between regions") — same components, just a
+        second mount point, since none of them assume sidebar width. */}
+    {dockVisible && dock === "watchlist" && (
+      <div className="min-h-0 flex-1 overflow-auto">
+        <WatchlistPanel activeSymbol={symbol} signedIn={!!user} onSelect={(t) => setSymbol(t)} />
+      </div>
+    )}
+    {dockVisible && dock === "trade" && (
+      <div className="min-h-0 flex-1 overflow-auto">
+        <TradingPanel
+          symbol={symbol}
+          timeframe={interval}
+          lastPrice={lastPrice}
+          snapshot={snapshot}
+          busy={tradeMutation.isPending}
+          error={tradeError}
+          signedIn={!!user}
+          onSubmit={(draft) => {
+            tradeMutation.mutate({ kind: "submit", draft });
+            setDock("positions");
+            openDock();
+          }}
+          onFlatten={() => tradeMutation.mutate({ kind: "flatten" })}
+          onReset={() => tradeMutation.mutate({ kind: "reset" })}
+          prefill={prefill}
+        />
+      </div>
+    )}
+    {dockVisible && dock === "ai" && (
+      <div className="min-h-0 flex-1 overflow-auto">
+        <AiSidePanel
+          seedPrompt={aiSeed}
+          onSeedConsumed={() => setAiSeed(null)}
+          code={code}
+          symbol={symbol}
+          interval={interval}
+          signedIn={!!user}
+          converting={translating}
+          spec={projectSpec}
+          onBuilt={(r) => {
+            setProjectSpec(r.spec);
+            setCode(r.sgscript);
+            setDock("code");
+            openDock();
+            const key = builtKeyRef.current ?? `ai${Date.now()}`;
+            builtKeyRef.current = key;
+            void (async () => {
+              const err = await runCode(r.sgscript, { settings: {}, silent: true, key });
+              if (err) {
+                const err2 = await runSource(r.sgscript, { key });
+                track(err2 ? "add_to_chart_failed" : "add_to_chart_succeeded", { repaired: true });
+              } else {
+                track("add_to_chart_succeeded", { repaired: false });
+                setNotice(finalNotice("Indicator plotted on the chart."));
+              }
+            })();
+          }}
+          onConvert={() => {
+            setTranslating(true);
+            setRunError(null);
+            setNotice("Converting to SGScript…");
+            translateFn({ data: { source: code } })
+              .then((r) => {
+                setCode(r.code);
+                setDock("code");
+                openDock();
+                setNotice("Converted — press Add to Chart.");
+              })
+              .catch((e: unknown) => setRunError(e instanceof Error ? e.message : "Conversion failed"))
+              .finally(() => setTranslating(false));
+          }}
+        />
+      </div>
+    )}
+    {dockVisible && dock === "alerts" && (
+      <div className="min-h-0 flex-1 overflow-auto">
+        <AlertsSidePanel symbol={symbol} lastPrice={lastPrice} signedIn={!!user} />
+      </div>
+    )}
+    </section>
+  );
+
+  const renderRightSidebar = () => (
+    <>
+      {sidebarState === "collapsed" && (
+        <aside className="hidden w-[42px] shrink-0 flex-col items-center gap-0.5 border-l border-border bg-panel py-1.5 lg:flex">
+          {rightTabs.map((t) => (
+            <button
+              key={t.id}
+              title={t.label}
+              onClick={() => {
+                setRightTab(t.id);
+                setSidebarState("expanded");
+              }}
+              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[6px] ${
+                rightTab === t.id
+                  ? "bg-accent text-foreground"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground"
+              }`}
+            >
+              <t.icon className="h-[18px] w-[18px]" />
+            </button>
+          ))}
+        </aside>
+      )}
+
+      {sidebarState === "expanded" && (
+        <div
+          onPointerDown={(e) => {
+            e.preventDefault();
+            const startX = e.clientX;
+            const startW = sidebarWidth;
+            const move = (ev: PointerEvent) =>
+              setSidebarWidth(Math.min(Math.max(240, startW + (startX - ev.clientX)), 420));
+            const up = () => {
+              window.removeEventListener("pointermove", move);
+              window.removeEventListener("pointerup", up);
+            };
+            window.addEventListener("pointermove", move);
+            window.addEventListener("pointerup", up);
+          }}
+          className="hidden w-1.5 shrink-0 cursor-col-resize hover:bg-brand/10 lg:block"
+        />
+      )}
+      {sidebarState === "expanded" && (
+        <aside
+          className="hidden shrink-0 flex-col overflow-y-auto border-l border-border bg-panel lg:flex"
+          style={{ width: sidebarWidth }}
+        >
+          <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-border px-1.5">
+            {/* Tabs size to their own content and the strip scrolls
+                horizontally if it ever overflows, instead of every tab
+                being squeezed into an equal flex-1 share (which is what
+                truncated "WATCHLIST" down to "WAT…" even at the default
+                4-tab width). Capability gating below caps the sidebar at
+                its 4 built-in widgets — a 5th can't reach it without new
+                cross-region rendering — so this only ever needs to fit
+                those, comfortably, even at the narrowest 240px width. */}
+            <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
+              {rightTabs.map((t, i) => (
+                <div
+                  key={t.instanceId}
+                  draggable
+                  onDragStart={(e) => e.dataTransfer.setData("text/plain", String(i))}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    const from = Number(e.dataTransfer.getData("text/plain"));
+                    if (!Number.isNaN(from)) reorderWidget(WELL_KNOWN_NODE_IDS.rightSidebar, from, i);
+                  }}
+                  className="group/tab flex shrink-0 items-center"
+                >
+                  <button
+                    onClick={() => setRightTab(t.id)}
+                    className={`max-w-[110px] cursor-grab truncate rounded-[6px] px-1.5 py-1 text-left text-[11px] font-medium uppercase tracking-wide transition active:cursor-grabbing ${
+                      rightTab === t.id
+                        ? "bg-accent text-foreground"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {t.label}
+                  </button>
+                  {/* Zero width until hovered — flexbox reflow (grows the
+                      strip, shifts later tabs over), not overlap, so it
+                      never covers the label. */}
+                  <span className="flex w-0 shrink-0 items-center overflow-hidden opacity-0 transition-all group-hover/tab:w-9 group-hover/tab:opacity-100">
+                    {t.canMoveToOtherRegion && (
+                      <button
+                        title="Move to bottom panel"
+                        onClick={() => moveWidget(t.instanceId, WELL_KNOWN_NODE_IDS.rightSidebar, WELL_KNOWN_NODE_IDS.bottomDock)}
+                        className="flex h-4 w-4 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+                      >
+                        <MoreHorizontal className="h-2.5 w-2.5" />
+                      </button>
+                    )}
+                    {!t.pinned && rightTabs.length > 1 && (
+                      <button
+                        title="Close"
+                        onClick={() => removeWidget(WELL_KNOWN_NODE_IDS.rightSidebar, t.instanceId)}
+                        className="flex h-4 w-4 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-destructive"
+                      >
+                        <X className="h-2.5 w-2.5" />
+                      </button>
+                    )}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <AddWidgetMenu
+              region="sidebar"
+              openWidgetTypeIds={rightWidgetTypeIds}
+              onAdd={(widgetTypeId) => addWidget(WELL_KNOWN_NODE_IDS.rightSidebar, widgetTypeId)}
+            />
+            <button
+              title="Collapse sidebar"
+              onClick={() => setSidebarState("collapsed")}
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              <PanelRightClose className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          {rightTab === "ai" ? (
+            <AiSidePanel
+              seedPrompt={aiSeed}
+              onSeedConsumed={() => setAiSeed(null)}
+              code={code}
+              symbol={symbol}
+              interval={interval}
+              signedIn={!!user}
+              converting={translating}
+              spec={projectSpec}
+              onBuilt={(r) => {
+                setProjectSpec(r.spec);
+                setCode(r.sgscript);
+                setDock("code");
+                openDock();
+                // Reuse the same chart slot across the whole build session so
+                // a follow-up edit replaces the indicator instead of stacking.
+                const key = builtKeyRef.current ?? `ai${Date.now()}`;
+                builtKeyRef.current = key;
+                void (async () => {
+                  const err = await runCode(r.sgscript, {
+                    settings: {},
+                    silent: true,
+                    key,
+                  });
+                  if (err) {
+                    const err2 = await runSource(r.sgscript, { key });
+                    track(err2 ? "add_to_chart_failed" : "add_to_chart_succeeded", {
+                      repaired: true,
+                    });
+                  } else {
+                    track("add_to_chart_succeeded", { repaired: false });
+                    setNotice(finalNotice("Indicator plotted on the chart."));
+                  }
+                })();
+              }}
+              onConvert={() => {
+                setTranslating(true);
+                setRunError(null);
+                setNotice("Converting to SGScript…");
+                translateFn({ data: { source: code } })
+                  .then((r) => {
+                    setCode(r.code);
+                    setDock("code");
+                    openDock();
+                    setNotice("Converted — press Add to Chart.");
+                  })
+                  .catch((e: unknown) =>
+                    setRunError(
+                      e instanceof Error ? e.message : "Conversion failed",
+                    ),
+                  )
+                  .finally(() => setTranslating(false));
+              }}
+            />
+          ) : rightTab === "alerts" ? (
+            <AlertsSidePanel
+              symbol={symbol}
+              lastPrice={lastPrice}
+              signedIn={!!user}
+            />
+          ) : rightTab === "trade" ? (
+            <TradingPanel
+              symbol={symbol}
+              timeframe={interval}
+              lastPrice={lastPrice}
+              snapshot={snapshot}
+              busy={tradeMutation.isPending}
+              error={tradeError}
+              signedIn={!!user}
+              onSubmit={(draft) => {
+                tradeMutation.mutate({ kind: "submit", draft });
+                setDock("positions");
+                openDock();
+              }}
+              onFlatten={() => tradeMutation.mutate({ kind: "flatten" })}
+              onReset={() => tradeMutation.mutate({ kind: "reset" })}
+              prefill={prefill}
+            />
+
+          ) : rightTab === "watchlist" ? (
+          <WatchlistPanel
+            activeSymbol={symbol}
+            signedIn={!!user}
+            onSelect={(t) => setSymbol(t)}
+          />
+          ) : (
+            // A dock-native widget (Code/Strategy tester/Positions/Orders/
+            // History/Journal/Saved/Reference) moved into the sidebar via
+            // UI-4c's "move between regions" action. Its content isn't
+            // built to render in the sidebar's narrower layout yet — an
+            // honest limitation, not a silent blank panel or fake content.
+            <div className="flex flex-1 flex-col items-center justify-center gap-2 p-4 text-center">
+              <p className="text-[11px] text-muted-foreground">
+                This widget isn't available in the compact sidebar view yet.
+              </p>
+              <button
+                onClick={() => {
+                  const active = rightTabs.find((t) => t.id === rightTab);
+                  if (active)
+                    moveWidget(active.instanceId, WELL_KNOWN_NODE_IDS.rightSidebar, WELL_KNOWN_NODE_IDS.bottomDock);
+                }}
+                className="rounded-[6px] border border-border px-2 py-1 text-[11px] hover:bg-accent"
+              >
+                Move to bottom panel
+              </button>
+            </div>
+          )}
+        </aside>
+      )}
+    </>
+  );
+
+  const renderLeaf = (node: LayoutNode & { kind: "tabs" }) => {
+    if (node.id === WELL_KNOWN_NODE_IDS.chartArea) return renderChartArea();
+    if (node.id === WELL_KNOWN_NODE_IDS.bottomDock) return renderBottomDock();
+    if (node.id === WELL_KNOWN_NODE_IDS.rightSidebar) return renderRightSidebar();
+    // Any other leaf (e.g. orderflowPro's inert dom-panel) is never reached
+    // in practice -- that preset is locked and can't become the active
+    // layout -- but returning null here rather than throwing keeps
+    // LayoutTree itself genuinely generic and safe against future shapes.
+    return null;
+  };
+
   return (
     <div ref={rootRef} className="flex h-screen flex-col bg-background text-foreground">
       {/* top bar */}
@@ -2243,978 +3240,11 @@ function Studio() {
           )}
         </nav>
 
-        {/* chart */}
-        <main className="flex min-w-0 flex-1 flex-col">
-          <div
-            className={`relative min-h-0 overflow-hidden ${
-              dockState === "maximized" ? "flex-none basis-14" : "flex-1"
-            }`}
-          >
-            <ChartLegendStrip
-              symbol={symbol}
-              intervalLabel={timeframeLabel(interval)}
-              crosshair={crosshair}
-              latestBar={bars.length ? bars[bars.length - 1] : null}
-              indicators={indicators.map((i) => ({
-                key: i.key,
-                name: i.name,
-                visible: i.visible,
-                inputs: i.result.inputs,
-              }))}
-              editingKey={editingKey}
-              onSelectIndicator={(key) => {
-                const ind = indicators.find((i) => i.key === key);
-                if (!ind) return;
-                setEditingKey(key);
-                setCode(ind.code);
-                setActiveInputs(ind.result.inputs);
-                setSettings(ind.settings);
-                setDock("code");
-              }}
-              onToggleVisible={(key) =>
-                setIndicators((prev) =>
-                  prev.map((p) => (p.key === key ? { ...p, visible: !p.visible } : p)),
-                )
-              }
-              onRemoveIndicator={(key) =>
-                setIndicators((prev) => prev.filter((p) => p.key !== key))
-              }
-              onOpenSettings={(key) => {
-                const ind = indicators.find((i) => i.key === key);
-                if (!ind) return;
-                setEditingKey(key);
-                setCode(ind.code);
-                setActiveInputs(ind.result.inputs);
-                setSettings(ind.settings);
-                setDock("code");
-                openDock();
-              }}
-              onPickTemplate={(templateCode) => {
-                setEditingKey(null);
-                setCode(templateCode ?? DEFAULT_SCRIPT);
-                setDock("code");
-                openDock();
-                // Start a fresh AI build session too.
-                setProjectSpec(null);
-                builtKeyRef.current = null;
-              }}
-            />
-            {barsError ? (
-              <div className="flex h-full items-center justify-center text-xs text-destructive">
-                {barsError}
-              </div>
-            ) : (
-              <StudioChart
-                bars={bars}
-                indicators={indicators}
-                tool={tool}
-                drawings={drawings}
-                onAddDrawing={addDrawing}
-                onRemoveDrawing={removeDrawing}
-                onUpdateDrawing={updateDrawing}
-                selectedId={selectedDrawing}
-                onSelectDrawing={setSelectedDrawing}
-                hasOscPane={hasOscPane}
-                extraMarkers={backtestMarkers}
-                tradeLines={tradeLines}
-                trades={chartTrades}
-                instrument={{
-                  tickSize: getInstrument(symbol).tickSize,
-                  valuePerPoint: pnlPerUnit(getInstrument(symbol), 1),
-                }}
-                onTradeDrag={(t, price) => dragTradeMutation.mutate({ t, price })}
-                onChartPrice={(price, screen) =>
-                  setChartMenu({ price, x: screen.x, y: screen.y })
-                }
-                onPlanOrder={(plan: PositionPlan) => {
-                  setPrefill({
-                    nonce: Date.now(),
-                    side: plan.side,
-                    type: "limit",
-                    limitPrice: plan.entry,
-                    stopLoss: plan.stop,
-                    takeProfit: plan.target,
-                  });
-                  setRightTab("trade");
-                  openSidebar();
-                }}
-                chartType={chartType}
-                settings={chartSettings}
-                onCrosshair={setCrosshair}
-                onReady={onChartReady}
-                onRenderStats={handleRenderStats}
-              />
-            )}
-
-            {objectsOpen && (
-              <DrawingInspector
-                drawings={drawings}
-                selectedId={selectedDrawing}
-                onSelect={setSelectedDrawing}
-                onUpdate={updateDrawing}
-                onRemove={removeDrawing}
-                onDuplicate={duplicateDrawing}
-                onClose={() => setObjectsOpen(false)}
-              />
-            )}
-
-            {/* Right-click trading menu: places the clicked price in the ticket. */}
-            {chartMenu && (
-              <>
-                <div
-                  className="fixed inset-0 z-40"
-                  onClick={() => setChartMenu(null)}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    setChartMenu(null);
-                  }}
-                />
-                <div
-                  className="absolute z-50 w-52 overflow-hidden rounded-[8px] border border-border bg-panel py-1 text-xs shadow-xl"
-                  style={{ left: chartMenu.x, top: chartMenu.y }}
-                >
-                  <div className="px-2.5 py-1 font-mono text-[11px] text-muted-foreground">
-                    {chartMenu.price.toLocaleString("en-US", {
-                      maximumFractionDigits: 6,
-                    })}
-                  </div>
-                  {(
-                    [
-                      ["buy", "limit", "Buy limit here"],
-                      ["sell", "limit", "Sell limit here"],
-                      ["buy", "stop", "Buy stop here"],
-                      ["sell", "stop", "Sell stop here"],
-                    ] as const
-                  ).map(([side, type, label]) => (
-                    <button
-                      key={label}
-                      onClick={() => {
-                        setPrefill({
-                          nonce: Date.now(),
-                          side,
-                          type,
-                          ...(type === "limit"
-                            ? { limitPrice: chartMenu.price }
-                            : { stopPrice: chartMenu.price }),
-                        });
-                        setRightTab("trade");
-                        openSidebar();
-                        setChartMenu(null);
-                      }}
-                      className={`block w-full px-2.5 py-1.5 text-left hover:bg-accent ${
-                        side === "buy" ? "text-emerald-400" : "text-red-400"
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-
-          {/* bottom dock: editor / saved indicators / reference */}
-          <section
-            className={`flex shrink-0 flex-col border-t border-border bg-panel ${
-              dockState === "maximized" ? "flex-1" : ""
-            }`}
-            style={dockState === "normal" ? { height: dockHeight, minHeight: 160 } : undefined}
-          >
-          {dockState === "normal" && (
-            <div
-              onPointerDown={(e) => {
-                e.preventDefault();
-                const startY = e.clientY;
-                const startH = dockHeight;
-                const move = (ev: PointerEvent) =>
-                  setDockHeight(
-                    Math.min(
-                      Math.max(160, startH + (startY - ev.clientY)),
-                      window.innerHeight - 240,
-                    ),
-                  );
-                const up = () => {
-                  window.removeEventListener("pointermove", move);
-                  window.removeEventListener("pointerup", up);
-                };
-                window.addEventListener("pointermove", move);
-                window.addEventListener("pointerup", up);
-              }}
-              className="group/resize flex h-2.5 w-full shrink-0 cursor-row-resize items-center justify-center hover:bg-brand/10"
-            >
-              <div className="h-1 w-10 rounded-full bg-border transition-colors group-hover/resize:bg-brand/70" />
-            </div>
-          )}
-          <div className="flex h-10 items-center gap-1 border-b border-border px-2">
-            <button
-              onClick={toggleDockCollapse}
-              title={dockVisible ? "Collapse panel" : "Expand panel"}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground"
-            >
-              {dockVisible ? (
-                <PanelBottomClose className="h-3.5 w-3.5" />
-              ) : (
-                <PanelBottomOpen className="h-3.5 w-3.5" />
-              )}
-            </button>
-            <button
-              onClick={toggleDockMaximize}
-              title={dockState === "maximized" ? "Restore panel" : "Maximize panel"}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground"
-            >
-              {dockState === "maximized" ? (
-                <ChevronsDown className="h-3.5 w-3.5" />
-              ) : (
-                <ChevronsUp className="h-3.5 w-3.5" />
-              )}
-            </button>
-            <div className="mx-0.5 h-4 w-px bg-border" />
-            {dockTabsList.map((d, i) => (
-              <div
-                key={d.instanceId}
-                draggable
-                onDragStart={(e) => e.dataTransfer.setData("text/plain", String(i))}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  const from = Number(e.dataTransfer.getData("text/plain"));
-                  if (!Number.isNaN(from)) reorderWidget(WELL_KNOWN_NODE_IDS.bottomDock, from, i);
-                }}
-                className="group/tab relative flex items-center"
-              >
-                <button
-                  onClick={() => {
-                    setDock(d.id);
-                    openDock();
-                  }}
-                  className={`flex h-7 cursor-grab items-center gap-1 rounded-[6px] px-2 text-[13px] active:cursor-grabbing ${
-                    dock === d.id
-                      ? "bg-accent text-foreground"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  {d.label}
-                </button>
-                <span className="hidden items-center group-hover/tab:flex">
-                  {d.canMoveToOtherRegion && (
-                    <button
-                      title={`Move to right sidebar`}
-                      onClick={() => {
-                        moveWidget(d.instanceId, WELL_KNOWN_NODE_IDS.bottomDock, WELL_KNOWN_NODE_IDS.rightSidebar);
-                        setSidebarState("expanded");
-                      }}
-                      className="flex h-5 w-5 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-                    >
-                      <MoreHorizontal className="h-3 w-3" />
-                    </button>
-                  )}
-                  {!d.pinned && dockTabsList.length > 1 && (
-                    <button
-                      title="Close"
-                      onClick={() => removeWidget(WELL_KNOWN_NODE_IDS.bottomDock, d.instanceId)}
-                      className="flex h-5 w-5 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-destructive"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  )}
-                </span>
-              </div>
-            ))}
-            <AddWidgetMenu
-              region="dock"
-              openWidgetTypeIds={dockWidgetTypeIds}
-              onAdd={(widgetTypeId) => addWidget(WELL_KNOWN_NODE_IDS.bottomDock, widgetTypeId)}
-            />
-            <div className="ml-auto flex items-center gap-1">
-              <button
-                onClick={pasteFromClipboard}
-                disabled={running || translating}
-                title="Paste code from clipboard and plot it"
-                className="flex h-7 items-center gap-1 rounded-[6px] px-2 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
-              >
-                <ClipboardPaste className="h-3.5 w-3.5" /> Paste
-              </button>
-              <button
-                onClick={copyCode}
-                title="Copy this script"
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground"
-              >
-                {copied ? (
-                  <Check className="h-3.5 w-3.5 text-brand" />
-                ) : (
-                  <Copy className="h-3.5 w-3.5" />
-                )}
-              </button>
-              <button
-                onClick={addToChart}
-                disabled={running || translating || bars.length === 0}
-                className="flex h-7 items-center gap-1 rounded-[6px] bg-brand px-2.5 text-[13px] font-medium text-brand-foreground disabled:opacity-50"
-              >
-                {running || translating ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Play className="h-3.5 w-3.5" />
-                )}
-                Add to Chart
-              </button>
-              <button
-                onClick={() => saveMut.mutate()}
-                disabled={!user || saveMut.isPending || !editingKey}
-                title={user ? "Save indicator" : "Sign in to save"}
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
-              >
-                <Save className="h-3.5 w-3.5" />
-              </button>
-            </div>
-
-          </div>
-
-          {dockVisible && dock === "code" && (
-            <div className="flex min-h-0 flex-1 flex-col">
-              <div className="min-h-0 flex-1 overflow-hidden">
-                <CodeEditor value={code} onChange={setCode} />
-              </div>
-
-              {activeInputs.length > 0 && (
-                <div className="max-h-56 shrink-0 overflow-auto border-t border-border p-3">
-                  <p className="mb-2 text-[11px] font-medium text-muted-foreground">
-                    Settings
-                  </p>
-                  <div className="space-y-2">
-                    {activeInputs.map((inp) => (
-                      <label
-                        key={inp.name}
-                        className="flex items-center justify-between gap-2 text-[11px]"
-                      >
-                        <span className="text-muted-foreground">{inp.label}</span>
-                        {inp.type === "bool" ? (
-                          <input
-                            type="checkbox"
-                            checked={Boolean(settings[inp.name])}
-                            onChange={(e) =>
-                              setSettings((s) => ({
-                                ...s,
-                                [inp.name]: e.target.checked,
-                              }))
-                            }
-                          />
-                        ) : (
-                          <input
-                            type={inp.type === "number" ? "number" : "text"}
-                            value={String(settings[inp.name] ?? "")}
-                            min={inp.min}
-                            max={inp.max}
-                            step={inp.step}
-                            onChange={(e) =>
-                              setSettings((s) => ({
-                                ...s,
-                                [inp.name]:
-                                  inp.type === "number"
-                                    ? Number(e.target.value)
-                                    : e.target.value,
-                              }))
-                            }
-                            className="w-28 rounded border border-border bg-card px-2 py-1 outline-none focus:border-brand"
-                          />
-                        )}
-                      </label>
-                    ))}
-                  </div>
-                  <button
-                    onClick={addToChart}
-                    className="mt-3 w-full rounded-[6px] border border-border py-1 text-[11px] hover:bg-accent"
-                  >
-                    Apply settings
-                  </button>
-                </div>
-              )}
-
-              {(notice || runError) && (
-                <div
-                  onClick={() => setNoticeExpanded((v) => !v)}
-                  className={`shrink-0 cursor-pointer border-t border-border px-2 py-1 text-[11px] ${
-                    noticeExpanded ? "" : "truncate"
-                  } ${runError ? "text-destructive" : "text-muted-foreground"}`}
-                >
-                  {runError ?? notice}
-                </div>
-              )}
-            </div>
-          )}
-
-          {dockVisible && dock === "saved" && (
-            <div className="min-h-0 flex-1 overflow-auto p-3">
-              {!user && (
-                <p className="text-xs text-muted-foreground">
-                  <Link to="/auth" className="text-brand underline">
-                    Sign in
-                  </Link>{" "}
-                  to save indicators to your account.
-                </p>
-              )}
-              {user && savedQuery.isLoading && (
-                <p className="text-xs text-muted-foreground">Loading…</p>
-              )}
-              {user && savedQuery.data?.length === 0 && (
-                <p className="text-xs text-muted-foreground">
-                  No saved indicators yet. Write one and press the save icon.
-                </p>
-              )}
-              <ul className="space-y-1.5">
-                {savedQuery.data?.map((row) => (
-                  <li
-                    key={row.id}
-                    className="rounded-md border border-border bg-card px-2.5 py-2"
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="flex-1 truncate text-xs">{row.name}</span>
-                      <button
-                        title="Add to chart"
-                        onClick={() =>
-                          void runCode(row.code, {
-                            settings: (row.settings ?? {}) as Record<
-                              string,
-                              number | boolean | string
-                            >,
-                            key: `saved-${row.id}`,
-                            savedId: row.id,
-                          }).then(() => setCode(row.code))
-                        }
-                        className="rounded p-1 text-muted-foreground hover:text-brand"
-                      >
-                        <Play className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        title="Edit code"
-                        onClick={() => {
-                          setCode(row.code);
-                          setEditingKey(`saved-${row.id}`);
-                          setDock("code");
-                        }}
-                        className="rounded p-1 text-muted-foreground hover:text-foreground"
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        title="Rename"
-                        onClick={() => {
-                          const name = window.prompt("Rename indicator", row.name);
-                          if (name?.trim())
-                            renameMut.mutate({ id: row.id, name: name.trim() });
-                        }}
-                        className="rounded p-1 text-muted-foreground hover:text-foreground"
-                      >
-                        <TypeIcon className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        title="Duplicate"
-                        onClick={() => duplicateMut.mutate(row.id)}
-                        className="rounded p-1 text-muted-foreground hover:text-foreground"
-                      >
-                        <CopyPlus className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        title="Version history"
-                        onClick={() =>
-                          setHistoryFor((cur) => (cur === row.id ? null : row.id))
-                        }
-                        className={`rounded p-1 hover:text-foreground ${historyFor === row.id ? "text-brand" : "text-muted-foreground"}`}
-                      >
-                        <History className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        title="Delete"
-                        onClick={() => deleteMut.mutate(row.id)}
-                        className="rounded p-1 text-muted-foreground hover:text-destructive"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                    <p className="mt-1 text-[10px] text-muted-foreground">
-                      Updated {new Date(row.updated_at).toLocaleString()}
-                    </p>
-                    {historyFor === row.id && (
-                      <div className="mt-2 space-y-1 border-t border-border pt-2">
-                        {versionsQuery.isLoading && (
-                          <p className="text-[10px] text-muted-foreground">
-                            Loading history…
-                          </p>
-                        )}
-                        {versionsQuery.data?.length === 0 && (
-                          <p className="text-[10px] text-muted-foreground">
-                            No saved versions yet — save again to create one.
-                          </p>
-                        )}
-                        {versionsQuery.data?.map((v) => (
-                          <div
-                            key={v.id}
-                            className="flex items-center gap-2 text-[10px] text-muted-foreground"
-                          >
-                            <span className="font-mono text-foreground">
-                              v{v.version}
-                            </span>
-                            <span className="flex-1 truncate">
-                              {v.changelog ?? "Snapshot"}
-                            </span>
-                            <button
-                              title="Load this version into the editor"
-                              onClick={() => {
-                                setCode(v.code);
-                                setDock("code");
-                                setNotice(`Loaded v${v.version} into the editor.`);
-                              }}
-                              className="rounded p-1 hover:text-foreground"
-                            >
-                              <Pencil className="h-3 w-3" />
-                            </button>
-                            <button
-                              title="Restore this version"
-                              onClick={() =>
-                                restoreMut.mutate({
-                                  indicatorId: row.id,
-                                  version: v.version,
-                                })
-                              }
-                              className="rounded p-1 hover:text-brand"
-                            >
-                              <RotateCcw className="h-3 w-3" />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {dockVisible && dock === "docs" && (
-            <div className="min-h-0 flex-1 overflow-auto p-3">
-              <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
-                <BookOpen className="h-3.5 w-3.5 text-brand" /> SGScript reference
-              </div>
-              <p className="mb-3 text-[11px] leading-relaxed text-muted-foreground">
-                Pine Script only runs on TradingView, so Signal Goat indicators run
-                in our own runtime: SGScript. Ask the AI for an SGScript indicator,
-                or paste Pine and press{" "}
-                <span className="inline-flex items-center gap-1 text-brand">
-                  <Wand2 className="h-3 w-3" /> convert
-                </span>{" "}
-                below.
-              </p>
-              <button
-                onClick={() => {
-                  setTranslating(true);
-                  setRunError(null);
-                  setNotice("Converting to SGScript…");
-                  translateFn({ data: { source: code } })
-                    .then((r) => {
-                      setCode(r.code);
-                      setDock("code");
-                      setNotice("Converted — press Add to Chart.");
-                    })
-                    .catch((e: unknown) =>
-                      setRunError(
-                        e instanceof Error ? e.message : "Conversion failed",
-                      ),
-                    )
-                    .finally(() => setTranslating(false));
-                }}
-                disabled={!user || translating}
-                className="mb-3 flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-40"
-              >
-                {translating ? (
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                ) : (
-                  <Wand2 className="h-3 w-3" />
-                )}
-                Convert editor code to SGScript
-              </button>
-              <pre className="whitespace-pre-wrap break-words rounded-md border border-border bg-card p-3 text-[10.5px] leading-relaxed text-muted-foreground">
-                {SGSCRIPT_REFERENCE}
-              </pre>
-            </div>
-          )}
-
-          {dockVisible && dock === "tester" && (
-            <StrategyTester
-              symbol={symbol}
-              interval={interval}
-              signedIn={!!user}
-              bars={bars}
-              project={testerProject}
-              onShowTrades={setBacktestTrades}
-              onDefineRules={(suggestion) => {
-                openSidebar();
-                setRightTab("ai");
-                setAiSeed(suggestion);
-              }}
-            />
-          )}
-
-          {dockVisible && dock === "journal" && (
-            <JournalPanel
-              accountId={accountId}
-              symbol={symbol}
-              timeframe={interval}
-              signedIn={!!user}
-            />
-          )}
-
-          {dockVisible &&
-            (dock === "positions" || dock === "orders" || dock === "history") && (
-              <TradingTables
-                snapshot={snapshot}
-                busy={tradeMutation.isPending}
-                tab={dock}
-                showTabs={false}
-                onClosePosition={(id) => tradeMutation.mutate({ kind: "close", id })}
-                onCancelOrder={(id) => tradeMutation.mutate({ kind: "cancel", id })}
-                onBreakeven={(id) => tradeMutation.mutate({ kind: "breakeven", id })}
-                onReverse={(id) => tradeMutation.mutate({ kind: "reverse", id })}
-                onModifyOrder={(id) => {
-                  const order = snapshot?.orders.find((o) => o.id === id);
-                  if (!order) return;
-                  const current =
-                    order.order_type === "stop" || order.order_type === "stop_limit"
-                      ? order.stop_price
-                      : order.limit_price;
-                  const next = window.prompt(
-                    `New price for ${order.side.toUpperCase()} ${order.symbol}`,
-                    current === null || current === undefined ? "" : String(current),
-                  );
-                  const price = Number(next);
-                  if (!next || !Number.isFinite(price) || price <= 0) return;
-                  dragTradeMutation.mutate({
-                    t: { id: `ord:${id}` } as ChartTrade,
-                    price,
-                  });
-                }}
-                onFlattenAll={() => tradeMutation.mutate({ kind: "flatten" })}
-                onCancelAll={() => {
-                  for (const o of snapshot?.orders ?? [])
-                    if (
-                      ["working", "accepted", "created", "partially_filled"].includes(
-                        o.status,
-                      )
-                    )
-                      tradeMutation.mutate({ kind: "cancel", id: o.id });
-                }}
-                onSelectSymbol={setSymbol}
-              />
-            )}
-
-          {/* Sidebar-native widgets, rendered here too when moved into the
-              dock (UI-4c "move between regions") — same components, just a
-              second mount point, since none of them assume sidebar width. */}
-          {dockVisible && dock === "watchlist" && (
-            <div className="min-h-0 flex-1 overflow-auto">
-              <WatchlistPanel activeSymbol={symbol} signedIn={!!user} onSelect={(t) => setSymbol(t)} />
-            </div>
-          )}
-          {dockVisible && dock === "trade" && (
-            <div className="min-h-0 flex-1 overflow-auto">
-              <TradingPanel
-                symbol={symbol}
-                timeframe={interval}
-                lastPrice={lastPrice}
-                snapshot={snapshot}
-                busy={tradeMutation.isPending}
-                error={tradeError}
-                signedIn={!!user}
-                onSubmit={(draft) => {
-                  tradeMutation.mutate({ kind: "submit", draft });
-                  setDock("positions");
-                  openDock();
-                }}
-                onFlatten={() => tradeMutation.mutate({ kind: "flatten" })}
-                onReset={() => tradeMutation.mutate({ kind: "reset" })}
-                prefill={prefill}
-              />
-            </div>
-          )}
-          {dockVisible && dock === "ai" && (
-            <div className="min-h-0 flex-1 overflow-auto">
-              <AiSidePanel
-                seedPrompt={aiSeed}
-                onSeedConsumed={() => setAiSeed(null)}
-                code={code}
-                symbol={symbol}
-                interval={interval}
-                signedIn={!!user}
-                converting={translating}
-                spec={projectSpec}
-                onBuilt={(r) => {
-                  setProjectSpec(r.spec);
-                  setCode(r.sgscript);
-                  setDock("code");
-                  openDock();
-                  const key = builtKeyRef.current ?? `ai${Date.now()}`;
-                  builtKeyRef.current = key;
-                  void (async () => {
-                    const err = await runCode(r.sgscript, { settings: {}, silent: true, key });
-                    if (err) {
-                      const err2 = await runSource(r.sgscript, { key });
-                      track(err2 ? "add_to_chart_failed" : "add_to_chart_succeeded", { repaired: true });
-                    } else {
-                      track("add_to_chart_succeeded", { repaired: false });
-                      setNotice(finalNotice("Indicator plotted on the chart."));
-                    }
-                  })();
-                }}
-                onConvert={() => {
-                  setTranslating(true);
-                  setRunError(null);
-                  setNotice("Converting to SGScript…");
-                  translateFn({ data: { source: code } })
-                    .then((r) => {
-                      setCode(r.code);
-                      setDock("code");
-                      openDock();
-                      setNotice("Converted — press Add to Chart.");
-                    })
-                    .catch((e: unknown) => setRunError(e instanceof Error ? e.message : "Conversion failed"))
-                    .finally(() => setTranslating(false));
-                }}
-              />
-            </div>
-          )}
-          {dockVisible && dock === "alerts" && (
-            <div className="min-h-0 flex-1 overflow-auto">
-              <AlertsSidePanel symbol={symbol} lastPrice={lastPrice} signedIn={!!user} />
-            </div>
-          )}
-          </section>
-        </main>
-
-        {sidebarState === "collapsed" && (
-          <aside className="hidden w-[42px] shrink-0 flex-col items-center gap-0.5 border-l border-border bg-panel py-1.5 lg:flex">
-            {rightTabs.map((t) => (
-              <button
-                key={t.id}
-                title={t.label}
-                onClick={() => {
-                  setRightTab(t.id);
-                  setSidebarState("expanded");
-                }}
-                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[6px] ${
-                  rightTab === t.id
-                    ? "bg-accent text-foreground"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground"
-                }`}
-              >
-                <t.icon className="h-[18px] w-[18px]" />
-              </button>
-            ))}
-          </aside>
-        )}
-
-        {sidebarState === "expanded" && (
-          <div
-            onPointerDown={(e) => {
-              e.preventDefault();
-              const startX = e.clientX;
-              const startW = sidebarWidth;
-              const move = (ev: PointerEvent) =>
-                setSidebarWidth(Math.min(Math.max(240, startW + (startX - ev.clientX)), 420));
-              const up = () => {
-                window.removeEventListener("pointermove", move);
-                window.removeEventListener("pointerup", up);
-              };
-              window.addEventListener("pointermove", move);
-              window.addEventListener("pointerup", up);
-            }}
-            className="hidden w-1.5 shrink-0 cursor-col-resize hover:bg-brand/10 lg:block"
-          />
-        )}
-        {sidebarState === "expanded" && (
-          <aside
-            className="hidden shrink-0 flex-col overflow-y-auto border-l border-border bg-panel lg:flex"
-            style={{ width: sidebarWidth }}
-          >
-            <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-border px-1.5">
-              {/* Tabs size to their own content and the strip scrolls
-                  horizontally if it ever overflows, instead of every tab
-                  being squeezed into an equal flex-1 share (which is what
-                  truncated "WATCHLIST" down to "WAT…" even at the default
-                  4-tab width). Capability gating below caps the sidebar at
-                  its 4 built-in widgets — a 5th can't reach it without new
-                  cross-region rendering — so this only ever needs to fit
-                  those, comfortably, even at the narrowest 240px width. */}
-              <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
-                {rightTabs.map((t, i) => (
-                  <div
-                    key={t.instanceId}
-                    draggable
-                    onDragStart={(e) => e.dataTransfer.setData("text/plain", String(i))}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      const from = Number(e.dataTransfer.getData("text/plain"));
-                      if (!Number.isNaN(from)) reorderWidget(WELL_KNOWN_NODE_IDS.rightSidebar, from, i);
-                    }}
-                    className="group/tab flex shrink-0 items-center"
-                  >
-                    <button
-                      onClick={() => setRightTab(t.id)}
-                      className={`max-w-[110px] cursor-grab truncate rounded-[6px] px-1.5 py-1 text-left text-[11px] font-medium uppercase tracking-wide transition active:cursor-grabbing ${
-                        rightTab === t.id
-                          ? "bg-accent text-foreground"
-                          : "text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      {t.label}
-                    </button>
-                    {/* Zero width until hovered — flexbox reflow (grows the
-                        strip, shifts later tabs over), not overlap, so it
-                        never covers the label. */}
-                    <span className="flex w-0 shrink-0 items-center overflow-hidden opacity-0 transition-all group-hover/tab:w-9 group-hover/tab:opacity-100">
-                      {t.canMoveToOtherRegion && (
-                        <button
-                          title="Move to bottom panel"
-                          onClick={() => moveWidget(t.instanceId, WELL_KNOWN_NODE_IDS.rightSidebar, WELL_KNOWN_NODE_IDS.bottomDock)}
-                          className="flex h-4 w-4 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-                        >
-                          <MoreHorizontal className="h-2.5 w-2.5" />
-                        </button>
-                      )}
-                      {!t.pinned && rightTabs.length > 1 && (
-                        <button
-                          title="Close"
-                          onClick={() => removeWidget(WELL_KNOWN_NODE_IDS.rightSidebar, t.instanceId)}
-                          className="flex h-4 w-4 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-destructive"
-                        >
-                          <X className="h-2.5 w-2.5" />
-                        </button>
-                      )}
-                    </span>
-                  </div>
-                ))}
-              </div>
-              <AddWidgetMenu
-                region="sidebar"
-                openWidgetTypeIds={rightWidgetTypeIds}
-                onAdd={(widgetTypeId) => addWidget(WELL_KNOWN_NODE_IDS.rightSidebar, widgetTypeId)}
-              />
-              <button
-                title="Collapse sidebar"
-                onClick={() => setSidebarState("collapsed")}
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground"
-              >
-                <PanelRightClose className="h-3.5 w-3.5" />
-              </button>
-            </div>
-            {rightTab === "ai" ? (
-              <AiSidePanel
-                seedPrompt={aiSeed}
-                onSeedConsumed={() => setAiSeed(null)}
-                code={code}
-                symbol={symbol}
-                interval={interval}
-                signedIn={!!user}
-                converting={translating}
-                spec={projectSpec}
-                onBuilt={(r) => {
-                  setProjectSpec(r.spec);
-                  setCode(r.sgscript);
-                  setDock("code");
-                  openDock();
-                  // Reuse the same chart slot across the whole build session so
-                  // a follow-up edit replaces the indicator instead of stacking.
-                  const key = builtKeyRef.current ?? `ai${Date.now()}`;
-                  builtKeyRef.current = key;
-                  void (async () => {
-                    const err = await runCode(r.sgscript, {
-                      settings: {},
-                      silent: true,
-                      key,
-                    });
-                    if (err) {
-                      const err2 = await runSource(r.sgscript, { key });
-                      track(err2 ? "add_to_chart_failed" : "add_to_chart_succeeded", {
-                        repaired: true,
-                      });
-                    } else {
-                      track("add_to_chart_succeeded", { repaired: false });
-                      setNotice(finalNotice("Indicator plotted on the chart."));
-                    }
-                  })();
-                }}
-                onConvert={() => {
-                  setTranslating(true);
-                  setRunError(null);
-                  setNotice("Converting to SGScript…");
-                  translateFn({ data: { source: code } })
-                    .then((r) => {
-                      setCode(r.code);
-                      setDock("code");
-                      openDock();
-                      setNotice("Converted — press Add to Chart.");
-                    })
-                    .catch((e: unknown) =>
-                      setRunError(
-                        e instanceof Error ? e.message : "Conversion failed",
-                      ),
-                    )
-                    .finally(() => setTranslating(false));
-                }}
-              />
-            ) : rightTab === "alerts" ? (
-              <AlertsSidePanel
-                symbol={symbol}
-                lastPrice={lastPrice}
-                signedIn={!!user}
-              />
-            ) : rightTab === "trade" ? (
-              <TradingPanel
-                symbol={symbol}
-                timeframe={interval}
-                lastPrice={lastPrice}
-                snapshot={snapshot}
-                busy={tradeMutation.isPending}
-                error={tradeError}
-                signedIn={!!user}
-                onSubmit={(draft) => {
-                  tradeMutation.mutate({ kind: "submit", draft });
-                  setDock("positions");
-                  openDock();
-                }}
-                onFlatten={() => tradeMutation.mutate({ kind: "flatten" })}
-                onReset={() => tradeMutation.mutate({ kind: "reset" })}
-                prefill={prefill}
-              />
-
-            ) : rightTab === "watchlist" ? (
-            <WatchlistPanel
-              activeSymbol={symbol}
-              signedIn={!!user}
-              onSelect={(t) => setSymbol(t)}
-            />
-            ) : (
-              // A dock-native widget (Code/Strategy tester/Positions/Orders/
-              // History/Journal/Saved/Reference) moved into the sidebar via
-              // UI-4c's "move between regions" action. Its content isn't
-              // built to render in the sidebar's narrower layout yet — an
-              // honest limitation, not a silent blank panel or fake content.
-              <div className="flex flex-1 flex-col items-center justify-center gap-2 p-4 text-center">
-                <p className="text-[11px] text-muted-foreground">
-                  This widget isn't available in the compact sidebar view yet.
-                </p>
-                <button
-                  onClick={() => {
-                    const active = rightTabs.find((t) => t.id === rightTab);
-                    if (active)
-                      moveWidget(active.instanceId, WELL_KNOWN_NODE_IDS.rightSidebar, WELL_KNOWN_NODE_IDS.bottomDock);
-                  }}
-                  className="rounded-[6px] border border-border px-2 py-1 text-[11px] hover:bg-accent"
-                >
-                  Move to bottom panel
-                </button>
-              </div>
-            )}
-          </aside>
-        )}
+        {/* chart + sidebar, generically rendered from the workspace tree
+            (UI-4f-1) -- structure is tree-driven, leaf content/resize
+            mechanics are unchanged, see renderLeaf/renderChartArea/
+            renderBottomDock/renderRightSidebar above. */}
+        <LayoutTree node={layout.root} renderLeaf={renderLeaf} />
 
       </div>
 

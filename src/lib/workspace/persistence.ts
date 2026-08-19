@@ -19,6 +19,7 @@
  */
 
 import type { LayoutNode, WidgetInstance, WorkspaceLayout } from "./types";
+import { WELL_KNOWN_NODE_IDS } from "./types";
 import { PRESETS } from "./presets";
 import { WIDGET_REGISTRY } from "./widgetRegistry";
 
@@ -97,6 +98,69 @@ function isValidWidgetTypeId(id: unknown): id is keyof typeof WIDGET_REGISTRY {
 }
 
 /**
+ * UI-4f-1 topology fix: every layout created before this phase (all of
+ * UI-4a-4e's presets and any already-persisted saved layout cloned from
+ * them) has `root` = column[`main-row`, `bottom-dock`] with `main-row` =
+ * row[`chart-area`, `right-sidebar`] — a shape that was never actually
+ * wrong to have shipped, since nothing rendered "split" nodes before
+ * `LayoutTree` existed. It just doesn't match what studio.tsx's DOM has
+ * always really been (chart stacked above the dock, sidebar as a separate
+ * full-height column beside both) now that something does. Rewritten here,
+ * transparently, into `root` = row[`chart-column`, `right-sidebar`] with
+ * `chart-column` = column[`chart-area`, `bottom-dock`] — the shape
+ * `presets.ts` now declares — preserving every widget/tab/size exactly, so
+ * an already-saved layout keeps rendering identically once repaired.
+ * Returns the input unchanged if it isn't recognizably the old shape (already
+ * new-shape data, or something `repairNode` should judge instead).
+ */
+function normalizeLegacyTopology(node: unknown): unknown {
+  if (!node || typeof node !== "object") return node;
+  const root = node as Record<string, unknown>;
+  if (root.kind !== "split" || root.direction !== "column") return node;
+  const children = root.children;
+  if (!Array.isArray(children) || children.length !== 2) return node;
+  const [mainRow, bottomDock] = children as Record<string, unknown>[];
+  if (
+    !mainRow ||
+    typeof mainRow !== "object" ||
+    mainRow.id !== WELL_KNOWN_NODE_IDS.mainRow ||
+    mainRow.kind !== "split"
+  ) {
+    return node;
+  }
+  const mainRowChildren = mainRow.children;
+  if (!Array.isArray(mainRowChildren) || mainRowChildren.length !== 2) return node;
+  const [chartArea, rightSidebar] = mainRowChildren as Record<string, unknown>[];
+  if (
+    !chartArea ||
+    !rightSidebar ||
+    chartArea.id !== WELL_KNOWN_NODE_IDS.chartArea ||
+    rightSidebar.id !== WELL_KNOWN_NODE_IDS.rightSidebar ||
+    !bottomDock ||
+    typeof bottomDock !== "object" ||
+    bottomDock.id !== WELL_KNOWN_NODE_IDS.bottomDock
+  ) {
+    return node;
+  }
+  return {
+    kind: "split",
+    id: root.id,
+    direction: "row",
+    sizes: mainRow.sizes,
+    children: [
+      {
+        kind: "split",
+        id: WELL_KNOWN_NODE_IDS.chartColumn,
+        direction: "column",
+        sizes: root.sizes,
+        children: [chartArea, bottomDock],
+      },
+      rightSidebar,
+    ],
+  };
+}
+
+/**
  * Repairs one node in place: strips widget instances referencing a
  * since-removed widget type, drops "tabs" nodes left with zero tabs after
  * stripping, collapses "split" nodes down to their one surviving child (or
@@ -164,7 +228,8 @@ export function safeParseWorkspaceLayout(raw: unknown): WorkspaceLayout {
     }
     const obj = raw as Record<string, unknown>;
     const migrated = migrateWorkspaceLayout(obj as unknown as WorkspaceLayout);
-    const repairedRoot = repairNode(migrated.root);
+    const normalizedRoot = normalizeLegacyTopology(migrated.root);
+    const repairedRoot = repairNode(normalizedRoot);
     if (!repairedRoot) {
       console.warn(
         "[workspace] Saved layout's tree couldn't be repaired (no valid widgets survived) — using the Beginner default.",
