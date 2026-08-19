@@ -107,6 +107,25 @@ export function reorderWithinNode(
   return withRoot(layout, root);
 }
 
+/**
+ * Updates a "split" node's `sizes` (relative weights, same order/length as
+ * `children`) after a user-driven pane resize (UI-4f-2). No-op if `nodeId`
+ * doesn't resolve to a "split" node or `sizes`' length doesn't match its
+ * children count.
+ */
+export function updateSplitSizes(
+  layout: WorkspaceLayout,
+  nodeId: string,
+  sizes: number[],
+): WorkspaceLayout {
+  const root = mapNode(layout.root, nodeId, (n) => {
+    if (n.kind !== "split") return n;
+    if (sizes.length !== n.children.length) return n;
+    return { ...n, sizes };
+  });
+  return withRoot(layout, root);
+}
+
 /** Read-only lookup of a "tabs" node's instance by id, without mutating anything. */
 function findInstance(node: LayoutNode, nodeId: string, instanceId: string): WidgetInstance | null {
   const n = mapNodeReadOnly(node, nodeId);

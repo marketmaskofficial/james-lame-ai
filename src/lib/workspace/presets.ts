@@ -69,7 +69,14 @@ export const PRESETS: Record<PresetId, WorkspaceLayout> = {
           kind: "split",
           id: "chart-column",
           direction: "column",
-          sizes: [0.78, 0.22],
+          // 320px was Chart Studio's real, hardcoded default dock height
+          // (pre-UI-4f-2) at a typical viewport -- [0.78, 0.22] rendered a
+          // visibly shorter ~187px dock once `sizes` actually became
+          // load-bearing (it was never read before this phase), a real
+          // discrepancy caught via a before/after screenshot comparison,
+          // not a hypothetical. [0.62, 0.38] reproduces the historical
+          // ~320px default closely.
+          sizes: [0.62, 0.38],
           children: [
             {
               kind: "tabs",
@@ -125,7 +132,10 @@ export const PRESETS: Record<PresetId, WorkspaceLayout> = {
           kind: "split",
           id: "chart-column",
           direction: "column",
-          sizes: [0.78, 0.22],
+          // Same correction as the Beginner preset above -- [0.78, 0.22]
+          // renders a visibly cramped dock now that `sizes` actually
+          // governs pane sizing (UI-4f-2).
+          sizes: [0.62, 0.38],
           children: [
             {
               kind: "tabs",
@@ -171,7 +181,10 @@ export const PRESETS: Record<PresetId, WorkspaceLayout> = {
           kind: "split",
           id: "chart-column",
           direction: "column",
-          sizes: [0.72, 0.28],
+          // Scaled by the same correction factor as Beginner's (see above)
+          // while preserving this preset's original intent of a relatively
+          // taller dock than the other presets (0.28 vs 0.22 before).
+          sizes: [0.55, 0.45],
           children: [
             {
               kind: "tabs",
@@ -218,7 +231,8 @@ export const PRESETS: Record<PresetId, WorkspaceLayout> = {
           kind: "split",
           id: "chart-column",
           direction: "column",
-          sizes: [0.78, 0.22],
+          // Same correction as the Beginner preset above.
+          sizes: [0.62, 0.38],
           children: [
             {
               kind: "tabs",

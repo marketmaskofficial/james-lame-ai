@@ -130,6 +130,7 @@ import {
   removeWidgetFromNode,
   reorderWithinNode,
   moveWidgetBetweenNodes,
+  updateSplitSizes,
 } from "@/lib/workspace/mutations";
 import { AddWidgetMenu } from "@/components/studio/AddWidgetMenu";
 import { LayoutMenu } from "@/components/studio/LayoutMenu";
@@ -506,6 +507,23 @@ function Studio() {
   // does it elsewhere in this file (read in an effect, not an initializer).
   const [workspaceStore, setWorkspaceStore] = useState<LocalWorkspaceStore>(() => defaultLocalStore());
   const [layout, setLayout] = useState<WorkspaceLayout>(PRESETS.beginner);
+  // UI-4f-2: react-resizable-panels' Panel `defaultSize` is an
+  // uncontrolled/mount-once prop, like HTML's `defaultValue` -- once a Panel
+  // has mounted, changing `defaultSize` on a later render does NOT resize
+  // it. Every place that WHOLESALE REPLACES `layout` with a different tree
+  // (initial load from storage, a cloud sync, switching to a preset or a
+  // named saved layout, the delete-active-layout fallback) can carry
+  // different `sizes` than whatever's currently mounted, so the resizable
+  // tree needs to remount for those to actually apply -- confirmed missing
+  // via an explicit persists-across-reload check, not assumed. Bumping
+  // `layoutKey` (used as LayoutTree's React `key`) forces exactly that.
+  // Deliberately NOT bumped by the widget-mutation handlers (add/remove/
+  // reorder/move, which don't touch sizes) or by a resize-drag commit
+  // (which only writes back what's already live in the DOM from the drag
+  // itself) -- remounting there would be unnecessary and would visibly
+  // flash/reset the tree on every ordinary interaction.
+  const [layoutKey, setLayoutKey] = useState(0);
+  const bumpLayoutKey = useCallback(() => setLayoutKey((k) => k + 1), []);
   useEffect(() => {
     const store = loadLocalStore();
     const initial = initialWorkspaceLayout(store);
@@ -516,7 +534,8 @@ function Studio() {
     const usedDefault = store.defaultLayoutId && store.layouts.some((l) => l.id === store.defaultLayoutId);
     setWorkspaceStore(usedDefault ? { ...store, activeLayoutId: store.defaultLayoutId as string } : store);
     setLayout(initial);
-  }, []);
+    bumpLayoutKey();
+  }, [bumpLayoutKey]);
 
   // Mirror the live tree into the store's scratch slot whenever it changes —
   // this is what "Current (unsaved)" means, and what makes a reload land
@@ -583,6 +602,7 @@ function Studio() {
             defaultLayoutId: (defaultRow?.id as string | undefined) ?? null,
           }));
           setLayout(active);
+          bumpLayoutKey();
           setCloudSyncError(null);
         } else if (!hasMigratedToCloud() && workspaceStore.layouts.length > 0) {
           // First sign-in with local customizations already made, and
@@ -616,15 +636,17 @@ function Studio() {
     (id: string) => {
       if (id === CURRENT_LAYOUT_ID) {
         setLayout(workspaceStore.currentLayout);
+        bumpLayoutKey();
         setWorkspaceStore((prev) => ({ ...prev, activeLayoutId: CURRENT_LAYOUT_ID }));
         return;
       }
       const found = workspaceStore.layouts.find((l) => l.id === id);
       if (!found) return;
       setLayout(found);
+      bumpLayoutKey();
       setWorkspaceStore((prev) => ({ ...prev, activeLayoutId: id }));
     },
-    [workspaceStore],
+    [workspaceStore, bumpLayoutKey],
   );
   const saveAsNewLayout = useCallback(
     async (name: string) => {
@@ -708,9 +730,12 @@ function Studio() {
         activeLayoutId: prev.activeLayoutId === id ? CURRENT_LAYOUT_ID : prev.activeLayoutId,
         defaultLayoutId: prev.defaultLayoutId === id ? null : prev.defaultLayoutId,
       }));
-      if (wasActive) setLayout(workspaceStore.currentLayout);
+      if (wasActive) {
+        setLayout(workspaceStore.currentLayout);
+        bumpLayoutKey();
+      }
     },
-    [workspaceStore, signedIn],
+    [workspaceStore, signedIn, bumpLayoutKey],
   );
   const setDefaultLayout = useCallback(
     async (id: string | null) => {
@@ -768,11 +793,12 @@ function Studio() {
     (presetId: PresetId) => {
       const next = PRESETS[presetId];
       setLayout(next);
+      bumpLayoutKey();
       syncActiveTab(next, WELL_KNOWN_NODE_IDS.rightSidebar);
       syncActiveTab(next, WELL_KNOWN_NODE_IDS.bottomDock);
       setWorkspaceStore((prev) => ({ ...prev, activeLayoutId: CURRENT_LAYOUT_ID }));
     },
-    [syncActiveTab],
+    [syncActiveTab, bumpLayoutKey],
   );
 
   const addWidget = useCallback(
@@ -811,7 +837,6 @@ function Studio() {
   );
 
   const [dock, setDock] = useState<DockTab>("code");
-  const [dockHeight, setDockHeight] = useState(320);
   const [dockState, setDockState] = useState<"collapsed" | "normal" | "maximized">("normal");
   const [notice, setNotice] = useState<string | null>(null);
   const [noticeExpanded, setNoticeExpanded] = useState(false);
@@ -829,7 +854,6 @@ function Studio() {
   const [menu, setMenu] = useState<null | "tf" | "type" | "settings">(null);
   const [favTfs, setFavTfs] = useState<string[]>(DEFAULT_FAVORITE_TIMEFRAMES);
   const [sidebarState, setSidebarState] = useState<"expanded" | "collapsed">("expanded");
-  const [sidebarWidth, setSidebarWidth] = useState(272);
   const [rightTab, setRightTab] = useState<RightTab>("watchlist");
   const controlsRef = useRef<ChartControls | null>(null);
   const onChartReady = useCallback((c: ChartControls) => {
@@ -864,22 +888,18 @@ function Studio() {
         chartType: ChartType;
         settings: ChartSettings;
         dock: DockTab;
-        dockHeight: number;
         dockState: "collapsed" | "normal" | "maximized";
         rightTab: RightTab;
         sidebarState: "expanded" | "collapsed";
-        sidebarWidth: number;
       }>;
       if (l.symbol) setSymbol(l.symbol);
       if (l.interval) setIntervalStr(l.interval);
       if (l.chartType) setChartType(l.chartType);
       if (l.settings) setChartSettings({ ...DEFAULT_CHART_SETTINGS, ...l.settings });
       if (l.dock) setDock(l.dock);
-      if (typeof l.dockHeight === "number") setDockHeight(l.dockHeight);
       if (l.dockState) setDockState(l.dockState);
       if (l.rightTab) setRightTab(l.rightTab);
       if (l.sidebarState) setSidebarState(l.sidebarState);
-      if (typeof l.sidebarWidth === "number") setSidebarWidth(l.sidebarWidth);
     } catch {
       /* first visit */
     }
@@ -894,11 +914,9 @@ function Studio() {
           chartType,
           settings: chartSettings,
           dock,
-          dockHeight,
           dockState,
           rightTab,
           sidebarState,
-          sidebarWidth,
         }),
       );
     } catch {
@@ -910,11 +928,9 @@ function Studio() {
     chartType,
     chartSettings,
     dock,
-    dockHeight,
     dockState,
     rightTab,
     sidebarState,
-    sidebarWidth,
   ]);
 
   const dockVisible = dockState !== "collapsed";
@@ -2038,36 +2054,10 @@ function Studio() {
   const renderBottomDock = () => (
     <section
       className={`flex shrink-0 flex-col border-t border-border bg-panel ${
-        dockState === "maximized" ? "flex-1" : ""
+        dockState === "maximized" ? "flex-1" : dockState === "normal" ? "h-full min-h-0" : ""
       }`}
-      style={dockState === "normal" ? { height: dockHeight, minHeight: 160 } : undefined}
     >
-    {dockState === "normal" && (
-      <div
-        onPointerDown={(e) => {
-          e.preventDefault();
-          const startY = e.clientY;
-          const startH = dockHeight;
-          const move = (ev: PointerEvent) =>
-            setDockHeight(
-              Math.min(
-                Math.max(160, startH + (startY - ev.clientY)),
-                window.innerHeight - 240,
-              ),
-            );
-          const up = () => {
-            window.removeEventListener("pointermove", move);
-            window.removeEventListener("pointerup", up);
-          };
-          window.addEventListener("pointermove", move);
-          window.addEventListener("pointerup", up);
-        }}
-        className="group/resize flex h-2.5 w-full shrink-0 cursor-row-resize items-center justify-center hover:bg-brand/10"
-      >
-        <div className="h-1 w-10 rounded-full bg-border transition-colors group-hover/resize:bg-brand/70" />
-      </div>
-    )}
-    <div className="flex h-10 items-center gap-1 border-b border-border px-2">
+    <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border px-2">
       <button
         onClick={toggleDockCollapse}
         title={dockVisible ? "Collapse panel" : "Expand panel"}
@@ -2635,27 +2625,8 @@ function Studio() {
       )}
 
       {sidebarState === "expanded" && (
-        <div
-          onPointerDown={(e) => {
-            e.preventDefault();
-            const startX = e.clientX;
-            const startW = sidebarWidth;
-            const move = (ev: PointerEvent) =>
-              setSidebarWidth(Math.min(Math.max(240, startW + (startX - ev.clientX)), 420));
-            const up = () => {
-              window.removeEventListener("pointermove", move);
-              window.removeEventListener("pointerup", up);
-            };
-            window.addEventListener("pointermove", move);
-            window.addEventListener("pointerup", up);
-          }}
-          className="hidden w-1.5 shrink-0 cursor-col-resize hover:bg-brand/10 lg:block"
-        />
-      )}
-      {sidebarState === "expanded" && (
         <aside
-          className="hidden shrink-0 flex-col overflow-y-auto border-l border-border bg-panel lg:flex"
-          style={{ width: sidebarWidth }}
+          className="hidden h-full w-full flex-col overflow-y-auto border-l border-border bg-panel lg:flex"
         >
           <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-border px-1.5">
             {/* Tabs size to their own content and the strip scrolls
@@ -2852,6 +2823,48 @@ function Studio() {
     // LayoutTree itself genuinely generic and safe against future shapes.
     return null;
   };
+
+  // UI-4f-2: a split renders as a plain (non-resizable) flex container,
+  // not a react-resizable-panels Group, whenever its region is collapsed or
+  // maximized -- those states are driven by the leaf's own CSS (flex-1/
+  // basis-14 for a maximized dock, an icon-rail for a collapsed sidebar),
+  // which needs to be free of a Panel's percentage-based sizing. Only the
+  // plain "normal"/"expanded" states are actually drag-resizable.
+  const nonResizableSplitIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (dockState !== "normal") ids.add(WELL_KNOWN_NODE_IDS.chartColumn);
+    if (sidebarState !== "expanded") ids.add(WELL_KNOWN_NODE_IDS.root);
+    return ids;
+  }, [dockState, sidebarState]);
+
+  // Same floors (and the sidebar's ceiling) the old hand-rolled pointer-drag
+  // handles enforced (`Math.max(160, ...)` for the dock, `Math.max(240,
+  // ...)`/`Math.min(..., 420)` for the sidebar) -- preserved exactly, just
+  // expressed as Panel's own minSize/maxSize instead of manual clamping.
+  // chart-area/chart-column get a modest new floor so an extreme drag can
+  // never crush the chart pane to nothing -- there was no explicit floor
+  // for it before since it was the sole `flex-1` sibling, not something a
+  // handle could shrink past 0 into.
+  const minSizeForChild = useCallback((childId: string): string | undefined => {
+    if (childId === WELL_KNOWN_NODE_IDS.bottomDock) return "160px";
+    if (childId === WELL_KNOWN_NODE_IDS.rightSidebar) return "240px";
+    if (childId === WELL_KNOWN_NODE_IDS.chartArea) return "200px";
+    if (childId === WELL_KNOWN_NODE_IDS.chartColumn) return "300px";
+    return undefined;
+  }, []);
+  const maxSizeForChild = useCallback((childId: string): string | undefined => {
+    if (childId === WELL_KNOWN_NODE_IDS.rightSidebar) return "420px";
+    return undefined;
+  }, []);
+
+  // Commits a finished user drag's sizes into the tree -- the existing
+  // UI-4d autosave effect (keyed on `layout`) then persists it like any
+  // other layout change. Never called mid-drag (see LayoutTree's own
+  // isUserInteraction gating), so a resize stays smooth without spamming
+  // local/cloud writes on every frame.
+  const onResizeCommit = useCallback((splitNodeId: string, sizes: number[]) => {
+    setLayout((prev) => updateSplitSizes(prev, splitNodeId, sizes));
+  }, []);
 
   return (
     <div ref={rootRef} className="flex h-screen flex-col bg-background text-foreground">
@@ -3243,8 +3256,21 @@ function Studio() {
         {/* chart + sidebar, generically rendered from the workspace tree
             (UI-4f-1) -- structure is tree-driven, leaf content/resize
             mechanics are unchanged, see renderLeaf/renderChartArea/
-            renderBottomDock/renderRightSidebar above. */}
-        <LayoutTree node={layout.root} renderLeaf={renderLeaf} />
+            renderBottomDock/renderRightSidebar above. `key={layoutKey}`
+            forces a clean remount whenever `layout` is wholesale-replaced
+            (see the layoutKey/bumpLayoutKey comment above) so
+            react-resizable-panels' uncontrolled `defaultSize` prop picks
+            up the new sizes instead of silently keeping whatever mounted
+            first. */}
+        <LayoutTree
+          key={layoutKey}
+          node={layout.root}
+          renderLeaf={renderLeaf}
+          nonResizableSplitIds={nonResizableSplitIds}
+          minSizeForChild={minSizeForChild}
+          maxSizeForChild={maxSizeForChild}
+          onResizeCommit={onResizeCommit}
+        />
 
       </div>
 
