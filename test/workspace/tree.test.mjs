@@ -10,6 +10,9 @@ import {
   removeWidgetFromNode,
   reorderWithinNode,
   moveWidgetBetweenNodes,
+  setActiveTab,
+  splitLeafWithWidget,
+  isPortableForNewLeaf,
 } from "../../src/lib/workspace/mutations.ts";
 import { findNodeById, WELL_KNOWN_NODE_IDS } from "../../src/lib/workspace/types.ts";
 
@@ -365,6 +368,96 @@ function regionFixture() {
     tabsOf(after, WELL_KNOWN_NODE_IDS.bottomDock),
     tabsOf(before, WELL_KNOWN_NODE_IDS.bottomDock),
   );
+}
+
+// ---- splitLeafWithWidget / setActiveTab / isPortableForNewLeaf (UI-4f-4) ----
+
+{
+  ok("isPortableForNewLeaf: sidebar+dock widget is portable", isPortableForNewLeaf("watchlist"));
+  ok("isPortableForNewLeaf: dock-only widget is NOT portable", !isPortableForNewLeaf("journal"));
+}
+
+{
+  // journal is dock-only -> not portable -> edge-drop into a new pane must
+  // be rejected outright, same as the capability rule everywhere else.
+  const before = regionFixture();
+  const after = splitLeafWithWidget(before, "journal-1", WELL_KNOWN_NODE_IDS.bottomDock, WELL_KNOWN_NODE_IDS.rightSidebar, "right");
+  check("split: rejected for a non-portable widget", after, before);
+}
+
+{
+  // watchlist-1 is the sidebar's only tab and the sidebar is protected ->
+  // splitting it away would empty a protected leaf -> rejected.
+  const before = regionFixture();
+  const after = splitLeafWithWidget(before, "watchlist-1", WELL_KNOWN_NODE_IDS.rightSidebar, WELL_KNOWN_NODE_IDS.bottomDock, "top");
+  check("split: rejected when source would empty a protected leaf", after, before);
+}
+
+// addWidgetToNode generates instance ids as `${widgetTypeId}-${uuid}`, not a
+// fixed string — capture the real id dynamically rather than assuming one.
+function tradeIdIn(layout, nodeId) {
+  return findNodeById(layout.root, nodeId).tabs.find((t) => t.widgetTypeId === "trade").instanceId;
+}
+
+for (const [edge, wantDirection, newFirst] of [
+  ["top", "column", true],
+  ["bottom", "column", false],
+  ["left", "row", true],
+  ["right", "row", false],
+]) {
+  // Give the sidebar a second portable tab first so removing one doesn't
+  // hit the protected-leaf floor -- isolates the split geometry itself.
+  let f = regionFixture();
+  f = addWidgetToNode(f, WELL_KNOWN_NODE_IDS.rightSidebar, "trade");
+  const tradeId = tradeIdIn(f, WELL_KNOWN_NODE_IDS.rightSidebar);
+  const after = splitLeafWithWidget(f, tradeId, WELL_KNOWN_NODE_IDS.rightSidebar, WELL_KNOWN_NODE_IDS.bottomDock, edge);
+  const newRoot = after.root; // root's children: [ splitOrDock..., ... ] -- bottomDock got wrapped
+  const wrapped = newRoot.children.find((c) => c.kind === "split" && c.children.some((cc) => cc.id === WELL_KNOWN_NODE_IDS.bottomDock));
+  ok(`split(${edge}): produces a new split node`, Boolean(wrapped));
+  check(`split(${edge}): correct direction`, wrapped?.direction, wantDirection);
+  const order = wrapped?.children.map((c) => c.id === WELL_KNOWN_NODE_IDS.bottomDock);
+  check(`split(${edge}): correct child order (is bottom-dock first?)`, order?.[0], !newFirst);
+  const newLeaf = wrapped?.children.find((c) => c.id !== WELL_KNOWN_NODE_IDS.bottomDock);
+  check(`split(${edge}): new leaf holds exactly the dragged widget`, newLeaf?.tabs.map((t) => t.instanceId), [tradeId]);
+  ok(`split(${edge}): new leaf id doesn't collide with an existing one`, newLeaf && newLeaf.id !== WELL_KNOWN_NODE_IDS.bottomDock && newLeaf.id !== WELL_KNOWN_NODE_IDS.rightSidebar);
+  ok(`split(${edge}): source (sidebar) no longer has the dragged instance`, !tabsOf(after, WELL_KNOWN_NODE_IDS.rightSidebar).includes(tradeId));
+}
+
+{
+  // End-to-end round trip: split, then close the widget out of the new
+  // leaf -- it must collapse away cleanly (sibling reclaims the space), not
+  // leave a dangling empty pane. Real path, not the synthetic UI-4f-3
+  // fixture: this is collapseEmptyNodes exercised through the actual
+  // mutator a real edge-drop calls.
+  let f = regionFixture();
+  f = addWidgetToNode(f, WELL_KNOWN_NODE_IDS.rightSidebar, "trade");
+  const tradeId = tradeIdIn(f, WELL_KNOWN_NODE_IDS.rightSidebar);
+  const afterSplit = splitLeafWithWidget(f, tradeId, WELL_KNOWN_NODE_IDS.rightSidebar, WELL_KNOWN_NODE_IDS.bottomDock, "right");
+  const wrapped = afterSplit.root.children.find(
+    (c) => c.kind === "split" && c.children.some((cc) => cc.id === WELL_KNOWN_NODE_IDS.bottomDock),
+  );
+  const newLeafId = wrapped.children.find((c) => c.id !== WELL_KNOWN_NODE_IDS.bottomDock).id;
+  const afterClose = removeWidgetFromNode(afterSplit, newLeafId, tradeId);
+  ok("split-then-close: new leaf's id no longer exists in the tree", findNodeById(afterClose.root, newLeafId) === null);
+  ok("split-then-close: bottom-dock is back as a direct child of root (split collapsed away)", afterClose.root.children.some((c) => c.id === WELL_KNOWN_NODE_IDS.bottomDock));
+  check("split-then-close: bottom-dock's own tabs are unaffected", tabsOf(afterClose, WELL_KNOWN_NODE_IDS.bottomDock), tabsOf(f, WELL_KNOWN_NODE_IDS.bottomDock));
+}
+
+{
+  // setActiveTab: switches which instance is active without touching tabs.
+  const before = regionFixture();
+  const withTrade = addWidgetToNode(before, WELL_KNOWN_NODE_IDS.bottomDock, "trade");
+  const tradeId = tradeIdIn(withTrade, WELL_KNOWN_NODE_IDS.bottomDock);
+  const after = setActiveTab(withTrade, WELL_KNOWN_NODE_IDS.bottomDock, tradeId);
+  check("setActiveTab: activeInstanceId updated", findNodeById(after.root, WELL_KNOWN_NODE_IDS.bottomDock).activeInstanceId, tradeId);
+  check("setActiveTab: tabs array unchanged", tabsOf(after, WELL_KNOWN_NODE_IDS.bottomDock), tabsOf(withTrade, WELL_KNOWN_NODE_IDS.bottomDock));
+}
+
+{
+  // setActiveTab: no-op for an instance that doesn't exist in that node.
+  const before = regionFixture();
+  const after = setActiveTab(before, WELL_KNOWN_NODE_IDS.bottomDock, "not-a-real-instance");
+  check("setActiveTab: no-op for a nonexistent instance", after, before);
 }
 
 // ---- summary ----------------------------------------------------------------

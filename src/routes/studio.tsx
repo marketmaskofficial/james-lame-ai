@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import {
@@ -131,7 +131,12 @@ import {
   reorderWithinNode,
   moveWidgetBetweenNodes,
   updateSplitSizes,
+  setActiveTab as setActiveTabInTree,
+  splitLeafWithWidget,
+  isPortableForNewLeaf,
+  type DropEdge,
 } from "@/lib/workspace/mutations";
+import { DockZone, pickDropZone, type DropZone } from "@/components/studio/DockZone";
 import { AddWidgetMenu } from "@/components/studio/AddWidgetMenu";
 import { LayoutMenu } from "@/components/studio/LayoutMenu";
 import {
@@ -835,23 +840,63 @@ function Studio() {
     },
     [syncActiveTab],
   );
+  /**
+   * Edge-drop (UI-4f-4): wraps `targetNodeId` in a brand-new split pane
+   * holding the dragged widget. Unlike ordinary widget add/remove, this
+   * changes the TREE SHAPE itself (a new split + a new leaf, not just a
+   * tabs array) — `Panel.defaultSize` is uncontrolled (see the layoutKey
+   * comment above), so the newly-created Panels need a clean remount to
+   * pick up their initial 50/50 sizes correctly, same as a preset switch.
+   */
+  const splitWidget = useCallback(
+    (instanceId: string, fromNodeId: string, targetNodeId: string, edge: DropEdge) => {
+      setLayout((prev) => {
+        const next = splitLeafWithWidget(prev, instanceId, fromNodeId, targetNodeId, edge);
+        if (next === prev) return prev;
+        syncActiveTab(next, fromNodeId);
+        bumpLayoutKey();
+        return next;
+      });
+    },
+    [syncActiveTab, bumpLayoutKey],
+  );
+  /** Sets the active tab within a generically-rendered leaf (UI-4f-4) — new
+   * leaves have no `dock`/`rightTab`-style state variable of their own, they
+   * read/write `activeInstanceId` straight off the tree node itself. */
+  const setActiveTabInLeaf = useCallback((nodeId: string, instanceId: string) => {
+    setLayout((prev) => setActiveTabInTree(prev, nodeId, instanceId));
+  }, []);
 
   const [dock, setDock] = useState<DockTab>("code");
   const [dockState, setDockState] = useState<"collapsed" | "normal" | "maximized">("normal");
   /**
-   * Cross-strip tab drag (UI-4f-3). `draggingTab` is set on dragstart and
-   * cleared on dragend/drop; `canCrossRegion` mirrors the same
+   * Cross-strip tab drag (UI-4f-3, extended UI-4f-4). `draggingTab` is set on
+   * dragstart and cleared on dragend/drop; `canCrossRegion` mirrors the same
    * `canMoveToOtherRegion` capability check already computed per-tab, so the
    * drop-target highlight in `dragOverNodeId` only ever lights up a strip
    * the dragged widget could actually land in — the authoritative rejection
    * still happens in `moveWidgetBetweenNodes` itself either way, this is
-   * just the UI not offering what would be rejected anyway.
+   * just the UI not offering what would be rejected anyway. `widgetTypeId`
+   * (UI-4f-4) additionally gates whether the new edge-drop zones appear at
+   * all, via `isPortableForNewLeaf` — a widget without proven portable
+   * content rendering (see mutations.ts) never shows edge zones, only the
+   * pre-existing center-drop.
    */
   const [draggingTab, setDraggingTab] = useState<{
     fromNodeId: string;
     instanceId: string;
     canCrossRegion: boolean;
+    widgetTypeId: WidgetTypeId;
   } | null>(null);
+  /**
+   * Which of the 5 zones (UI-4f-4) a cross-leaf drag is currently hovering,
+   * if any — purely a visual concern, computed cheaply from pointer position
+   * on every dragover (see `pickDropZone`), never touching the persisted
+   * layout until an actual drop. `dragOverNodeId` (UI-4f-3) stays a separate,
+   * simpler highlight for the two well-known regions' own container-level
+   * drop handlers, which this doesn't replace.
+   */
+  const [dragZone, setDragZone] = useState<{ nodeId: string; zone: DropZone } | null>(null);
   const [dragOverNodeId, setDragOverNodeId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [noticeExpanded, setNoticeExpanded] = useState(false);
@@ -1896,12 +1941,240 @@ function Studio() {
   // and everything about each widget's own content stay exactly as they
   // were; only the STRUCTURE connecting these three regions is now
   // genuinely tree-driven.
+  /**
+   * UI-4f-4: content for one of the 4 `isPortableForNewLeaf` widgets, for
+   * rendering inside a brand-new, freely-created split leaf. Same
+   * components/props as their existing copies in `renderRightSidebar`/
+   * `renderBottomDock` — a third mount point, not a different one; none of
+   * these components assume anything about which leaf they're hosted in.
+   * Returns null for any other widget type (the 8 dock-only ones aren't
+   * offered as edge-drop sources at all — see `isPortableForNewLeaf`), so
+   * this only ever needs to cover the 4 it's actually called for.
+   */
+  const renderPortableWidgetContent = (widgetTypeId: WidgetTypeId): ReactNode => {
+    if (widgetTypeId === "watchlist") {
+      return <WatchlistPanel activeSymbol={symbol} signedIn={!!user} onSelect={(t) => setSymbol(t)} />;
+    }
+    if (widgetTypeId === "trade") {
+      return (
+        <TradingPanel
+          symbol={symbol}
+          timeframe={interval}
+          lastPrice={lastPrice}
+          snapshot={snapshot}
+          busy={tradeMutation.isPending}
+          error={tradeError}
+          signedIn={!!user}
+          onSubmit={(draft) => {
+            tradeMutation.mutate({ kind: "submit", draft });
+            setDock("positions");
+            openDock();
+          }}
+          onFlatten={() => tradeMutation.mutate({ kind: "flatten" })}
+          onReset={() => tradeMutation.mutate({ kind: "reset" })}
+          prefill={prefill}
+        />
+      );
+    }
+    if (widgetTypeId === "ai-builder") {
+      return (
+        <AiSidePanel
+          seedPrompt={aiSeed}
+          onSeedConsumed={() => setAiSeed(null)}
+          code={code}
+          symbol={symbol}
+          interval={interval}
+          signedIn={!!user}
+          converting={translating}
+          spec={projectSpec}
+          onBuilt={(r) => {
+            setProjectSpec(r.spec);
+            setCode(r.sgscript);
+            setDock("code");
+            openDock();
+            const key = builtKeyRef.current ?? `ai${Date.now()}`;
+            builtKeyRef.current = key;
+            void (async () => {
+              const err = await runCode(r.sgscript, { settings: {}, silent: true, key });
+              if (err) {
+                const err2 = await runSource(r.sgscript, { key });
+                track(err2 ? "add_to_chart_failed" : "add_to_chart_succeeded", { repaired: true });
+              } else {
+                track("add_to_chart_succeeded", { repaired: false });
+                setNotice(finalNotice("Indicator plotted on the chart."));
+              }
+            })();
+          }}
+          onConvert={() => {
+            setTranslating(true);
+            setRunError(null);
+            setNotice("Converting to SGScript…");
+            translateFn({ data: { source: code } })
+              .then((r) => {
+                setCode(r.code);
+                setDock("code");
+                openDock();
+                setNotice("Converted — press Add to Chart.");
+              })
+              .catch((e: unknown) => setRunError(e instanceof Error ? e.message : "Conversion failed"))
+              .finally(() => setTranslating(false));
+          }}
+        />
+      );
+    }
+    if (widgetTypeId === "alerts") {
+      return <AlertsSidePanel symbol={symbol} lastPrice={lastPrice} signedIn={!!user} />;
+    }
+    return null;
+  };
+
+  /**
+   * UI-4f-4: a freshly edge-drop-created split leaf. Its own small tab strip
+   * (close + drag to move back out — no "move to other region" affordance,
+   * since it isn't one of the two capability-gated named regions) reads/
+   * writes `activeInstanceId` straight off the tree node via
+   * `setActiveTabInLeaf`/`removeWidget`, not the legacy `dock`/`rightTab`
+   * state the two well-known regions still use.
+   */
+  const renderGenericLeaf = (node: LayoutNode & { kind: "tabs" }) => {
+    const active = node.tabs.find((t) => t.instanceId === node.activeInstanceId) ?? node.tabs[0];
+    return (
+      <section className="relative flex h-full min-h-0 w-full flex-col border-l border-t border-border bg-panel">
+        {renderDropOverlay(node.id)}
+        <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-border px-1.5">
+          <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
+            {node.tabs.map((t, i) => {
+              const def = getWidgetDef(t.widgetTypeId);
+              const Icon = TAB_ICON[t.widgetTypeId] ?? Layers;
+              return (
+                <div
+                  key={t.instanceId}
+                  draggable
+                  onDragStart={(e) => {
+                    e.dataTransfer.setData("text/plain", String(i));
+                    setDraggingTab({
+                      fromNodeId: node.id,
+                      instanceId: t.instanceId,
+                      canCrossRegion: false,
+                      widgetTypeId: t.widgetTypeId,
+                    });
+                  }}
+                  onDragEnd={() => {
+                    setDraggingTab(null);
+                    setDragZone(null);
+                  }}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const from = Number(e.dataTransfer.getData("text/plain"));
+                    if (!Number.isNaN(from)) reorderWidget(node.id, from, i);
+                    setDraggingTab(null);
+                  }}
+                  className="group/tab flex shrink-0 items-center"
+                >
+                  <button
+                    onClick={() => setActiveTabInLeaf(node.id, t.instanceId)}
+                    className={`flex h-7 cursor-grab items-center gap-1 rounded-[6px] px-2 text-[13px] active:cursor-grabbing ${
+                      t.instanceId === active?.instanceId
+                        ? "bg-accent text-foreground"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    <Icon className="h-3.5 w-3.5" />
+                    {t.title ?? def.label}
+                  </button>
+                  {/* Unlike the sidebar/dock (protected — a "> 1 tabs" gate
+                      keeps their last tab from being closed at all), a
+                      generic leaf is never protected: removeWidgetFromNode
+                      already allows and correctly collapses its last tab
+                      away via collapseEmptyNodes, so the UI shouldn't
+                      additionally block that here. */}
+                  {!t.pinned && (
+                    <button
+                      title="Close"
+                      onClick={() => removeWidget(node.id, t.instanceId)}
+                      className="hidden h-5 w-5 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-destructive group-hover/tab:flex"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-auto">
+          {active ? renderPortableWidgetContent(active.widgetTypeId) : null}
+        </div>
+      </section>
+    );
+  };
+
+  /**
+   * UI-4f-4: the 5-zone edge-drop overlay for one leaf, `nodeId`. Renders
+   * nothing unless a cross-leaf, edge-drop-eligible drag is actually in
+   * flight over THIS leaf (`draggingTab.fromNodeId !== nodeId` and the
+   * dragged widget is `isPortableForNewLeaf`) — so it never intercepts a
+   * same-strip reorder (no overlay renders at all — the existing per-tab
+   * UI-4f-3 handlers underneath stay fully reachable, untouched), and for
+   * ordinary (non-drag) interaction it doesn't exist in the DOM at all.
+   * Deliberately layered ON TOP of each leaf's existing content rather than
+   * touching that content's own handlers: a full-coverage absolutely
+   * positioned div, so it's the only thing under the pointer during an
+   * eligible drag. Its own onDrop, for the CENTER zone, calls the exact
+   * same `moveWidget` UI-4f-3's container-level drop already called for a
+   * cross-strip move — identical resulting behaviour, just reached through
+   * one more general path that also happens to supersede the narrower one
+   * for this case (both still coexist; the narrower one still owns
+   * same-strip reorder, which this overlay never renders during).
+   */
+  const renderDropOverlay = (nodeId: string) => {
+    if (!draggingTab || draggingTab.fromNodeId === nodeId) return null;
+    if (!isPortableForNewLeaf(draggingTab.widgetTypeId)) return null;
+    const zone = dragZone?.nodeId === nodeId ? dragZone.zone : null;
+    return (
+      <div
+        className="absolute inset-0 z-30"
+        onDragOver={(e) => {
+          e.preventDefault();
+          const rect = e.currentTarget.getBoundingClientRect();
+          const next = pickDropZone(rect, e.clientX, e.clientY);
+          setDragZone((prev) => (prev?.nodeId === nodeId && prev.zone === next ? prev : { nodeId, zone: next }));
+        }}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+            setDragZone((prev) => (prev?.nodeId === nodeId ? null : prev));
+          }
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const rect = e.currentTarget.getBoundingClientRect();
+          const zoneAtDrop = pickDropZone(rect, e.clientX, e.clientY);
+          setDragZone(null);
+          if (draggingTab) {
+            if (zoneAtDrop === "center") {
+              moveWidget(draggingTab.instanceId, draggingTab.fromNodeId, nodeId);
+            } else {
+              splitWidget(draggingTab.instanceId, draggingTab.fromNodeId, nodeId, zoneAtDrop);
+            }
+          }
+          setDraggingTab(null);
+        }}
+      >
+        <DockZone zone={zone} />
+      </div>
+    );
+  };
+
   const renderChartArea = () => (
     <div
       className={`relative min-h-0 overflow-hidden ${
         dockState === "maximized" ? "flex-none basis-14" : "flex-1"
       }`}
     >
+      {renderDropOverlay(WELL_KNOWN_NODE_IDS.chartArea)}
       <ChartLegendStrip
         symbol={symbol}
         intervalLabel={timeframeLabel(interval)}
@@ -2068,10 +2341,11 @@ function Studio() {
 
   const renderBottomDock = () => (
     <section
-      className={`flex shrink-0 flex-col border-t border-border bg-panel ${
+      className={`relative flex shrink-0 flex-col border-t border-border bg-panel ${
         dockState === "maximized" ? "flex-1" : dockState === "normal" ? "h-full min-h-0" : ""
       }`}
     >
+    {renderDropOverlay(WELL_KNOWN_NODE_IDS.bottomDock)}
     <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border px-2">
       <button
         onClick={toggleDockCollapse}
@@ -2131,6 +2405,7 @@ function Studio() {
               fromNodeId: WELL_KNOWN_NODE_IDS.bottomDock,
               instanceId: d.instanceId,
               canCrossRegion: d.canMoveToOtherRegion,
+              widgetTypeId: d.widgetTypeId,
             });
           }}
           onDragEnd={() => {
@@ -2685,8 +2960,9 @@ function Studio() {
 
       {sidebarState === "expanded" && (
         <aside
-          className="hidden h-full w-full flex-col overflow-y-auto border-l border-border bg-panel lg:flex"
+          className="relative hidden h-full w-full flex-col overflow-y-auto border-l border-border bg-panel lg:flex"
         >
+          {renderDropOverlay(WELL_KNOWN_NODE_IDS.rightSidebar)}
           <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-border px-1.5">
             {/* Tabs size to their own content and the strip scrolls
                 horizontally if it ever overflows, instead of every tab
@@ -2742,6 +3018,7 @@ function Studio() {
                       fromNodeId: WELL_KNOWN_NODE_IDS.rightSidebar,
                       instanceId: t.instanceId,
                       canCrossRegion: t.canMoveToOtherRegion,
+                      widgetTypeId: t.widgetTypeId,
                     });
                   }}
                   onDragEnd={() => {
@@ -2929,11 +3206,11 @@ function Studio() {
     if (node.id === WELL_KNOWN_NODE_IDS.chartArea) return renderChartArea();
     if (node.id === WELL_KNOWN_NODE_IDS.bottomDock) return renderBottomDock();
     if (node.id === WELL_KNOWN_NODE_IDS.rightSidebar) return renderRightSidebar();
-    // Any other leaf (e.g. orderflowPro's inert dom-panel) is never reached
-    // in practice -- that preset is locked and can't become the active
-    // layout -- but returning null here rather than throwing keeps
-    // LayoutTree itself genuinely generic and safe against future shapes.
-    return null;
+    // UI-4f-4: any other leaf is a real, user-created split pane (edge-drop)
+    // -- orderflowPro's inert dom-panel never reaches here in practice since
+    // that preset is locked and can't become the active layout, but a
+    // genuinely new "pane-<uuid>" leaf now does.
+    return renderGenericLeaf(node);
   };
 
   // UI-4f-2: a split renders as a plain (non-resizable) flex container,
@@ -2962,7 +3239,10 @@ function Studio() {
     if (childId === WELL_KNOWN_NODE_IDS.rightSidebar) return "240px";
     if (childId === WELL_KNOWN_NODE_IDS.chartArea) return "200px";
     if (childId === WELL_KNOWN_NODE_IDS.chartColumn) return "300px";
-    return undefined;
+    // UI-4f-4: any other id is a freshly edge-drop-created pane -- a
+    // universal floor so a new split can't be dragged down to an unusable
+    // sliver either, same spirit as the well-known regions' own floors.
+    return "180px";
   }, []);
   const maxSizeForChild = useCallback((childId: string): string | undefined => {
     if (childId === WELL_KNOWN_NODE_IDS.rightSidebar) return "420px";

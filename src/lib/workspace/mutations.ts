@@ -147,6 +147,26 @@ export function updateSplitSizes(
   return withRoot(layout, root);
 }
 
+/**
+ * Sets `instanceId` active within the "tabs" node `nodeId`. No-op if that
+ * node isn't a "tabs" leaf or doesn't contain that instance — used by
+ * generically-rendered leaves (UI-4f-4) that read their active tab straight
+ * from the tree instead of the legacy `dock`/`rightTab` state variables the
+ * two well-known regions still use.
+ */
+export function setActiveTab(
+  layout: WorkspaceLayout,
+  nodeId: string,
+  instanceId: string,
+): WorkspaceLayout {
+  const root = mapNode(layout.root, nodeId, (n) => {
+    if (n.kind !== "tabs") return n;
+    if (!n.tabs.some((t) => t.instanceId === instanceId)) return n;
+    return { ...n, activeInstanceId: instanceId };
+  });
+  return withRoot(layout, root);
+}
+
 /** Read-only lookup of a "tabs" node's instance by id, without mutating anything. */
 function findInstance(node: LayoutNode, nodeId: string, instanceId: string): WidgetInstance | null {
   const n = mapNodeReadOnly(node, nodeId);
@@ -220,5 +240,114 @@ export function moveWidgetBetweenNodes(
     return { ...n, tabs: [...n.tabs, moving as WidgetInstance], activeInstanceId: instanceId };
   });
   const collapsedRoot = collapseEmptyNodes(afterInsert) ?? afterInsert;
+  return withCollapsedRoot(layout, collapsedRoot);
+}
+
+export type DropEdge = "top" | "bottom" | "left" | "right";
+
+/**
+ * UI-4f-4: whether a widget type's content is known-safe to render inside a
+ * brand-new, freshly-created split leaf. Reuses the EXACT existing
+ * `renderableRegions.includes("sidebar")` signal rather than inventing a new
+ * one — that flag already means "this widget's content is self-contained,
+ * proven to render correctly outside its original dock-only context" (only
+ * watchlist/trade/ai-builder/alerts carry it, per widgetRegistry.ts). The
+ * other 8 available widgets (code-editor, strategy-tester, positions,
+ * orders, history, journal, saved-indicators, reference) have real rendering
+ * ONLY wired into the two well-known regions today — building genuinely new
+ * cross-context rendering for them is out of this sub-phase's scope, same
+ * "don't fake it, don't build untested rendering" principle UI-4c already
+ * applied to the sidebar-capability gap. Edge-drop for those 8 stays
+ * unavailable until a later phase does that rendering work; this is a real,
+ * deliberate scope boundary, not an oversight.
+ */
+export function isPortableForNewLeaf(widgetTypeId: WidgetTypeId): boolean {
+  return getWidgetDef(widgetTypeId).renderableRegions.includes("sidebar");
+}
+
+/**
+ * Moves `instanceId` out of `fromNodeId` and wraps `targetNodeId` in a new
+ * "split" node containing the original target leaf and a fresh leaf holding
+ * just the dragged widget, as its only (active) tab. Direction is "column"
+ * for a top/bottom edge-drop, "row" for left/right; the new leaf becomes the
+ * FIRST child for top/left, second for bottom/right — price of the
+ * geometry, not an arbitrary choice.
+ *
+ * No-op (same rejection rules as `moveWidgetBetweenNodes`, checked before
+ * anything is touched): source/target the same node, instance not found,
+ * target isn't a real "tabs" leaf, the widget isn't `isPortableForNewLeaf`
+ * (see above), or the source-side protections (pinned instance, or emptying
+ * a protected leaf) apply. On success, any node emptied by the removal is
+ * collapsed away via the same `collapseEmptyNodes` every other mutator here
+ * uses — a self-contained pane can itself later collapse the same way once
+ * closed, this isn't special-cased.
+ */
+export function splitLeafWithWidget(
+  layout: WorkspaceLayout,
+  instanceId: string,
+  fromNodeId: string,
+  targetNodeId: string,
+  edge: DropEdge,
+): WorkspaceLayout {
+  if (fromNodeId === targetNodeId) return layout;
+
+  const instance = findInstance(layout.root, fromNodeId, instanceId);
+  if (!instance) return layout;
+  if (!isPortableForNewLeaf(instance.widgetTypeId)) return layout;
+  const target = mapNodeReadOnly(layout.root, targetNodeId);
+  if (!target || target.kind !== "tabs") return layout;
+
+  const protectedSource = isProtectedLeaf(fromNodeId);
+  let moving: WidgetInstance | null = null;
+  const afterRemoval = mapNode(layout.root, fromNodeId, (n) => {
+    if (n.kind !== "tabs") return n;
+    if (protectedSource && n.tabs.length <= 1) return n;
+    const idx = n.tabs.findIndex((t) => t.instanceId === instanceId);
+    if (idx === -1) return n;
+    if (n.tabs[idx].pinned) return n;
+    moving = n.tabs[idx];
+    const tabs = n.tabs.filter((t) => t.instanceId !== instanceId);
+    const activeInstanceId =
+      n.activeInstanceId === instanceId ? neighborAfterRemoval(n.tabs, idx) : n.activeInstanceId;
+    return { ...n, tabs, activeInstanceId };
+  });
+  if (!moving) return layout; // rejected by the source's own protections
+
+  const movedInstance = moving as WidgetInstance;
+  const newLeaf: LayoutNode = {
+    kind: "tabs",
+    id: `pane-${crypto.randomUUID()}`,
+    tabs: [movedInstance],
+    activeInstanceId: instanceId,
+  };
+  const direction: "row" | "column" = edge === "left" || edge === "right" ? "row" : "column";
+  const newLeafFirst = edge === "left" || edge === "top";
+
+  function replaceTargetWithSplit(node: LayoutNode): LayoutNode {
+    if (node.kind === "tabs") return node;
+    let changed = false;
+    const children = node.children.map((c) => {
+      if (c.id === targetNodeId) {
+        changed = true;
+        const targetNow = mapNodeReadOnly(afterRemoval, targetNodeId) as LayoutNode;
+        const pair = newLeafFirst ? [newLeaf, targetNow] : [targetNow, newLeaf];
+        const split: LayoutNode = {
+          kind: "split",
+          id: `split-${crypto.randomUUID()}`,
+          direction,
+          sizes: [0.5, 0.5],
+          children: pair,
+        };
+        return split;
+      }
+      const next = replaceTargetWithSplit(c);
+      if (next !== c) changed = true;
+      return next;
+    });
+    return changed ? { ...node, children } : node;
+  }
+
+  const afterSplit = replaceTargetWithSplit(afterRemoval);
+  const collapsedRoot = collapseEmptyNodes(afterSplit) ?? afterSplit;
   return withCollapsedRoot(layout, collapsedRoot);
 }
