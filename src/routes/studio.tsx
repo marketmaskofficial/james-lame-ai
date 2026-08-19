@@ -838,6 +838,21 @@ function Studio() {
 
   const [dock, setDock] = useState<DockTab>("code");
   const [dockState, setDockState] = useState<"collapsed" | "normal" | "maximized">("normal");
+  /**
+   * Cross-strip tab drag (UI-4f-3). `draggingTab` is set on dragstart and
+   * cleared on dragend/drop; `canCrossRegion` mirrors the same
+   * `canMoveToOtherRegion` capability check already computed per-tab, so the
+   * drop-target highlight in `dragOverNodeId` only ever lights up a strip
+   * the dragged widget could actually land in — the authoritative rejection
+   * still happens in `moveWidgetBetweenNodes` itself either way, this is
+   * just the UI not offering what would be rejected anyway.
+   */
+  const [draggingTab, setDraggingTab] = useState<{
+    fromNodeId: string;
+    instanceId: string;
+    canCrossRegion: boolean;
+  } | null>(null);
+  const [dragOverNodeId, setDragOverNodeId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [noticeExpanded, setNoticeExpanded] = useState(false);
   const [live, setLive] = useState(true);
@@ -2080,17 +2095,60 @@ function Studio() {
           <ChevronsUp className="h-3.5 w-3.5" />
         )}
       </button>
-      <div className="mx-0.5 h-4 w-px bg-border" />
+      <div
+        className={`mx-0.5 flex h-8 items-center gap-1 rounded-[6px] ${
+          dragOverNodeId === WELL_KNOWN_NODE_IDS.bottomDock ? "bg-brand/10 ring-1 ring-inset ring-brand/40" : ""
+        }`}
+        onDragOver={(e) => {
+          if (draggingTab && draggingTab.fromNodeId !== WELL_KNOWN_NODE_IDS.bottomDock && draggingTab.canCrossRegion) {
+            e.preventDefault();
+          }
+        }}
+        onDragEnter={(e) => {
+          if (draggingTab && draggingTab.fromNodeId !== WELL_KNOWN_NODE_IDS.bottomDock && draggingTab.canCrossRegion) {
+            setDragOverNodeId(WELL_KNOWN_NODE_IDS.bottomDock);
+          }
+        }}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverNodeId(null);
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOverNodeId(null);
+          if (draggingTab && draggingTab.fromNodeId !== WELL_KNOWN_NODE_IDS.bottomDock) {
+            moveWidget(draggingTab.instanceId, draggingTab.fromNodeId, WELL_KNOWN_NODE_IDS.bottomDock);
+          }
+          setDraggingTab(null);
+        }}
+      >
       {dockTabsList.map((d, i) => (
         <div
           key={d.instanceId}
           draggable
-          onDragStart={(e) => e.dataTransfer.setData("text/plain", String(i))}
+          onDragStart={(e) => {
+            e.dataTransfer.setData("text/plain", String(i));
+            setDraggingTab({
+              fromNodeId: WELL_KNOWN_NODE_IDS.bottomDock,
+              instanceId: d.instanceId,
+              canCrossRegion: d.canMoveToOtherRegion,
+            });
+          }}
+          onDragEnd={() => {
+            setDraggingTab(null);
+            setDragOverNodeId(null);
+          }}
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => {
             e.preventDefault();
-            const from = Number(e.dataTransfer.getData("text/plain"));
-            if (!Number.isNaN(from)) reorderWidget(WELL_KNOWN_NODE_IDS.bottomDock, from, i);
+            e.stopPropagation();
+            setDragOverNodeId(null);
+            if (draggingTab && draggingTab.fromNodeId !== WELL_KNOWN_NODE_IDS.bottomDock) {
+              moveWidget(draggingTab.instanceId, draggingTab.fromNodeId, WELL_KNOWN_NODE_IDS.bottomDock);
+            } else {
+              const from = Number(e.dataTransfer.getData("text/plain"));
+              if (!Number.isNaN(from)) reorderWidget(WELL_KNOWN_NODE_IDS.bottomDock, from, i);
+            }
+            setDraggingTab(null);
           }}
           className="group/tab relative flex items-center"
         >
@@ -2132,6 +2190,7 @@ function Studio() {
           </span>
         </div>
       ))}
+      </div>
       <AddWidgetMenu
         region="dock"
         openWidgetTypeIds={dockWidgetTypeIds}
@@ -2637,17 +2696,70 @@ function Studio() {
                 its 4 built-in widgets — a 5th can't reach it without new
                 cross-region rendering — so this only ever needs to fit
                 those, comfortably, even at the narrowest 240px width. */}
-            <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
+            <div
+              className={`flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto rounded-[6px] ${
+                dragOverNodeId === WELL_KNOWN_NODE_IDS.rightSidebar
+                  ? "bg-brand/10 ring-1 ring-inset ring-brand/40"
+                  : ""
+              }`}
+              onDragOver={(e) => {
+                if (
+                  draggingTab &&
+                  draggingTab.fromNodeId !== WELL_KNOWN_NODE_IDS.rightSidebar &&
+                  draggingTab.canCrossRegion
+                ) {
+                  e.preventDefault();
+                }
+              }}
+              onDragEnter={(e) => {
+                if (
+                  draggingTab &&
+                  draggingTab.fromNodeId !== WELL_KNOWN_NODE_IDS.rightSidebar &&
+                  draggingTab.canCrossRegion
+                ) {
+                  setDragOverNodeId(WELL_KNOWN_NODE_IDS.rightSidebar);
+                }
+              }}
+              onDragLeave={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverNodeId(null);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragOverNodeId(null);
+                if (draggingTab && draggingTab.fromNodeId !== WELL_KNOWN_NODE_IDS.rightSidebar) {
+                  moveWidget(draggingTab.instanceId, draggingTab.fromNodeId, WELL_KNOWN_NODE_IDS.rightSidebar);
+                }
+                setDraggingTab(null);
+              }}
+            >
               {rightTabs.map((t, i) => (
                 <div
                   key={t.instanceId}
                   draggable
-                  onDragStart={(e) => e.dataTransfer.setData("text/plain", String(i))}
+                  onDragStart={(e) => {
+                    e.dataTransfer.setData("text/plain", String(i));
+                    setDraggingTab({
+                      fromNodeId: WELL_KNOWN_NODE_IDS.rightSidebar,
+                      instanceId: t.instanceId,
+                      canCrossRegion: t.canMoveToOtherRegion,
+                    });
+                  }}
+                  onDragEnd={() => {
+                    setDraggingTab(null);
+                    setDragOverNodeId(null);
+                  }}
                   onDragOver={(e) => e.preventDefault()}
                   onDrop={(e) => {
                     e.preventDefault();
-                    const from = Number(e.dataTransfer.getData("text/plain"));
-                    if (!Number.isNaN(from)) reorderWidget(WELL_KNOWN_NODE_IDS.rightSidebar, from, i);
+                    e.stopPropagation();
+                    setDragOverNodeId(null);
+                    if (draggingTab && draggingTab.fromNodeId !== WELL_KNOWN_NODE_IDS.rightSidebar) {
+                      moveWidget(draggingTab.instanceId, draggingTab.fromNodeId, WELL_KNOWN_NODE_IDS.rightSidebar);
+                    } else {
+                      const from = Number(e.dataTransfer.getData("text/plain"));
+                      if (!Number.isNaN(from)) reorderWidget(WELL_KNOWN_NODE_IDS.rightSidebar, from, i);
+                    }
+                    setDraggingTab(null);
                   }}
                   className="group/tab flex shrink-0 items-center"
                 >

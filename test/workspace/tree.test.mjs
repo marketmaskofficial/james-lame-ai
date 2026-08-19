@@ -119,9 +119,17 @@ function tabsOf(layout, nodeId) {
 }
 
 {
+  // "right" is a generic (non-well-known) leaf id, so it isn't protected —
+  // UI-4f-3 lets a non-protected leaf legitimately empty out and collapse
+  // away, rather than enforcing a universal floor. Removing its last tab
+  // must succeed, and since "root" had exactly two children ("left",
+  // "right"), losing "right" collapses root down to its sole surviving
+  // child ("left") directly, per collapseEmptyNodes.
   const before = fixture();
-  const after = removeWidgetFromNode(before, "right", "watchlist-1"); // last tab in node
-  check("remove: last remaining tab in a node is rejected", tabsOf(after, "right"), tabsOf(before, "right"));
+  const after = removeWidgetFromNode(before, "right", "watchlist-1");
+  ok("remove: emptying a non-protected leaf drops it from the tree", findNodeById(after.root, "right") === null);
+  ok("remove: parent split collapses to its one surviving child", after.root.kind === "tabs" && after.root.id === "left");
+  check("remove: the surviving leaf's own tabs are untouched by the collapse", tabsOf(after, "left"), tabsOf(before, "left"));
 }
 
 {
@@ -177,10 +185,79 @@ function tabsOf(layout, nodeId) {
 }
 
 {
-  // Drain "right" to nothing left to move away, since it only has one tab.
+  // Same non-protected-leaf collapse behavior as removeWidgetFromNode above,
+  // now via a cross-strip move: "right" only has one tab, and "right" isn't
+  // a protected leaf, so moving that last tab out succeeds and collapses
+  // "right" (and, cascading, the two-child "root" split down to "left").
   const before = fixture();
   const after = moveWidgetBetweenNodes(before, "watchlist-1", "right", "left");
-  check("move: last-tab-in-source protection applies to move too", tabsOf(after, "right"), tabsOf(before, "right"));
+  ok("move: emptying a non-protected source leaf drops it from the tree", findNodeById(after.root, "right") === null);
+  ok("move: parent split collapses to its one surviving child", after.root.kind === "tabs" && after.root.id === "left");
+  check("move: the widget actually landed in the destination", tabsOf(after, "left"), ["code-1", "tester-1", "watchlist-1"]);
+}
+
+{
+  // Protected leaves (UI-4f-3): right-sidebar and bottom-dock keep the exact
+  // pre-UI-4f-3 floor, using their real well-known ids so isProtectedLeaf
+  // actually recognizes them (unlike the generic "left"/"right" fixture
+  // above, which deliberately exercises the *non*-protected path).
+  const before = regionFixture();
+  const afterRemove = removeWidgetFromNode(before, WELL_KNOWN_NODE_IDS.rightSidebar, "watchlist-1");
+  check(
+    "remove: protected leaf (right-sidebar) still enforces the last-tab floor",
+    tabsOf(afterRemove, WELL_KNOWN_NODE_IDS.rightSidebar),
+    tabsOf(before, WELL_KNOWN_NODE_IDS.rightSidebar),
+  );
+  ok("remove: protected leaf is not dropped from the tree", findNodeById(afterRemove.root, WELL_KNOWN_NODE_IDS.rightSidebar) !== null);
+
+  const afterMove = moveWidgetBetweenNodes(before, "watchlist-1", WELL_KNOWN_NODE_IDS.rightSidebar, WELL_KNOWN_NODE_IDS.bottomDock);
+  check(
+    "move: protected leaf (right-sidebar) still enforces the last-tab floor",
+    tabsOf(afterMove, WELL_KNOWN_NODE_IDS.rightSidebar),
+    tabsOf(before, WELL_KNOWN_NODE_IDS.rightSidebar),
+  );
+}
+
+{
+  // Three-leaf fixture: proves collapseEmptyNodes handles a split with more
+  // than two children correctly (drop just the emptied one, renormalize
+  // sizes across the survivors, no premature single-child collapse) rather
+  // than only the trivial two-child case above.
+  const threeLeafFixture = () => ({
+    version: 1,
+    name: "three-leaf",
+    maximizedNodeId: null,
+    collapsedNodeIds: [],
+    root: {
+      kind: "split",
+      id: "root3",
+      direction: "row",
+      sizes: [0.34, 0.33, 0.33],
+      children: [
+        { kind: "tabs", id: "a", tabs: [inst("a1", "watchlist")], activeInstanceId: "a1" },
+        { kind: "tabs", id: "b", tabs: [inst("b1", "journal")], activeInstanceId: "b1" },
+        { kind: "tabs", id: "c", tabs: [inst("c1", "orders"), inst("c2", "positions")], activeInstanceId: "c1" },
+      ],
+    },
+  });
+  const before = threeLeafFixture();
+  const after = removeWidgetFromNode(before, "a", "a1");
+  ok("three-leaf: emptied leaf is dropped", findNodeById(after.root, "a") === null);
+  ok("three-leaf: unaffected siblings survive", findNodeById(after.root, "b") !== null && findNodeById(after.root, "c") !== null);
+  ok("three-leaf: root stays a split (more than one survivor, no premature collapse)", after.root.kind === "split");
+  check("three-leaf: root's children shrink to the two survivors", after.root.children.map((c) => c.id), ["b", "c"]);
+  check("three-leaf: sizes renormalize to sum to 1 across survivors", Math.round(after.root.sizes.reduce((a, b) => a + b, 0) * 1000) / 1000, 1);
+}
+
+{
+  // maximizedNodeId/collapsedNodeIds must not dangle after a collapse drops
+  // the node they referenced.
+  const before = fixture();
+  before.maximizedNodeId = "right";
+  before.collapsedNodeIds = ["right"];
+  const after = removeWidgetFromNode(before, "right", "watchlist-1");
+  check("collapse cleanup: dangling maximizedNodeId is cleared", after.maximizedNodeId, null);
+  check("collapse cleanup: dangling collapsedNodeIds entry is dropped", after.collapsedNodeIds, []);
 }
 
 // ---- capability-aware region gating (UI-4c tightening) ----------------------

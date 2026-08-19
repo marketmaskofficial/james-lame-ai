@@ -173,3 +173,52 @@ export function regionKindForNodeId(nodeId: string): "sidebar" | "dock" | null {
   if (nodeId === WELL_KNOWN_NODE_IDS.bottomDock) return "dock";
   return null;
 }
+
+/**
+ * Leaves that must never structurally disappear from the tree via a widget
+ * move/removal (UI-4f-3): the two permanent chrome regions, and the sole
+ * chart pane — multi-chart isn't supported yet, so chart-area losing its one
+ * tab would break the app outright, not just look different. Each keeps a
+ * hard floor of 1 remaining tab, enforced by the mutators in mutations.ts;
+ * any other leaf id may legitimately empty out and collapse away instead —
+ * see `collapseEmptyNodes`.
+ */
+export function isProtectedLeaf(nodeId: string): boolean {
+  return regionKindForNodeId(nodeId) !== null || nodeId === WELL_KNOWN_NODE_IDS.chartArea;
+}
+
+/**
+ * Removes "tabs" nodes left with zero tabs, and collapses "split" nodes down
+ * to their one surviving child (or drops them too if every child was
+ * emptied) — the same shape of repair `persistence.ts`'s `repairNode`
+ * already does when recovering corrupted saved data, reused here (rather
+ * than duplicated by refactoring that already-tested repair path) so a
+ * widget move/removal that legitimately empties a non-protected leaf
+ * (UI-4f-3) cleans up the tree structurally instead of leaving a dangling
+ * empty pane. Protected leaves never reach this path empty in practice —
+ * their mutators enforce the floor of 1 tab above — so this function
+ * doesn't need to know about that distinction itself. Returns the identical
+ * node reference when nothing actually changed, so callers can cheaply
+ * detect a no-op and avoid needless re-renders.
+ */
+export function collapseEmptyNodes(node: LayoutNode): LayoutNode | null {
+  if (node.kind === "tabs") {
+    return node.tabs.length === 0 ? null : node;
+  }
+  let changed = false;
+  const survivors: LayoutNode[] = [];
+  const survivorSizes: number[] = [];
+  node.children.forEach((child, i) => {
+    const result = collapseEmptyNodes(child);
+    if (result !== child) changed = true;
+    if (result) {
+      survivors.push(result);
+      survivorSizes.push(node.sizes[i] ?? 1 / node.children.length);
+    }
+  });
+  if (survivors.length === 0) return null;
+  if (survivors.length === 1) return survivors[0];
+  if (!changed) return node;
+  const total = survivorSizes.reduce((a, b) => a + b, 0) || 1;
+  return { ...node, children: survivors, sizes: survivorSizes.map((s) => s / total) };
+}
