@@ -50,6 +50,7 @@ import {
   X,
   MoreHorizontal,
   GripVertical,
+  Plus,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { fetchBars, TIMEFRAMES, timeframeLabel } from "@/lib/marketdata";
@@ -117,11 +118,13 @@ import type { BacktestTrade } from "@/lib/backtest/engine";
 import { track } from "@/lib/telemetry";
 import type { AccountSnapshot, TradingAccount } from "@/lib/trading/types";
 import {
+  collectWidgetTypeIds,
   findNodeById,
   pathToLeaf,
   regionKindForNodeId,
   WELL_KNOWN_NODE_IDS,
   type LayoutNode,
+  type WidgetInstance,
   type WidgetTypeId,
   type WorkspaceLayout,
 } from "@/lib/workspace/types";
@@ -136,6 +139,8 @@ import {
   setActiveTab as setActiveTabInTree,
   splitLeafWithWidget,
   isPortableForNewLeaf,
+  createInstanceAsNewPane,
+  updateChartConfig,
   type DropEdge,
 } from "@/lib/workspace/mutations";
 import { DockZone, pickDropZone, type DropZone } from "@/components/studio/DockZone";
@@ -511,14 +516,106 @@ function Studio() {
   const qc = useQueryClient();
   const signedIn = !!user;
 
-  const [symbol, setSymbol] = useState("BTCUSDT");
-  const [interval, setIntervalStr] = useState<string>("15m");
-  const [bars, setBars] = useState<Bar[]>([]);
-  const [barsError, setBarsError] = useState<string | null>(null);
-  const [barsLoading, setBarsLoading] = useState(true);
+  // UI-4g-2: chart runtime state is now genuinely per-instance, keyed by the
+  // same workspace-tree instanceId UI-4g-1 already derived (was a
+  // single-entry proof of concept there; now a second, independent entry can
+  // exist). Every existing call site in this file that reads `symbol`,
+  // `bars`, `indicators`, etc. or calls `setSymbol(...)`, `setIndicators(
+  // ...)`, etc. keeps working completely unchanged below — those names
+  // become derived getters/setters over "the ACTIVE chart's slice of this
+  // map" instead of flat useState, so the large amount of existing
+  // backtest-overlay/trade-line/drawing-tool/Code-Editor logic that assumes
+  // "the chart" continues to work correctly, now correctly scoped to
+  // whichever chart is active, without every one of those call sites having
+  // to be individually rewritten. A second, non-active chart's own state is
+  // read directly from this map by instance id (see `renderChartLeaf`),
+  // bypassing the "active" derivation entirely.
+  type ChartRuntimeState = {
+    symbol: string;
+    interval: string;
+    chartType: ChartType;
+    chartSettings: ChartSettings;
+    bars: Bar[];
+    barsError: string | null;
+    barsLoading: boolean;
+    indicators: StudioIndicator[];
+    drawings: Drawing[];
+    /** `"symbol:interval"` this instance's `bars` were actually fetched for — lets the fetch effect skip a redundant re-fetch when merely switching which chart is active, without re-fetching on every switch. */
+    barsLoadedFor: string | null;
+  };
+  const DEFAULT_CHART_RUNTIME_STATE: ChartRuntimeState = {
+    symbol: "BTCUSDT",
+    interval: "15m",
+    chartType: "candles",
+    chartSettings: DEFAULT_CHART_SETTINGS,
+    bars: [],
+    barsError: null,
+    barsLoading: true,
+    indicators: [],
+    drawings: [],
+    barsLoadedFor: null,
+  };
+  const [chartStatesMap, setChartStatesMap] = useState<Record<string, ChartRuntimeState>>({
+    "chart-1": DEFAULT_CHART_RUNTIME_STATE,
+  });
+  const [activeChartInstanceId, setActiveChartInstanceId] = useState("chart-1");
+  // Read inside the market-data effect's async .then() to confirm the fetch
+  // is still for whichever chart is active NOW before touching the
+  // page-level `lastPrice` display — a plain state read there could be
+  // stale-closure-captured from whenever the effect was scheduled.
+  const activeChartInstanceIdRef = useRef(activeChartInstanceId);
+  useEffect(() => {
+    activeChartInstanceIdRef.current = activeChartInstanceId;
+  }, [activeChartInstanceId]);
+  const setChartField = useCallback(
+    <K extends keyof ChartRuntimeState>(
+      instanceId: string,
+      field: K,
+      value: ChartRuntimeState[K] | ((prev: ChartRuntimeState[K]) => ChartRuntimeState[K]),
+    ) => {
+      setChartStatesMap((prev) => {
+        const cur = prev[instanceId] ?? DEFAULT_CHART_RUNTIME_STATE;
+        const nextVal = typeof value === "function" ? (value as (p: ChartRuntimeState[K]) => ChartRuntimeState[K])(cur[field]) : value;
+        if (nextVal === cur[field]) return prev;
+        return { ...prev, [instanceId]: { ...cur, [field]: nextVal } };
+      });
+    },
+    [],
+  );
+  const activeChartState = chartStatesMap[activeChartInstanceId] ?? DEFAULT_CHART_RUNTIME_STATE;
+  const symbol = activeChartState.symbol;
+  const setSymbol = useCallback(
+    (v: string | ((p: string) => string)) => setChartField(activeChartInstanceId, "symbol", v),
+    [activeChartInstanceId, setChartField],
+  );
+  const interval = activeChartState.interval;
+  const setIntervalStr = useCallback(
+    (v: string | ((p: string) => string)) => setChartField(activeChartInstanceId, "interval", v),
+    [activeChartInstanceId, setChartField],
+  );
+  const bars = activeChartState.bars;
+  const setBars = useCallback(
+    (v: Bar[] | ((p: Bar[]) => Bar[])) => setChartField(activeChartInstanceId, "bars", v),
+    [activeChartInstanceId, setChartField],
+  );
+  const barsError = activeChartState.barsError;
+  const setBarsError = useCallback(
+    (v: string | null | ((p: string | null) => string | null)) => setChartField(activeChartInstanceId, "barsError", v),
+    [activeChartInstanceId, setChartField],
+  );
+  const barsLoading = activeChartState.barsLoading;
+  const setBarsLoading = useCallback(
+    (v: boolean | ((p: boolean) => boolean)) => setChartField(activeChartInstanceId, "barsLoading", v),
+    [activeChartInstanceId, setChartField],
+  );
 
   const [code, setCode] = useState(DEFAULT_SCRIPT);
-  const [indicators, setIndicators] = useState<StudioIndicator[]>([]);
+  const indicators = activeChartState.indicators;
+  const setIndicators = useCallback(
+    (v: StudioIndicator[] | ((p: StudioIndicator[]) => StudioIndicator[])) =>
+      setChartField(activeChartInstanceId, "indicators", v),
+    [activeChartInstanceId, setChartField],
+  );
   const [runError, setRunError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [translating, setTranslating] = useState(false);
@@ -534,7 +631,11 @@ function Studio() {
   const [backtestTrades, setBacktestTrades] = useState<BacktestTrade[] | null>(null);
   // Prompt handed to the AI panel when the tester asks for missing rules.
   const [aiSeed, setAiSeed] = useState<string | null>(null);
-  const [drawings, setDrawings] = useState<Drawing[]>([]);
+  const drawings = activeChartState.drawings;
+  const setDrawings = useCallback(
+    (v: Drawing[] | ((p: Drawing[]) => Drawing[])) => setChartField(activeChartInstanceId, "drawings", v),
+    [activeChartInstanceId, setChartField],
+  );
   const [selectedDrawing, setSelectedDrawing] = useState<string | null>(null);
   const [objectsOpen, setObjectsOpen] = useState(false);
 
@@ -571,6 +672,50 @@ function Studio() {
   // (which only writes back what's already live in the DOM from the drag
   // itself) -- remounting there would be unnecessary and would visibly
   // flash/reset the tree on every ordinary interaction.
+  /**
+   * UI-4g-2: rebuilds `chartStatesMap` from EVERY chart instance found in a
+   * given tree, seeding each from its own persisted `chartConfig` (falling
+   * back to defaults for one that has none — any layout saved before this
+   * phase, or a freshly-created chart whose config write hasn't landed in
+   * the tree yet). Called at every "wholesale replace the layout" site
+   * (initial load, preset switch, named-layout switch, cloud sync,
+   * delete-active-layout fallback) alongside `bumpLayoutKey` — both exist
+   * for the same underlying reason: something just replaced the ENTIRE
+   * layout, not an incremental edit, so every piece of per-instance runtime
+   * state derived from it needs to be rebuilt to match, not just the tree
+   * itself. Returns the id of the first chart instance found (or the
+   * existing "chart-1" fallback if the tree somehow has none), for the
+   * caller to also set as active.
+   */
+  const seedChartStatesFromLayout = useCallback((next: WorkspaceLayout) => {
+    const found: Record<string, ChartRuntimeState> = {};
+    function walk(node: LayoutNode) {
+      if (node.kind === "tabs") {
+        for (const tab of node.tabs) {
+          if (tab.widgetTypeId !== "chart") continue;
+          const cfg = tab.chartConfig;
+          found[tab.instanceId] = {
+            ...DEFAULT_CHART_RUNTIME_STATE,
+            symbol: cfg?.symbol ?? DEFAULT_CHART_RUNTIME_STATE.symbol,
+            interval: cfg?.interval ?? DEFAULT_CHART_RUNTIME_STATE.interval,
+            chartType: (cfg?.chartType as ChartType | undefined) ?? DEFAULT_CHART_RUNTIME_STATE.chartType,
+            chartSettings: cfg?.settings
+              ? ({ ...DEFAULT_CHART_SETTINGS, ...(cfg.settings as Partial<ChartSettings>) } as ChartSettings)
+              : DEFAULT_CHART_RUNTIME_STATE.chartSettings,
+          };
+        }
+        return;
+      }
+      node.children.forEach(walk);
+    }
+    walk(next.root);
+    const firstId = Object.keys(found)[0] ?? "chart-1";
+    if (!found[firstId]) found[firstId] = DEFAULT_CHART_RUNTIME_STATE;
+    setChartStatesMap(found);
+    setActiveChartInstanceId(firstId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const [layoutKey, setLayoutKey] = useState(0);
   const bumpLayoutKey = useCallback(() => setLayoutKey((k) => k + 1), []);
   useEffect(() => {
@@ -583,8 +728,9 @@ function Studio() {
     const usedDefault = store.defaultLayoutId && store.layouts.some((l) => l.id === store.defaultLayoutId);
     setWorkspaceStore(usedDefault ? { ...store, activeLayoutId: store.defaultLayoutId as string } : store);
     setLayout(initial);
+    seedChartStatesFromLayout(initial);
     bumpLayoutKey();
-  }, [bumpLayoutKey]);
+  }, [bumpLayoutKey, seedChartStatesFromLayout]);
 
   // Mirror the live tree into the store's scratch slot whenever it changes —
   // this is what "Current (unsaved)" means, and what makes a reload land
@@ -651,6 +797,7 @@ function Studio() {
             defaultLayoutId: (defaultRow?.id as string | undefined) ?? null,
           }));
           setLayout(active);
+          seedChartStatesFromLayout(active);
           bumpLayoutKey();
           setCloudSyncError(null);
         } else if (!hasMigratedToCloud() && workspaceStore.layouts.length > 0) {
@@ -685,6 +832,7 @@ function Studio() {
     (id: string) => {
       if (id === CURRENT_LAYOUT_ID) {
         setLayout(workspaceStore.currentLayout);
+        seedChartStatesFromLayout(workspaceStore.currentLayout);
         bumpLayoutKey();
         setWorkspaceStore((prev) => ({ ...prev, activeLayoutId: CURRENT_LAYOUT_ID }));
         return;
@@ -692,10 +840,11 @@ function Studio() {
       const found = workspaceStore.layouts.find((l) => l.id === id);
       if (!found) return;
       setLayout(found);
+      seedChartStatesFromLayout(found);
       bumpLayoutKey();
       setWorkspaceStore((prev) => ({ ...prev, activeLayoutId: id }));
     },
-    [workspaceStore, bumpLayoutKey],
+    [workspaceStore, bumpLayoutKey, seedChartStatesFromLayout],
   );
   const saveAsNewLayout = useCallback(
     async (name: string) => {
@@ -781,10 +930,11 @@ function Studio() {
       }));
       if (wasActive) {
         setLayout(workspaceStore.currentLayout);
+        seedChartStatesFromLayout(workspaceStore.currentLayout);
         bumpLayoutKey();
       }
     },
-    [workspaceStore, signedIn, bumpLayoutKey],
+    [workspaceStore, signedIn, bumpLayoutKey, seedChartStatesFromLayout],
   );
   const setDefaultLayout = useCallback(
     async (id: string | null) => {
@@ -842,12 +992,13 @@ function Studio() {
     (presetId: PresetId) => {
       const next = PRESETS[presetId];
       setLayout(next);
+      seedChartStatesFromLayout(next);
       bumpLayoutKey();
       syncActiveTab(next, WELL_KNOWN_NODE_IDS.rightSidebar);
       syncActiveTab(next, WELL_KNOWN_NODE_IDS.bottomDock);
       setWorkspaceStore((prev) => ({ ...prev, activeLayoutId: CURRENT_LAYOUT_ID }));
     },
-    [syncActiveTab, bumpLayoutKey],
+    [syncActiveTab, bumpLayoutKey, seedChartStatesFromLayout],
   );
 
   const addWidget = useCallback(
@@ -911,6 +1062,102 @@ function Studio() {
     setLayout((prev) => setActiveTabInTree(prev, nodeId, instanceId));
   }, []);
 
+  /** UI-4g-2: the id of whichever "tabs" leaf currently holds a given widget instance, or null. */
+  const findLeafIdHoldingInstance = useCallback((root: LayoutNode, instanceId: string): string | null => {
+    if (root.kind === "tabs") {
+      return root.tabs.some((t) => t.instanceId === instanceId) ? root.id : null;
+    }
+    for (const child of root.children) {
+      const found = findLeafIdHoldingInstance(child, instanceId);
+      if (found) return found;
+    }
+    return null;
+  }, []);
+
+  /**
+   * UI-4g-2: "Add Chart" — creates a brand-new, independent chart instance
+   * as a new pane split to the right of whichever chart is currently active,
+   * seeded with that same chart's current symbol/interval/type/settings (a
+   * sensible "duplicate this chart, then change it" starting point) so it
+   * isn't just a blank BTCUSDT/15m every time. Enforces the 4-instance cap
+   * at the mutator level (createInstanceAsNewPane) — a no-op past the cap,
+   * not a silent partial success.
+   */
+  const addChartInstance = useCallback(() => {
+    const hostLeafId = findLeafIdHoldingInstance(layout.root, activeChartInstanceId) ?? WELL_KNOWN_NODE_IDS.chartArea;
+    const seedFrom = chartStatesMap[activeChartInstanceId] ?? DEFAULT_CHART_RUNTIME_STATE;
+    const chartConfig: WidgetInstance["chartConfig"] = {
+      symbol: seedFrom.symbol,
+      interval: seedFrom.interval,
+      chartType: seedFrom.chartType,
+      settings: seedFrom.chartSettings as unknown as Record<string, unknown>,
+    };
+    const { layout: nextLayout, instanceId: newId } = createInstanceAsNewPane(
+      layout,
+      "chart",
+      hostLeafId,
+      "right",
+      chartConfig,
+    );
+    if (!newId) return; // rejected: cap reached, or target not found
+    setChartStatesMap((prev) => ({
+      ...prev,
+      [newId]: {
+        ...DEFAULT_CHART_RUNTIME_STATE,
+        symbol: seedFrom.symbol,
+        interval: seedFrom.interval,
+        chartType: seedFrom.chartType,
+        chartSettings: seedFrom.chartSettings,
+      },
+    }));
+    setLayout(nextLayout);
+    bumpLayoutKey();
+    setActiveChartInstanceId(newId);
+  }, [layout, activeChartInstanceId, chartStatesMap, findLeafIdHoldingInstance, bumpLayoutKey]);
+
+  /**
+   * UI-4g-2: closes one chart instance. Routes through the exact same
+   * `removeWidget` path every other widget close already uses — the
+   * mutator's own `wouldLeaveNoInstancesOfType` check rejects closing the
+   * LAST remaining chart regardless of which node currently hosts it, same
+   * as clicking close on it would. If the closed instance was active,
+   * activation falls back to whichever chart instance remains.
+   */
+  const closeChartInstance = useCallback(
+    (instanceId: string, nodeId: string) => {
+      setLayout((prev) => {
+        const next = removeWidgetFromNode(prev, nodeId, instanceId);
+        if (next === prev) return prev; // rejected (last remaining chart)
+        setChartStatesMap((prevStates) => {
+          const { [instanceId]: _removed, ...rest } = prevStates;
+          return rest;
+        });
+        if (activeChartInstanceId === instanceId) {
+          const stillThere = findLeafIdHoldingInstance(next.root, instanceId);
+          if (!stillThere) {
+            // Find any surviving chart instance to activate instead.
+            function firstChartId(n: LayoutNode): string | null {
+              if (n.kind === "tabs") {
+                const t = n.tabs.find((tab) => tab.widgetTypeId === "chart");
+                return t ? t.instanceId : null;
+              }
+              for (const c of n.children) {
+                const found = firstChartId(c);
+                if (found) return found;
+              }
+              return null;
+            }
+            const fallback = firstChartId(next.root);
+            if (fallback) setActiveChartInstanceId(fallback);
+          }
+        }
+        bumpLayoutKey();
+        return next;
+      });
+    },
+    [activeChartInstanceId, findLeafIdHoldingInstance, bumpLayoutKey],
+  );
+
   const [dock, setDock] = useState<DockTab>("code");
   const [dockState, setDockState] = useState<"collapsed" | "normal" | "maximized">("normal");
   /**
@@ -949,9 +1196,16 @@ function Studio() {
   const [lastPrice, setLastPrice] = useState<number | null>(null);
 
   // workspace chrome
-  const [chartType, setChartType] = useState<ChartType>("candles");
-  const [chartSettings, setChartSettings] = useState<ChartSettings>(
-    DEFAULT_CHART_SETTINGS,
+  const chartType = activeChartState.chartType;
+  const setChartType = useCallback(
+    (v: ChartType | ((p: ChartType) => ChartType)) => setChartField(activeChartInstanceId, "chartType", v),
+    [activeChartInstanceId, setChartField],
+  );
+  const chartSettings = activeChartState.chartSettings;
+  const setChartSettings = useCallback(
+    (v: ChartSettings | ((p: ChartSettings) => ChartSettings)) =>
+      setChartField(activeChartInstanceId, "chartSettings", v),
+    [activeChartInstanceId, setChartField],
   );
   const [crosshair, setCrosshair] = useState<CrosshairInfo | null>(null);
   const [symbolOpen, setSymbolOpen] = useState(false);
@@ -982,6 +1236,18 @@ function Studio() {
   }, [symbol]);
 
   // Persist the workspace so a reload lands back on the same chart.
+  // UI-4g-2: deliberately does NOT restore symbol/interval/chartType/
+  // settings from this blob anymore -- it predates multi-chart and is
+  // chart-instance-agnostic (one global "last touched" value), so restoring
+  // from it here raced with seedChartStatesFromLayout on mount: both fire
+  // in the same initial commit, this effect's setSymbol/setIntervalStr shim
+  // closures still resolve to render-1's default activeChartInstanceId
+  // ("chart-1"), and unconditionally overwrote chart-1's freshly-seeded,
+  // correct per-instance config with whatever chart was last active before
+  // reload. Each chart's own config now lives in the tree itself
+  // (WidgetInstance.chartConfig) and is restored per-instance by
+  // seedChartStatesFromLayout instead. dock/rightTab/sidebar state aren't
+  // chart-specific and aren't part of the tree, so they still restore here.
   useEffect(() => {
     try {
       const raw = localStorage.getItem("sg.studio.layout");
@@ -996,10 +1262,6 @@ function Studio() {
         rightTab: RightTab;
         sidebarState: "expanded" | "collapsed";
       }>;
-      if (l.symbol) setSymbol(l.symbol);
-      if (l.interval) setIntervalStr(l.interval);
-      if (l.chartType) setChartType(l.chartType);
-      if (l.settings) setChartSettings({ ...DEFAULT_CHART_SETTINGS, ...l.settings });
       if (l.dock) setDock(l.dock);
       if (l.dockState) setDockState(l.dockState);
       if (l.rightTab) setRightTab(l.rightTab);
@@ -1318,27 +1580,68 @@ function Studio() {
 
 
   // ---- market data --------------------------------------------------------
+  // UI-4g-2 fix: fetches EVERY chart instance's own bars independently of
+  // which one is "active" — the original version of this effect only ever
+  // fetched for `activeChartInstanceId`, so a second, non-active chart's
+  // `bars` stayed permanently empty (confirmed by direct reproduction: a
+  // two-chart layout loaded cold showed the active chart's candles but left
+  // the other chart blank indefinitely, even seconds later). "Active" now
+  // only governs the top-toolbar/lastPrice display (see the resync effect
+  // below), never which chart's market data gets loaded.
+  //
+  // Depends on a derived signature (id:symbol:interval per instance, not the
+  // raw `chartStatesMap`) so this only re-fires when an instance is added/
+  // removed or a symbol/interval actually changes — not on every bars/
+  // indicator/drawing update to any instance, which the raw map would
+  // trigger on. `barsLoadedFor` still dedupes per instance: an instance
+  // whose bars already match its own current symbol/interval is skipped.
+  const chartInstanceSymbolsSignature = useMemo(
+    () =>
+      Object.entries(chartStatesMap)
+        .map(([id, s]) => `${id}:${s.symbol}:${s.interval}`)
+        .sort()
+        .join("|"),
+    [chartStatesMap],
+  );
   useEffect(() => {
     let cancelled = false;
-    setBarsLoading(true);
-    setBarsError(null);
-    setLastPrice(null);
-    setBars([]);
-    fetchBars(symbol, interval, 500)
-      .then((b) => {
-        if (cancelled) return;
-        setBars(b);
-        setLastPrice(b.length ? b[b.length - 1].close : null);
-      })
-      .catch((e: unknown) => {
-        if (cancelled) return;
-        setBarsError(e instanceof Error ? e.message : "Market data unavailable");
-      })
-      .finally(() => !cancelled && setBarsLoading(false));
+    for (const [forId, inst] of Object.entries(chartStatesMap)) {
+      const loadedKey = `${inst.symbol}:${inst.interval}`;
+      if (inst.barsLoadedFor === loadedKey) continue;
+      setChartField(forId, "barsLoading", true);
+      setChartField(forId, "barsError", null);
+      setChartField(forId, "bars", []);
+      if (forId === activeChartInstanceIdRef.current) setLastPrice(null);
+      fetchBars(inst.symbol, inst.interval, 500)
+        .then((b) => {
+          if (cancelled) return;
+          setChartField(forId, "bars", b);
+          setChartField(forId, "barsLoadedFor", loadedKey);
+          if (forId === activeChartInstanceIdRef.current) {
+            setLastPrice(b.length ? b[b.length - 1].close : null);
+          }
+        })
+        .catch((e: unknown) => {
+          if (cancelled) return;
+          setChartField(forId, "barsError", e instanceof Error ? e.message : "Market data unavailable");
+        })
+        .finally(() => !cancelled && setChartField(forId, "barsLoading", false));
+    }
     return () => {
       cancelled = true;
     };
-  }, [symbol, interval]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chartInstanceSymbolsSignature]);
+  // Resyncs the top-toolbar's lastPrice display when the ACTIVE chart
+  // changes, independent of the fetch effect above — switching to an
+  // already-loaded chart shouldn't refetch anything, just reflect its
+  // current price immediately instead of waiting on the other effect's own
+  // (signature-keyed, not active-keyed) trigger conditions.
+  useEffect(() => {
+    const inst = chartStatesMap[activeChartInstanceId];
+    setLastPrice(inst?.bars.length ? inst.bars[inst.bars.length - 1].close : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeChartInstanceId]);
 
   // Progressive history: fetch older candles and prepend without reordering.
   const loadOlderHistory = useCallback(async () => {
@@ -1367,6 +1670,25 @@ function Studio() {
     setBars((prev) => mergeLiveBar(prev, bar));
   }, []);
 
+  // UI-4g-2: writes the ACTIVE chart's symbol/interval/type/settings into
+  // its own WidgetInstance.chartConfig in the tree whenever any of them
+  // change — the mechanism that makes each chart's config part of the
+  // persisted WorkspaceLayout itself (so it round-trips through the
+  // existing UI-4d autosave to localStorage AND, once signed in, the
+  // Supabase `workspace_layouts` row) rather than page-level state only.
+  // Deliberately does NOT bump layoutKey — this is a content update within
+  // an existing node, not a wholesale tree-shape replacement.
+  useEffect(() => {
+    setLayout((prev) =>
+      updateChartConfig(prev, activeChartInstanceId, {
+        symbol,
+        interval,
+        chartType,
+        settings: chartSettings as unknown as Record<string, unknown>,
+      }),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeChartInstanceId, symbol, interval, chartType, chartSettings]);
 
   // ---- drawings persistence ----------------------------------------------
   useEffect(() => {
@@ -2207,33 +2529,47 @@ function Studio() {
   };
 
   // UI-4g-1: the chart-area leaf's real instanceId from the tree, not a
-  // hardcoded literal — this is what makes chartInstances genuinely
-  // instance-keyed rather than a relabeled singleton. Falls back to a stable
-  // literal only if the leaf is ever somehow missing its one tab (shouldn't
-  // happen — chart-area is a protected leaf with a structural floor of 1).
-  const chartInstanceId = useMemo(() => {
-    const node = findNodeById(layout.root, WELL_KNOWN_NODE_IDS.chartArea);
-    return node && node.kind === "tabs" ? node.tabs[0]?.instanceId ?? "chart-1" : "chart-1";
-  }, [layout]);
-  const chartInstances = useMemo<Record<string, ChartInstanceState>>(
-    () => ({
-      [chartInstanceId]: { symbol, interval, chartType, chartSettings, indicators, bars, drawings },
-    }),
-    [chartInstanceId, symbol, interval, chartType, chartSettings, indicators, bars, drawings],
+  // hardcoded literal. UI-4g-2: this is now specifically "which chart is the
+  // ACTIVE one" — the toolbar/backtest-overlay/Code-Editor machinery below
+  // stays scoped to whichever chart the user last interacted with, exactly
+  // matching the approved "active chart" concept, not necessarily the one
+  // sitting in chart-area (a second chart can be active instead once one
+  // exists). Falls back to `activeChartInstanceId`'s own default if the tree
+  // doesn't (yet) contain it for some reason.
+  const chartInstanceId = activeChartInstanceId;
+  const chartInstancesInTreeCount = useMemo(
+    () => collectWidgetTypeIds(layout.root).filter((id) => id === "chart").length,
+    [layout],
   );
-  // UI-4g-1 has exactly one entry — this read exists so renderChartArea (and
-  // its UI-4g-2 successor, once a second chart-hosting leaf can exist) goes
-  // through the instance-keyed record rather than the flat variables
-  // directly, even though today they're the same values.
-  const activeChartInstance = chartInstances[chartInstanceId];
 
-  const renderChartArea = () => (
+  /**
+   * UI-4g-2: renders ONE chart leaf, for ANY chart-hosting node in the tree
+   * — not just chart-area. When `instanceId` is the active chart, this is
+   * the full-featured path (backtest overlay markers, trade-line dragging,
+   * right-click order planning, Code-Editor coupling — all the existing,
+   * deeply page-level-state-entangled machinery already built for "the
+   * chart" over UI-1 through UI-4f, now correctly scoped to whichever chart
+   * is active via the `activeChartState`/`symbol`/`indicators`/etc. shims
+   * defined above). A NON-active chart renders through the simpler
+   * `renderInactiveChartLeaf` below instead — its own bars/indicators/
+   * symbol/interval/drawings are still genuinely independent (read straight
+   * from `chartStatesMap[instanceId]`), but it doesn't carry the
+   * backtest-overlay/trade-planning wiring, since that's a single-active-
+   * chart concept by design; clicking into it makes it active, at which
+   * point it gains full access to everything below.
+   */
+  const renderChartLeaf = (instanceId: string, nodeId: string) => {
+    if (instanceId !== activeChartInstanceId) {
+      return renderInactiveChartLeaf(instanceId, nodeId);
+    }
+    const activeChartInstance = chartStatesMap[instanceId] ?? DEFAULT_CHART_RUNTIME_STATE;
+    return (
     <div
       className={`relative min-h-0 overflow-hidden ${
         dockState === "maximized" ? "flex-none basis-14" : "flex-1"
-      }`}
+      } ${chartInstancesInTreeCount > 1 ? "ring-1 ring-brand/60" : ""}`}
     >
-      {renderDropOverlay(WELL_KNOWN_NODE_IDS.chartArea)}
+      {renderDropOverlay(nodeId)}
       <ChartLegendStrip
         symbol={activeChartInstance.symbol}
         intervalLabel={timeframeLabel(activeChartInstance.interval)}
@@ -2283,6 +2619,18 @@ function Studio() {
           builtKeyRef.current = null;
         }}
       />
+      {chartInstancesInTreeCount > 1 && (
+        <button
+          title="Close chart"
+          onClick={(e) => {
+            e.stopPropagation();
+            closeChartInstance(instanceId, nodeId);
+          }}
+          className="absolute right-1 top-1 z-30 flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-destructive"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      )}
       {barsError ? (
         <div className="flex h-full items-center justify-center text-xs text-destructive">
           {barsError}
@@ -2405,7 +2753,108 @@ function Studio() {
         </>
       )}
     </div>
-  );
+    );
+  };
+
+  /**
+   * UI-4g-2: a chart that ISN'T currently active — a simpler, genuinely
+   * independent view (own bars/indicators/symbol/interval/drawings, own
+   * WebSocket subscription via <ChartInstance>) without the backtest-
+   * overlay/trade-line/order-planning wiring the active chart carries
+   * (those are single-active-chart concepts by design). Clicking anywhere
+   * in the pane activates it; a corner close button (only shown once more
+   * than one chart exists) removes it via the same protected mutators
+   * every other widget close already goes through.
+   */
+  const renderInactiveChartLeaf = (instanceId: string, nodeId: string) => {
+    const inst = chartStatesMap[instanceId] ?? DEFAULT_CHART_RUNTIME_STATE;
+    return (
+      <div
+        className="relative min-h-0 flex-1 overflow-hidden"
+        onMouseDownCapture={() => setActiveChartInstanceId(instanceId)}
+      >
+        {renderDropOverlay(nodeId)}
+        <ChartLegendStrip
+          symbol={inst.symbol}
+          intervalLabel={timeframeLabel(inst.interval)}
+          crosshair={null}
+          latestBar={inst.bars.length ? inst.bars[inst.bars.length - 1] : null}
+          indicators={inst.indicators.map((i) => ({
+            key: i.key,
+            name: i.name,
+            visible: i.visible,
+            inputs: i.result.inputs,
+          }))}
+          editingKey={null}
+          onSelectIndicator={() => setActiveChartInstanceId(instanceId)}
+          onToggleVisible={(key) =>
+            setChartField(instanceId, "indicators", (prev) =>
+              prev.map((p) => (p.key === key ? { ...p, visible: !p.visible } : p)),
+            )
+          }
+          onRemoveIndicator={(key) =>
+            setChartField(instanceId, "indicators", (prev) => prev.filter((p) => p.key !== key))
+          }
+          onOpenSettings={() => setActiveChartInstanceId(instanceId)}
+          onPickTemplate={() => setActiveChartInstanceId(instanceId)}
+        />
+        {chartInstancesInTreeCount > 1 && (
+          <button
+            title="Close chart"
+            onClick={(e) => {
+              e.stopPropagation();
+              closeChartInstance(instanceId, nodeId);
+            }}
+            className="absolute right-1 top-1 z-30 flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-destructive"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        )}
+        {inst.barsError ? (
+          <div className="flex h-full items-center justify-center text-xs text-destructive">
+            {inst.barsError}
+          </div>
+        ) : (
+          <ChartInstance
+            instanceId={instanceId}
+            symbol={inst.symbol}
+            interval={inst.interval}
+            live={live}
+            onLiveBar={(bar) => {
+              setChartField(instanceId, "bars", (prev) => mergeLiveBar(prev, bar));
+            }}
+            onStatusChange={() => {}}
+          >
+            <StudioChart
+              bars={inst.bars}
+              indicators={inst.indicators}
+              tool="cursor"
+              drawings={inst.drawings}
+              onAddDrawing={(d) => setChartField(instanceId, "drawings", (prev) => [...prev, d])}
+              onRemoveDrawing={(id) =>
+                setChartField(instanceId, "drawings", (prev) => prev.filter((d) => d.id !== id))
+              }
+              onUpdateDrawing={(updated) =>
+                setChartField(instanceId, "drawings", (prev) =>
+                  prev.map((d) => (d.id === updated.id ? updated : d)),
+                )
+              }
+              selectedId={null}
+              onSelectDrawing={() => {}}
+              hasOscPane={inst.indicators.some((i) => i.result.plots.some((p) => p.pane === "osc"))}
+              instrument={{
+                tickSize: getInstrument(inst.symbol).tickSize,
+                valuePerPoint: pnlPerUnit(getInstrument(inst.symbol), 1),
+              }}
+              chartType={inst.chartType}
+              settings={inst.chartSettings}
+              onCrosshair={() => {}}
+            />
+          </ChartInstance>
+        )}
+      </div>
+    );
+  };
 
   const renderBottomDock = () => (
     <section
@@ -2559,6 +3008,23 @@ function Studio() {
             <Copy className="h-3.5 w-3.5" />
           )}
         </button>
+        {chartInstancesInTreeCount > 1 && (
+          <select
+            title="Which chart Add to Chart / indicator edits apply to"
+            value={activeChartInstanceId}
+            onChange={(e) => setActiveChartInstanceId(e.target.value)}
+            className="h-7 rounded-[6px] border border-border bg-card px-1.5 text-[11px] outline-none focus:border-brand"
+          >
+            {Object.keys(chartStatesMap).map((id, i) => {
+              const s = chartStatesMap[id];
+              return (
+                <option key={id} value={id}>
+                  {`Chart ${i + 1} — ${s.symbol} ${timeframeLabel(s.interval)}`}
+                </option>
+              );
+            })}
+          </select>
+        )}
         <button
           onClick={addToChart}
           disabled={running || translating || bars.length === 0}
@@ -3271,7 +3737,13 @@ function Studio() {
   );
 
   const renderLeaf = (node: LayoutNode & { kind: "tabs" }) => {
-    if (node.id === WELL_KNOWN_NODE_IDS.chartArea) return renderChartArea();
+    // UI-4g-2: a chart-hosting leaf is recognized by CONTENT (does it hold a
+    // "chart" tab), not just the well-known chart-area id -- a second chart
+    // created via "Add Chart" lives in a freshly-generated "pane-<uuid>"
+    // leaf, not chart-area, and still needs the real chart-rendering path,
+    // not renderGenericLeaf (built only for the 4 simple portable widgets).
+    const chartTab = node.tabs.find((t) => t.widgetTypeId === "chart");
+    if (chartTab) return renderChartLeaf(chartTab.instanceId, node.id);
     if (node.id === WELL_KNOWN_NODE_IDS.bottomDock) return renderBottomDock();
     if (node.id === WELL_KNOWN_NODE_IDS.rightSidebar) return renderRightSidebar();
     // UI-4f-4: any other leaf is a real, user-created split pane (edge-drop)
@@ -3652,6 +4124,18 @@ function Studio() {
             ) : (
               <PanelRightOpen className="h-3.5 w-3.5" />
             )}
+          </button>
+          <button
+            title={
+              chartInstancesInTreeCount >= 4
+                ? "Chart limit reached (4/4)"
+                : "Add chart — a new independent chart pane"
+            }
+            disabled={chartInstancesInTreeCount >= 4}
+            onClick={addChartInstance}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[6px] hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
+          >
+            <Plus className="h-3.5 w-3.5" />
           </button>
           <LayoutMenu
             layouts={workspaceStore.layouts}

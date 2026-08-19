@@ -12,7 +12,14 @@
  */
 
 import type { LayoutNode, WidgetInstance, WidgetTypeId, WorkspaceLayout } from "./types";
-import { collapseEmptyNodes, findNodeById, isProtectedLeaf, regionKindForNodeId } from "./types";
+import {
+  collapseEmptyNodes,
+  countInstancesOfType,
+  findNodeById,
+  isProtectedLeaf,
+  regionKindForNodeId,
+  wouldLeaveNoInstancesOfType,
+} from "./types";
 import { getWidgetDef } from "./widgetRegistry";
 
 function mapNode(node: LayoutNode, id: string, fn: (n: LayoutNode) => LayoutNode): LayoutNode {
@@ -61,10 +68,17 @@ export function addWidgetToNode(
   if (def.availability !== "available") return layout;
   const region = regionKindForNodeId(nodeId);
   if (region && !def.renderableRegions.includes(region)) return layout;
+  // UI-4g-2: `allowMultipleInstances` was inert scaffolding until now — a
+  // multi-instance-capable type (chart) may legitimately already be open
+  // elsewhere in the tree; only a single-instance type is blocked by
+  // already being open in THIS node (checked inline below). The maxInstances
+  // cap is enforced by dedicated creation paths (see `createChartInstance`),
+  // not here — this function's own guard is about tab-duplication within one
+  // node, not the cross-tree cap.
   const instanceId = `${widgetTypeId}-${crypto.randomUUID()}`;
   const root = mapNode(layout.root, nodeId, (n) => {
     if (n.kind !== "tabs") return n;
-    if (n.tabs.some((t) => t.widgetTypeId === widgetTypeId)) return n; // already open here
+    if (!def.allowMultipleInstances && n.tabs.some((t) => t.widgetTypeId === widgetTypeId)) return n;
     return { ...n, tabs: [...n.tabs, { instanceId, widgetTypeId }], activeInstanceId: instanceId };
   });
   return withRoot(layout, root);
@@ -92,6 +106,11 @@ export function removeWidgetFromNode(
     const idx = n.tabs.findIndex((t) => t.instanceId === instanceId);
     if (idx === -1) return n;
     if (n.tabs[idx].pinned) return n;
+    const target = n.tabs[idx];
+    const def = getWidgetDef(target.widgetTypeId);
+    if (def.allowMultipleInstances && wouldLeaveNoInstancesOfType(layout.root, instanceId, target.widgetTypeId)) {
+      return n; // would leave zero instances of a multi-instance type (e.g. the last chart)
+    }
     const tabs = n.tabs.filter((t) => t.instanceId !== instanceId);
     const activeInstanceId =
       n.activeInstanceId === instanceId ? neighborAfterRemoval(n.tabs, idx) : n.activeInstanceId;
@@ -219,6 +238,12 @@ export function moveWidgetBetweenNodes(
     return layout; // already open in the destination
   }
 
+  // UI-4g-2: no "would strand the last instance of a type" check here (unlike
+  // removeWidgetFromNode) — a move RELOCATES an instance, it never deletes
+  // one, so the total count of that widget type in the tree is unchanged
+  // before/after. Moving the only chart from the sidebar into the dock is
+  // completely fine; it's still exactly one chart, just living somewhere
+  // else. Only actual deletion needs that protection.
   const protectedSource = isProtectedLeaf(fromNodeId);
   let moving: WidgetInstance | null = null;
   const afterRemoval = mapNode(layout.root, fromNodeId, (n) => {
@@ -350,4 +375,102 @@ export function splitLeafWithWidget(
   const afterSplit = replaceTargetWithSplit(afterRemoval);
   const collapsedRoot = collapseEmptyNodes(afterSplit) ?? afterSplit;
   return withCollapsedRoot(layout, collapsedRoot);
+}
+
+/**
+ * UI-4g-2: creates a brand-new instance of `widgetTypeId` and wraps
+ * `targetNodeId` in a new split pane holding it — the "Add Chart" creation
+ * path. Unlike `splitLeafWithWidget`, there's no existing tab to drag: the
+ * first additional chart instance has nothing to drag FROM (only one chart
+ * exists until this runs), so this creates the instance directly instead of
+ * relocating one. Enforces `availability`, `allowMultipleInstances` (a
+ * single-instance type already open anywhere is rejected, mirroring
+ * `addWidgetToNode`'s within-node check but across the whole tree, since
+ * this always creates a new pane rather than adding a tab to an existing
+ * one), and `maxInstances` (the 4-chart cap) — all three checked here, not
+ * just in the UI, so they can't be bypassed by calling this directly.
+ * Returns the new instance's id alongside the layout so the caller can
+ * immediately make it active.
+ */
+export function createInstanceAsNewPane(
+  layout: WorkspaceLayout,
+  widgetTypeId: WidgetTypeId,
+  targetNodeId: string,
+  edge: DropEdge,
+  chartConfig?: WidgetInstance["chartConfig"],
+): { layout: WorkspaceLayout; instanceId: string | null } {
+  const def = getWidgetDef(widgetTypeId);
+  if (def.availability !== "available") return { layout, instanceId: null };
+  const existingCount = countInstancesOfType(layout.root, widgetTypeId);
+  if (!def.allowMultipleInstances && existingCount > 0) return { layout, instanceId: null };
+  if (def.maxInstances && existingCount >= def.maxInstances) return { layout, instanceId: null };
+  const target = mapNodeReadOnly(layout.root, targetNodeId);
+  if (!target || target.kind !== "tabs") return { layout, instanceId: null };
+
+  const instanceId = `${widgetTypeId}-${crypto.randomUUID()}`;
+  const newLeaf: LayoutNode = {
+    kind: "tabs",
+    id: `pane-${crypto.randomUUID()}`,
+    tabs: [{ instanceId, widgetTypeId, chartConfig }],
+    activeInstanceId: instanceId,
+  };
+  const direction: "row" | "column" = edge === "left" || edge === "right" ? "row" : "column";
+  const newLeafFirst = edge === "left" || edge === "top";
+
+  function replaceTargetWithSplit(node: LayoutNode): LayoutNode {
+    if (node.kind === "tabs") return node;
+    let changed = false;
+    const children = node.children.map((c) => {
+      if (c.id === targetNodeId) {
+        changed = true;
+        const pair = newLeafFirst ? [newLeaf, c] : [c, newLeaf];
+        const split: LayoutNode = {
+          kind: "split",
+          id: `split-${crypto.randomUUID()}`,
+          direction,
+          sizes: [0.5, 0.5],
+          children: pair,
+        };
+        return split;
+      }
+      const next = replaceTargetWithSplit(c);
+      if (next !== c) changed = true;
+      return next;
+    });
+    return changed ? { ...node, children } : node;
+  }
+
+  const nextRoot = replaceTargetWithSplit(layout.root);
+  return { layout: withRoot(layout, nextRoot), instanceId };
+}
+
+/**
+ * UI-4g-2: writes `chartConfig` onto a specific chart instance's tree entry
+ * — the mechanism that makes each chart's symbol/interval/type/settings
+ * part of the persisted WorkspaceLayout itself (so a signed-in cloud sync
+ * restores every chart, not just the active one) rather than page-level
+ * state only. No-op if the instance can't be found.
+ */
+export function updateChartConfig(
+  layout: WorkspaceLayout,
+  instanceId: string,
+  chartConfig: WidgetInstance["chartConfig"],
+): WorkspaceLayout {
+  function walk(node: LayoutNode): LayoutNode {
+    if (node.kind === "tabs") {
+      if (!node.tabs.some((t) => t.instanceId === instanceId)) return node;
+      return {
+        ...node,
+        tabs: node.tabs.map((t) => (t.instanceId === instanceId ? { ...t, chartConfig } : t)),
+      };
+    }
+    let changed = false;
+    const children = node.children.map((c) => {
+      const next = walk(c);
+      if (next !== c) changed = true;
+      return next;
+    });
+    return changed ? { ...node, children } : node;
+  }
+  return withRoot(layout, walk(layout.root));
 }

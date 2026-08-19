@@ -52,6 +52,15 @@ export type WidgetTypeDef = {
    */
   allowMultipleInstances?: boolean;
   /**
+   * UI-4g-2: hard ceiling on simultaneous instances of this widget type
+   * anywhere in the tree, when `allowMultipleInstances` is true (meaningless
+   * otherwise). Chart is the only widget this applies to today (4, per the
+   * approved multi-chart cap) — a generic field rather than a chart-specific
+   * one so it isn't a hardcoded special case, enforced by the mutators in
+   * mutations.ts (not just the UI) so it can't be bypassed.
+   */
+  maxInstances?: number;
+  /**
    * Why this widget isn't real yet — the shared coming-soon placeholder's
    * entire UI is this string. Never render fabricated data for a
    * "coming-soon" widget; this is the honest substitute for that.
@@ -87,6 +96,23 @@ export type WidgetInstance = {
    * bypassed by calling the mutator directly.
    */
   pinned?: boolean;
+  /**
+   * UI-4g-2: this instance's own runtime config, persisted in the tree
+   * itself (not page-level-only state) so a saved layout — local OR the
+   * signed-in Supabase `workspace_layouts` row, both just an opaque JSON
+   * blob — can restore each chart's own symbol/timeframe/type/settings
+   * independently on reload or on a different device. Only meaningful for
+   * `widgetTypeId === "chart"`; every other widget type still has none.
+   * Deliberately loose/untyped here (`unknown` for `settings`) — this file
+   * stays workspace-generic and doesn't import studio.tsx's `ChartSettings`
+   * shape; the caller narrows/validates it.
+   */
+  chartConfig?: {
+    symbol: string;
+    interval: string;
+    chartType?: string;
+    settings?: Record<string, unknown>;
+  };
 };
 
 export type LayoutNode =
@@ -197,15 +223,47 @@ export function regionKindForNodeId(nodeId: string): "sidebar" | "dock" | null {
 
 /**
  * Leaves that must never structurally disappear from the tree via a widget
- * move/removal (UI-4f-3): the two permanent chrome regions, and the sole
- * chart pane — multi-chart isn't supported yet, so chart-area losing its one
- * tab would break the app outright, not just look different. Each keeps a
+ * move/removal (UI-4f-3): the two permanent chrome regions. Each keeps a
  * hard floor of 1 remaining tab, enforced by the mutators in mutations.ts;
  * any other leaf id may legitimately empty out and collapse away instead —
  * see `collapseEmptyNodes`.
+ *
+ * UI-4g-2: `chart-area` is deliberately NOT listed here anymore — with
+ * multiple chart instances possible, chart-area is just an ordinary leaf
+ * that happens to hold one of them; a chart being dragged/edge-dropped out
+ * of it and into a new pane must be able to empty it and collapse it away
+ * exactly like any other non-permanent leaf. What's actually protected now
+ * is "the last remaining chart instance anywhere in the tree" — a
+ * cross-tree, instance-count rule, not a specific node id. See
+ * `wouldLeaveNoInstancesOfType`, checked by the mutators alongside this.
  */
 export function isProtectedLeaf(nodeId: string): boolean {
-  return regionKindForNodeId(nodeId) !== null || nodeId === WELL_KNOWN_NODE_IDS.chartArea;
+  return regionKindForNodeId(nodeId) !== null;
+}
+
+/** Total tabs anywhere in the tree whose `widgetTypeId` matches. */
+export function countInstancesOfType(root: LayoutNode, widgetTypeId: WidgetTypeId): number {
+  return collectWidgetTypeIds(root).filter((id) => id === widgetTypeId).length;
+}
+
+/**
+ * UI-4g-2: true if removing `instanceId` (a widget of type `widgetTypeId`)
+ * would leave zero instances of that type anywhere in the tree. Only ever
+ * meaningful for multi-instance-capable types (today, only `chart` —
+ * everything else already has exactly one instance or none) — for a
+ * single-instance type this is equivalent to "is this the only one," which
+ * is already true by construction, so callers only need to invoke this for
+ * types where more than one could legitimately exist. Losing the last chart
+ * would break the app outright (nothing left to show bars/indicators on),
+ * not just look different — this is the multi-chart-era equivalent of what
+ * `chart-area`'s old node-based protection used to guarantee.
+ */
+export function wouldLeaveNoInstancesOfType(
+  root: LayoutNode,
+  instanceId: string,
+  widgetTypeId: WidgetTypeId,
+): boolean {
+  return countInstancesOfType(root, widgetTypeId) <= 1;
 }
 
 /**

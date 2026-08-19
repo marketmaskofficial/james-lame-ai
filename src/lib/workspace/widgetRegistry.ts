@@ -18,8 +18,12 @@ export const WIDGET_REGISTRY: Record<WidgetTypeId, WidgetTypeDef> = {
     category: "core",
     availability: "available",
     allowMultipleInstances: true,
-    // Not placeable via the sidebar/dock add-widget system at all (it's the
-    // fixed chart-area node) — value is unused but structurally required.
+    // UI-4g-2: approved cap on simultaneous chart instances — enforced by
+    // createInstanceAsNewPane in mutations.ts, not just the UI.
+    maxInstances: 4,
+    // Not placeable via the sidebar/dock add-widget system at all (it's not
+    // one of the two capability-gated regions) — value is unused but
+    // structurally required by the type.
     renderableRegions: ["dock"],
   },
   watchlist: {
