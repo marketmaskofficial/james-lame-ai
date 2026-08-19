@@ -48,6 +48,31 @@ type LayoutTreeProps = {
   /** Per-child maximum pane size, same units as `minSizeForChild` — e.g.
    * reproduces the sidebar's pre-UI-4f-2 420px upper clamp. */
   maxSizeForChild?: (childId: string) => string | number | undefined;
+  /**
+   * UI-4f-5: for a non-resizable ("plain") split that sits on the ancestor
+   * path to a maximized/collapsed leaf, which of ITS children is the one
+   * still on that path — the other child(ren) get visually suppressed
+   * (`hidden`) instead of sharing space, the same "the other one shrinks to
+   * nothing, this one gets everything" intent chart-area/bottom-dock's own
+   * CSS already expresses for the two originally-anticipated regions, now
+   * generalized so it still holds when edge-drop has inserted a new plain
+   * split between a well-known leaf and its ancestor. A plain split NOT on
+   * any active maximize/collapse path (this map has no entry for its id)
+   * renders every child normally, unchanged from UI-4f-1/4f-2 behavior.
+   */
+  emphasizedChildOf?: ReadonlyMap<string, string>;
+  /**
+   * UI-4f-5: child ids that must never get the `emphasizedChildOf` hidden
+   * treatment even when they're the non-emphasized sibling in a plain split
+   * — chart-area is the one well-known leaf this can legitimately happen to
+   * (it sits beside whatever's on the dock's maximize path), and it already
+   * has its own deliberate, correct "shrink to a basis-14 sliver but stay
+   * visible" CSS, driven by its own render function — this opt-out keeps
+   * that intact instead of the new generic suppression silently overriding
+   * it. Caller-supplied (studio.tsx knows well-known ids; LayoutTree stays
+   * generic and doesn't hardcode any itself, per its own design principle).
+   */
+  neverSuppressChildIds?: ReadonlySet<string>;
 };
 
 function PlainSplit({
@@ -57,7 +82,10 @@ function PlainSplit({
   onResizeCommit,
   minSizeForChild,
   maxSizeForChild,
+  emphasizedChildOf,
+  neverSuppressChildIds,
 }: LayoutTreeProps & { node: SplitNode }) {
+  const emphasized = emphasizedChildOf?.get(node.id);
   return (
     <div
       className={`flex min-h-0 min-w-0 flex-1 ${
@@ -65,15 +93,25 @@ function PlainSplit({
       }`}
     >
       {node.children.map((child) => (
-        <LayoutTree
+        <div
           key={child.id}
-          node={child}
-          renderLeaf={renderLeaf}
-          nonResizableSplitIds={nonResizableSplitIds}
-          onResizeCommit={onResizeCommit}
-          minSizeForChild={minSizeForChild}
-          maxSizeForChild={maxSizeForChild}
-        />
+          className={
+            emphasized && child.id !== emphasized && !neverSuppressChildIds?.has(child.id)
+              ? "hidden"
+              : "flex min-h-0 min-w-0 flex-1 flex-col"
+          }
+        >
+          <LayoutTree
+            node={child}
+            renderLeaf={renderLeaf}
+            nonResizableSplitIds={nonResizableSplitIds}
+            onResizeCommit={onResizeCommit}
+            minSizeForChild={minSizeForChild}
+            maxSizeForChild={maxSizeForChild}
+            emphasizedChildOf={emphasizedChildOf}
+            neverSuppressChildIds={neverSuppressChildIds}
+          />
+        </div>
       ))}
     </div>
   );
@@ -86,6 +124,8 @@ function ResizableSplit({
   onResizeCommit,
   minSizeForChild,
   maxSizeForChild,
+  emphasizedChildOf,
+  neverSuppressChildIds,
 }: LayoutTreeProps & { node: SplitNode }) {
   const isRow = node.direction === "row";
   const equalShare = 100 / node.children.length;
@@ -123,6 +163,8 @@ function ResizableSplit({
               onResizeCommit={onResizeCommit}
               minSizeForChild={minSizeForChild}
               maxSizeForChild={maxSizeForChild}
+              emphasizedChildOf={emphasizedChildOf}
+              neverSuppressChildIds={neverSuppressChildIds}
             />
           </Panel>
         </Fragment>

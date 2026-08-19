@@ -163,6 +163,27 @@ export function findNodeById(node: LayoutNode, id: string): LayoutNode | null {
 }
 
 /**
+ * UI-4f-5: the full id path from `root` down to (and including) `leafId`, or
+ * null if not found. Maximize/collapse originally assumed a leaf's only
+ * ancestor was one fixed, well-known split id (`chart-column` for the dock,
+ * `workspace-root` for the sidebar) — true when nothing else could nest
+ * between them. Edge-drop (UI-4f-4) breaks that assumption: it can wrap
+ * `bottom-dock` or `right-sidebar` in a brand-new split with a generated id,
+ * which the old hardcoded check had no way to know about. This walks the
+ * REAL tree instead, so the caller can make every ancestor along the actual
+ * path non-resizable and know which child at each level to keep emphasized
+ * — not just the two originally-anticipated cases.
+ */
+export function pathToLeaf(root: LayoutNode, leafId: string): string[] | null {
+  if (root.kind === "tabs") return root.id === leafId ? [root.id] : null;
+  for (const child of root.children) {
+    const sub = pathToLeaf(child, leafId);
+    if (sub) return [root.id, ...sub];
+  }
+  return null;
+}
+
+/**
  * Maps a "tabs" node id to the capability-region label a WidgetTypeDef's
  * `renderableRegions` speaks in. Returns null for node ids that aren't one
  * of the two customizable regions (e.g. the fixed chart area) — capability

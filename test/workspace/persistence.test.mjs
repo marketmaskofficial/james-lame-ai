@@ -324,6 +324,157 @@ function withWarnCapture(fn) {
   ok("sanity: the real Beginner preset survives a JSON + safeParse round-trip intact", node && node.tabs.length === 4);
 }
 
+// ---- UI-4f-5: genuinely deep, drag-created topologies ----------------------
+// Built with the real mutators (mutations.ts), not hand-typed JSON — closer
+// to what an actual user session produces: edge-drop a pane, edge-drop AGAIN
+// into that new pane (3+ levels of real nesting), center-drop a tab, close
+// one pane. The specific risk being checked: a repair function tuned against
+// the simple 2-level default shape could misfire against a legitimately
+// deeper one it's never seen before — normalizeLegacyTopology only pattern-
+// matches an EXACT old shape at the root and leaves anything else alone, and
+// repairNode/collapseEmptyNodes are plain unbounded recursion, so neither
+// should care how deep the real structure goes; this proves it, not just
+// asserts it.
+
+const {
+  addWidgetToNode,
+  moveWidgetBetweenNodes,
+  removeWidgetFromNode,
+  splitLeafWithWidget,
+} = await import("../../src/lib/workspace/mutations.ts");
+
+function buildDeepDragCreatedLayout() {
+  let layout = JSON.parse(JSON.stringify(PRESETS.beginner));
+  // Find a real instanceId for a portable widget (alerts) already open in
+  // the sidebar, and for one already open in the dock, rather than assuming
+  // hardcoded ids the mutators don't actually generate.
+  const sidebar = findNodeById(layout.root, WELL_KNOWN_NODE_IDS.rightSidebar);
+  const alertsInstanceId = sidebar.tabs.find((t) => t.widgetTypeId === "alerts").instanceId;
+
+  // Level 3: edge-drop Alerts onto the LEFT of the dock -> wraps bottom-dock
+  // in a brand-new split, with a fresh "pane-*" leaf holding Alerts.
+  layout = splitLeafWithWidget(layout, alertsInstanceId, WELL_KNOWN_NODE_IDS.rightSidebar, WELL_KNOWN_NODE_IDS.bottomDock, "left");
+  const chartColumn = findNodeById(layout.root, WELL_KNOWN_NODE_IDS.chartColumn);
+  const wrappingSplit = chartColumn.children.find((c) => c.kind === "split");
+  ok("deep-tree: first edge-drop actually created a new split", !!wrappingSplit);
+  const newAlertsPane = wrappingSplit.children.find(
+    (c) => c.kind === "tabs" && c.tabs.some((t) => t.widgetTypeId === "alerts"),
+  );
+  ok("deep-tree: the new pane holding Alerts exists", !!newAlertsPane);
+
+  // Level 4: add Watchlist into that SAME new pane via center-drop-equivalent
+  // (moveWidgetBetweenNodes), then re-add AI to the sidebar to keep it
+  // non-empty for later steps, and edge-drop AI's OWN watchlist-alerts pane
+  // again to go one level deeper still.
+  layout = addWidgetToNode(layout, newAlertsPane.id, "watchlist");
+  const aiInstanceId = findNodeById(layout.root, WELL_KNOWN_NODE_IDS.rightSidebar).tabs.find(
+    (t) => t.widgetTypeId === "ai-builder",
+  ).instanceId;
+  layout = splitLeafWithWidget(layout, aiInstanceId, WELL_KNOWN_NODE_IDS.rightSidebar, newAlertsPane.id, "bottom");
+
+  return layout;
+}
+
+{
+  const deep = buildDeepDragCreatedLayout();
+  const widgetIds = collectDepth(deep.root);
+  ok("deep-tree: fixture actually reaches 4+ levels of real nesting", widgetIds.maxDepth >= 4);
+
+  const roundTripped = safeParseWorkspaceLayout(JSON.parse(JSON.stringify(deep)));
+  check("deep-tree: a legitimately deep drag-created layout round-trips its tree exactly", roundTripped.root, deep.root);
+
+  const roundTrippedDepth = collectDepth(roundTripped.root).maxDepth;
+  check("deep-tree: repair doesn't flatten or alter the depth of a valid deep tree", roundTrippedDepth, widgetIds.maxDepth);
+}
+
+function collectDepth(node, depth = 1) {
+  if (node.kind === "tabs") return { maxDepth: depth, widgetTypeIds: node.tabs.map((t) => t.widgetTypeId) };
+  let maxDepth = depth;
+  const widgetTypeIds = [];
+  for (const child of node.children) {
+    const sub = collectDepth(child, depth + 1);
+    maxDepth = Math.max(maxDepth, sub.maxDepth);
+    widgetTypeIds.push(...sub.widgetTypeIds);
+  }
+  return { maxDepth, widgetTypeIds };
+}
+
+{
+  // A since-removed widget type nested at the DEEPEST level of a real
+  // drag-created tree (not just the top level) must still be found and
+  // stripped, and the surrounding structure must still collapse/renormalize
+  // correctly around the gap it leaves.
+  const deep = buildDeepDragCreatedLayout();
+  const corrupted = JSON.parse(JSON.stringify(deep));
+  // Corrupt the deepest tab found (the AI-builder pane's own tab) to an
+  // unknown widget type.
+  function corruptDeepest(node) {
+    if (node.kind === "tabs") {
+      node.tabs.forEach((t) => {
+        if (t.widgetTypeId === "ai-builder") t.widgetTypeId = "removed-widget-type-xyz";
+      });
+      return;
+    }
+    node.children.forEach(corruptDeepest);
+  }
+  corruptDeepest(corrupted.root);
+
+  const repaired = withWarnCapture(() => safeParseWorkspaceLayout(corrupted));
+  const stillHasBadType = collectDepth(repaired.root).widgetTypeIds.includes("removed-widget-type-xyz");
+  ok("deep-tree: a since-removed widget type nested at the deepest level is stripped, not just at the top", !stillHasBadType);
+  const validTypes = collectDepth(repaired.root).widgetTypeIds;
+  ok("deep-tree: every other widget at every depth survives the repair", validTypes.includes("watchlist") && validTypes.includes("alerts"));
+}
+
+{
+  // The cloud-sync path: a deep drag-created tree serialized exactly the way
+  // a Supabase jsonb column round-trips it (JSON.stringify then JSON.parse,
+  // no special handling), fed through the same safeParseWorkspaceLayout gate
+  // studio.tsx's listWorkspaceLayouts result flows through. Verified at the
+  // unit level without a real auth session, the same approach UI-4d's own
+  // suite already uses for this exact limitation.
+  const deep = buildDeepDragCreatedLayout();
+  const cloudShaped = JSON.parse(JSON.stringify({ ...deep, id: "cloud-row-123", name: "My Cloud Layout" }));
+  const result = safeParseWorkspaceLayout(cloudShaped);
+  check("cloud-shaped: a deep tree serialized like a jsonb column round-trips identically to the local path", result.root, deep.root);
+  check("cloud-shaped: the row's id survives", result.id, "cloud-row-123");
+  check("cloud-shaped: the row's name survives", result.name, "My Cloud Layout");
+}
+
+{
+  // Pre-UI-4f-1 legacy topology, reconfirmed still works after 4f-2/4f-3/4f-4.
+  const legacy = {
+    version: 1,
+    name: "Old Shape",
+    root: {
+      kind: "split",
+      id: WELL_KNOWN_NODE_IDS.root,
+      direction: "column",
+      sizes: [0.78, 0.22],
+      children: [
+        {
+          kind: "split",
+          id: WELL_KNOWN_NODE_IDS.mainRow,
+          direction: "row",
+          sizes: [0.82, 0.18],
+          children: [
+            { kind: "tabs", id: WELL_KNOWN_NODE_IDS.chartArea, tabs: [{ instanceId: "chart-1", widgetTypeId: "chart" }], activeInstanceId: "chart-1" },
+            { kind: "tabs", id: WELL_KNOWN_NODE_IDS.rightSidebar, tabs: [{ instanceId: "watchlist-1", widgetTypeId: "watchlist" }], activeInstanceId: "watchlist-1" },
+          ],
+        },
+        { kind: "tabs", id: WELL_KNOWN_NODE_IDS.bottomDock, tabs: [{ instanceId: "code-1", widgetTypeId: "code-editor" }], activeInstanceId: "code-1" },
+      ],
+    },
+    maximizedNodeId: null,
+    collapsedNodeIds: [],
+  };
+  const repaired = safeParseWorkspaceLayout(legacy);
+  const newShapeRoot = findNodeById(repaired.root, WELL_KNOWN_NODE_IDS.chartColumn);
+  ok("legacy topology: still recognized and rewritten to the new chart-column shape after 4f-2/4f-3/4f-4", !!newShapeRoot);
+  ok("legacy topology: chart-area survives under the new shape", !!findNodeById(repaired.root, WELL_KNOWN_NODE_IDS.chartArea));
+  ok("legacy topology: bottom-dock survives under the new shape", !!findNodeById(repaired.root, WELL_KNOWN_NODE_IDS.bottomDock));
+}
+
 // ---- summary ----------------------------------------------------------------
 
 console.log(`\n${pass}/${pass + fail} passed`);

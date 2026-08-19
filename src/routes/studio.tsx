@@ -117,6 +117,7 @@ import { track } from "@/lib/telemetry";
 import type { AccountSnapshot, TradingAccount } from "@/lib/trading/types";
 import {
   findNodeById,
+  pathToLeaf,
   regionKindForNodeId,
   WELL_KNOWN_NODE_IDS,
   type LayoutNode,
@@ -271,6 +272,25 @@ type RightTab =
 // the registry's tree instead of being duplicated as a literal. One shared
 // map covers both regions since the tab-id string per widget type doesn't
 // depend on which region it's rendered in.
+// UI-4f-5: every well-known region id can legitimately end up as a plain
+// split's non-emphasized sibling -- chart-area sits beside whatever's on the
+// dock's maximize path, and chart-column/right-sidebar sit beside each other
+// at the root split during a sidebar collapse -- and each already has its
+// own correct, self-managed sizing (chart-area's basis-14 sliver, the
+// sidebar's own icon-rail-when-collapsed width, chart-column's ordinary
+// flex-1 default). A first version of this fix protected only chart-area
+// and broke sidebar-collapse outright: collapsing the sidebar made
+// chart-column itself the "non-emphasized sibling" of the root split and hid
+// the ENTIRE chart+dock area, confirmed by reproducing it directly (a fully
+// blank workspace behind the collapsed icon rail). The correct rule is
+// broader -- never suppress ANY well-known region, only a dynamically
+// edge-drop-created one (which always gets a fresh "pane-"/"split-" id, so
+// this set can never accidentally include one). LayoutTree stays generic
+// either way -- it never hardcodes any of this itself, studio.tsx (which
+// knows the well-known ids) supplies the opt-out. Module-level since it's a
+// fixed set, not per-render state.
+const NEVER_SUPPRESS_CHILD_IDS = new Set<string>(Object.values(WELL_KNOWN_NODE_IDS));
+
 const WIDGET_TAB_ID: Partial<Record<WidgetTypeId, DockTab & RightTab>> = {
   watchlist: "watchlist",
   trade: "trade",
@@ -3219,12 +3239,38 @@ function Studio() {
   // basis-14 for a maximized dock, an icon-rail for a collapsed sidebar),
   // which needs to be free of a Panel's percentage-based sizing. Only the
   // plain "normal"/"expanded" states are actually drag-resizable.
-  const nonResizableSplitIds = useMemo(() => {
+  //
+  // UI-4f-5: walks the REAL tree (via pathToLeaf) from each state's known
+  // boundary (chart-column for the dock, workspace-root for the sidebar)
+  // down to the actual leaf, rather than assuming that leaf is always a
+  // DIRECT child of the boundary. That assumption held for every tree UI-4f-1
+  // through UI-4f-3 could produce, but UI-4f-4's edge-drop can now wrap
+  // bottom-dock or right-sidebar in a brand-new split with a generated id --
+  // confirmed by reproducing it directly: edge-dropping a widget onto the
+  // dock and then maximizing it left that new wrapping split as a rigid
+  // 50/50 Panel pair, so the dock's own flex-1 intent was capped at half the
+  // maximized area while the chart was crushed far past its intended basis-14
+  // sliver. `emphasizedChildOf` is the other half of the fix: every ancestor
+  // on the path also needs to know WHICH child continues toward the
+  // maximized/collapsed leaf, so PlainSplit can hide the other one instead of
+  // still splitting space with it -- see LayoutTree.tsx.
+  const { nonResizableSplitIds, emphasizedChildOf } = useMemo(() => {
     const ids = new Set<string>();
-    if (dockState !== "normal") ids.add(WELL_KNOWN_NODE_IDS.chartColumn);
-    if (sidebarState !== "expanded") ids.add(WELL_KNOWN_NODE_IDS.root);
-    return ids;
-  }, [dockState, sidebarState]);
+    const emphasized = new Map<string, string>();
+    function applyPath(boundaryId: string, leafId: string) {
+      const boundary = findNodeById(layout.root, boundaryId);
+      if (!boundary) return;
+      const path = pathToLeaf(boundary, leafId);
+      if (!path) return;
+      for (let i = 0; i < path.length - 1; i++) {
+        ids.add(path[i]);
+        emphasized.set(path[i], path[i + 1]);
+      }
+    }
+    if (dockState !== "normal") applyPath(WELL_KNOWN_NODE_IDS.chartColumn, WELL_KNOWN_NODE_IDS.bottomDock);
+    if (sidebarState !== "expanded") applyPath(WELL_KNOWN_NODE_IDS.root, WELL_KNOWN_NODE_IDS.rightSidebar);
+    return { nonResizableSplitIds: ids, emphasizedChildOf: emphasized };
+  }, [dockState, sidebarState, layout]);
 
   // Same floors (and the sidebar's ceiling) the old hand-rolled pointer-drag
   // handles enforced (`Math.max(160, ...)` for the dock, `Math.max(240,
@@ -3659,6 +3705,8 @@ function Studio() {
           node={layout.root}
           renderLeaf={renderLeaf}
           nonResizableSplitIds={nonResizableSplitIds}
+          emphasizedChildOf={emphasizedChildOf}
+          neverSuppressChildIds={NEVER_SUPPRESS_CHILD_IDS}
           minSizeForChild={minSizeForChild}
           maxSizeForChild={maxSizeForChild}
           onResizeCommit={onResizeCommit}
