@@ -62,6 +62,29 @@ export const addToWatchlist = createServerFn({ method: "POST" })
     return row;
   });
 
+/**
+ * UI-4h-3: persists a drag-reorder. Writes the existing `position` column
+ * (already there for `listWatchlist`'s ordering — no migration) for every
+ * symbol in the new order; anything not sent (there shouldn't be, the
+ * caller always passes its full current list) is left untouched.
+ */
+export const reorderWatchlist = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((i: unknown) =>
+    z.object({ symbols: z.array(symbolSchema).max(200) }).parse(i),
+  )
+  .handler(async ({ data, context }) => {
+    const { supabase } = context;
+    const results = await Promise.all(
+      data.symbols.map((symbol, position) =>
+        supabase.from("watchlists").update({ position }).eq("symbol", symbol),
+      ),
+    );
+    const failed = results.find((r) => r.error);
+    if (failed?.error) throw new Error(failed.error.message);
+    return { ok: true };
+  });
+
 export const removeFromWatchlist = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((i: unknown) =>

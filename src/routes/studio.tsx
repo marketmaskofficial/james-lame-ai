@@ -124,6 +124,7 @@ import type { AccountSnapshot, TradingAccount } from "@/lib/trading/types";
 import {
   collectWidgetTypeIds,
   findNodeById,
+  findWidgetInstance,
   pathToLeaf,
   regionKindForNodeId,
   WELL_KNOWN_NODE_IDS,
@@ -146,6 +147,7 @@ import {
   createInstanceAsNewPane,
   updateChartConfig,
   updateVolumeProfileConfig,
+  updateWatchlistConfig,
   type DropEdge,
 } from "@/lib/workspace/mutations";
 import { DockZone, pickDropZone, type DropZone } from "@/components/studio/DockZone";
@@ -2443,7 +2445,18 @@ function Studio() {
    */
   const renderPortableWidgetContent = (widgetTypeId: WidgetTypeId): ReactNode => {
     if (widgetTypeId === "watchlist") {
-      return <WatchlistPanel activeSymbol={symbol} signedIn={!!user} onSelect={(t) => setSymbol(t)} />;
+      return (
+        <WatchlistPanel
+          chartInstances={chartInstanceOptions}
+          activeChartInstanceId={activeChartInstanceId}
+          config={watchlistTab?.watchlistConfig}
+          onConfigChange={(next) =>
+            watchlistTab && setLayout((prev) => updateWatchlistConfig(prev, watchlistTab.instanceId, next))
+          }
+          signedIn={!!user}
+          onSelect={selectSymbolForInstance}
+        />
+      );
     }
     if (widgetTypeId === "trade") {
       return (
@@ -3074,6 +3087,29 @@ function Studio() {
     if (!node || node.kind !== "tabs") return null;
     return node.tabs.find((t) => t.widgetTypeId === "volume-profile") ?? null;
   }, [layout]);
+  // UI-4h-3: unlike Volume Profile, Watchlist is placeable in the sidebar AND
+  // the dock (and a portable edge-drop leaf) — it isn't fixed to one region,
+  // so its single instance is found by widgetTypeId anywhere in the tree
+  // rather than assumed to live in bottomDock.
+  const watchlistTab = useMemo(
+    () => findWidgetInstance(layout.root, "watchlist"),
+    [layout],
+  );
+  // Reused by both the Volume Profile and Watchlist widgets — every open
+  // chart instance's identity + bars, so either widget can bind to any of
+  // them independently of which one currently has focus.
+  const chartInstanceOptions = chartInstanceOptionsForVolumeProfile;
+  // Targeted symbol select for a widget bound to a SPECIFIC chart instance
+  // (not necessarily the active one) — routes through the exact same
+  // propagation `setSymbol` already uses for the active chart, just
+  // parameterized by instanceId instead of hardcoding
+  // `activeChartInstanceId`, so linked charts still propagate correctly.
+  const selectSymbolForInstance = useCallback(
+    (ticker: string, targetInstanceId: string) => {
+      propagateLinkedChartField("symbol", targetInstanceId, ticker);
+    },
+    [propagateLinkedChartField],
+  );
 
   const renderBottomDock = () => (
     <section
@@ -3607,9 +3643,18 @@ function Studio() {
     {/* Sidebar-native widgets, rendered here too when moved into the
         dock (UI-4c "move between regions") — same components, just a
         second mount point, since none of them assume sidebar width. */}
-    {dockVisible && dock === "watchlist" && (
+    {dockVisible && dock === "watchlist" && watchlistTab && (
       <div className="min-h-0 flex-1 overflow-auto">
-        <WatchlistPanel activeSymbol={symbol} signedIn={!!user} onSelect={(t) => setSymbol(t)} />
+        <WatchlistPanel
+          chartInstances={chartInstanceOptions}
+          activeChartInstanceId={activeChartInstanceId}
+          config={watchlistTab.watchlistConfig}
+          onConfigChange={(next) =>
+            setLayout((prev) => updateWatchlistConfig(prev, watchlistTab.instanceId, next))
+          }
+          signedIn={!!user}
+          onSelect={selectSymbolForInstance}
+        />
       </div>
     )}
     {dockVisible && dock === "trade" && (
@@ -3939,11 +3984,16 @@ function Studio() {
               prefill={prefill}
             />
 
-          ) : rightTab === "watchlist" ? (
+          ) : rightTab === "watchlist" && watchlistTab ? (
           <WatchlistPanel
-            activeSymbol={symbol}
+            chartInstances={chartInstanceOptions}
+            activeChartInstanceId={activeChartInstanceId}
+            config={watchlistTab.watchlistConfig}
+            onConfigChange={(next) =>
+              setLayout((prev) => updateWatchlistConfig(prev, watchlistTab.instanceId, next))
+            }
             signedIn={!!user}
-            onSelect={(t) => setSymbol(t)}
+            onSelect={selectSymbolForInstance}
           />
           ) : (
             // A dock-native widget (Code/Strategy tester/Positions/Orders/

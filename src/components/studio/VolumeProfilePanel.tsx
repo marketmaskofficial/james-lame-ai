@@ -1,8 +1,7 @@
 import { useMemo } from "react";
 import { volumeProfile } from "@/lib/sgscript/stdlib";
 import { computeValueArea } from "@/lib/workspace/volumeProfileMath";
-import type { WidgetInstance } from "@/lib/workspace/types";
-import type { Bar } from "@/lib/sgscript/types";
+import type { WidgetInstance, ChartInstanceOption } from "@/lib/workspace/types";
 
 export type VolumeProfileConfig = NonNullable<WidgetInstance["volumeProfileConfig"]>;
 
@@ -16,13 +15,7 @@ export const DEFAULT_VOLUME_PROFILE_CONFIG: VolumeProfileConfig = {
 const LOOKBACK_OPTIONS = [50, 100, 200, 300, 500, 1000];
 const BIN_OPTIONS = [10, 16, 24, 32, 48, 64];
 
-export type ChartInstanceOption = {
-  instanceId: string;
-  label: string;
-  symbol: string;
-  interval: string;
-  bars: Bar[];
-};
+export type { ChartInstanceOption };
 
 type Props = {
   chartInstances: ChartInstanceOption[];

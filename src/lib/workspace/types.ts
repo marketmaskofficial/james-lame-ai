@@ -15,6 +15,8 @@
  * prove the model fits reality before anything is wired to it.
  */
 
+import type { Bar } from "../sgscript/types";
+
 export type WidgetTypeId =
   | "chart"
   | "watchlist"
@@ -147,7 +149,55 @@ export type WidgetInstance = {
      */
     boundChartInstanceId: string;
   };
+  /**
+   * UI-4h-3: this instance's own settings, same rationale/shape as
+   * `volumeProfileConfig` above (opaque tree field, zero migration). Only
+   * meaningful for `widgetTypeId === "watchlist"`.
+   */
+  watchlistConfig?: {
+    /** "manual" (drag-ordered, the DB `position` column) or a column sort. */
+    sortBy: "manual" | "symbol" | "price" | "changePct";
+    sortDir: "asc" | "desc";
+    /** Same `"active"` | specific-instanceId convention as `volumeProfileConfig.boundChartInstanceId`. */
+    boundChartInstanceId: string;
+  };
 };
+
+/**
+ * One open chart instance's identity + bars, shaped for any dock widget that
+ * binds to a specific chart (Volume Profile, Watchlist) rather than only ever
+ * reading the globally-active one. Shared here so each widget's panel doesn't
+ * redeclare the same shape.
+ */
+export type ChartInstanceOption = {
+  instanceId: string;
+  label: string;
+  symbol: string;
+  interval: string;
+  bars: Bar[];
+};
+
+/**
+ * First widget instance of the given type found anywhere in the tree
+ * (depth-first), or null. For today's singleton (non-`allowMultipleInstances`)
+ * widget types — Volume Profile, Watchlist, Scanner, etc. — this IS the one
+ * instance, regardless of which region (sidebar/dock/a portable edge-drop
+ * leaf) currently hosts it; unlike looking a widget up by a fixed well-known
+ * node id, this keeps working if the user drags it to a different region.
+ */
+export function findWidgetInstance(
+  node: LayoutNode,
+  widgetTypeId: WidgetTypeId,
+): WidgetInstance | null {
+  if (node.kind === "tabs") {
+    return node.tabs.find((t) => t.widgetTypeId === widgetTypeId) ?? null;
+  }
+  for (const child of node.children) {
+    const found = findWidgetInstance(child, widgetTypeId);
+    if (found) return found;
+  }
+  return null;
+}
 
 export type LayoutNode =
   | {

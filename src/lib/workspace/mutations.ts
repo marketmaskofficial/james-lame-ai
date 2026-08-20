@@ -505,3 +505,32 @@ export function updateVolumeProfileConfig(
   }
   return withRoot(layout, walk(layout.root));
 }
+
+/**
+ * UI-4h-3: writes `watchlistConfig` onto a specific Watchlist widget
+ * instance's tree entry — same shape/rationale as `updateVolumeProfileConfig`
+ * above. No-op if the instance can't be found.
+ */
+export function updateWatchlistConfig(
+  layout: WorkspaceLayout,
+  instanceId: string,
+  watchlistConfig: WidgetInstance["watchlistConfig"],
+): WorkspaceLayout {
+  function walk(node: LayoutNode): LayoutNode {
+    if (node.kind === "tabs") {
+      if (!node.tabs.some((t) => t.instanceId === instanceId)) return node;
+      return {
+        ...node,
+        tabs: node.tabs.map((t) => (t.instanceId === instanceId ? { ...t, watchlistConfig } : t)),
+      };
+    }
+    let changed = false;
+    const children = node.children.map((c) => {
+      const next = walk(c);
+      if (next !== c) changed = true;
+      return next;
+    });
+    return changed ? { ...node, children } : node;
+  }
+  return withRoot(layout, walk(layout.root));
+}
