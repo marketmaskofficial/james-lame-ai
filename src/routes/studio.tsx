@@ -84,6 +84,7 @@ import {
 import { BrokerConnections } from "@/components/studio/BrokerConnections";
 import { SymbolSearch } from "@/components/studio/SymbolSearch";
 import { WatchlistPanel } from "@/components/studio/WatchlistPanel";
+import { ScannerPanel } from "@/components/studio/ScannerPanel";
 import { CodeEditor } from "@/components/studio/CodeEditor";
 import {
   createIndicator,
@@ -281,7 +282,8 @@ type DockTab =
   | "watchlist"
   | "trade"
   | "ai"
-  | "alerts";
+  | "alerts"
+  | "scanner";
 type RightTab =
   | "watchlist"
   | "trade"
@@ -294,7 +296,8 @@ type RightTab =
   | "history"
   | "journal"
   | "saved"
-  | "docs";
+  | "docs"
+  | "scanner";
 
 // This route's tab ids/icons predate the workspace registry and are threaded
 // through this file's state/switches everywhere below, so they stay as-is —
@@ -334,6 +337,7 @@ const WIDGET_TAB_ID: Partial<Record<WidgetTypeId, DockTab & RightTab>> = {
   journal: "journal",
   "saved-indicators": "saved",
   reference: "docs",
+  scanner: "scanner",
 };
 const TAB_ICON: Partial<Record<WidgetTypeId, typeof Star>> = {
   watchlist: Star,
@@ -343,6 +347,7 @@ const TAB_ICON: Partial<Record<WidgetTypeId, typeof Star>> = {
   "saved-indicators": Save,
   history: History,
   reference: BookOpen,
+  scanner: Search,
 };
 
 /**
@@ -3645,6 +3650,11 @@ function Studio() {
     {dockVisible && dock === "alerts" && (
       <div className="min-h-0 flex-1 overflow-auto">
         <AlertsSidePanel symbol={symbol} lastPrice={lastPrice} signedIn={!!user} />
+      </div>
+    )}
+    {dockVisible && dock === "scanner" && (
+      <div className="min-h-0 flex-1 overflow-auto">
+        <ScannerPanel activeSymbol={symbol} onSelect={(t) => setSymbol(t)} />
       </div>
     )}
     </section>

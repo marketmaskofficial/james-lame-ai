@@ -122,8 +122,7 @@ export const WIDGET_REGISTRY: Record<WidgetTypeId, WidgetTypeDef> = {
     id: "scanner",
     label: "Scanner",
     category: "analysis",
-    availability: "coming-soon",
-    comingSoonReason: "Needs a market-wide screening data source that isn't connected yet.",
+    availability: "available",
     renderableRegions: ["dock"],
   },
   news: {
