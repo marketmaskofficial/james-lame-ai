@@ -172,6 +172,13 @@ export const WIDGET_REGISTRY: Record<WidgetTypeId, WidgetTypeDef> = {
     availability: "available",
     renderableRegions: ["dock"],
   },
+  "market-stats": {
+    id: "market-stats",
+    label: "Market Stats",
+    category: "analysis",
+    availability: "available",
+    renderableRegions: ["dock"],
+  },
 };
 
 export function getWidgetDef(id: WidgetTypeId): WidgetTypeDef {

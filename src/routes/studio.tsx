@@ -53,6 +53,7 @@ import {
   Plus,
   Link2,
   BarChart3,
+  Gauge,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { fetchBars, TIMEFRAMES, timeframeLabel } from "@/lib/marketdata";
@@ -87,6 +88,7 @@ import { SymbolSearch } from "@/components/studio/SymbolSearch";
 import { WatchlistPanel } from "@/components/studio/WatchlistPanel";
 import { ScannerPanel } from "@/components/studio/ScannerPanel";
 import { VolumeProfilePanel } from "@/components/studio/VolumeProfilePanel";
+import { MarketStatsPanel } from "@/components/studio/MarketStatsPanel";
 import { CodeEditor } from "@/components/studio/CodeEditor";
 import {
   createIndicator,
@@ -149,6 +151,7 @@ import {
   updateVolumeProfileConfig,
   updateWatchlistConfig,
   updateAlertsConfig,
+  updateMarketStatsConfig,
   type DropEdge,
 } from "@/lib/workspace/mutations";
 import { DockZone, pickDropZone, type DropZone } from "@/components/studio/DockZone";
@@ -290,7 +293,8 @@ type DockTab =
   | "ai"
   | "alerts"
   | "scanner"
-  | "volprofile";
+  | "volprofile"
+  | "marketstats";
 type RightTab =
   | "watchlist"
   | "trade"
@@ -305,7 +309,8 @@ type RightTab =
   | "saved"
   | "docs"
   | "scanner"
-  | "volprofile";
+  | "volprofile"
+  | "marketstats";
 
 // This route's tab ids/icons predate the workspace registry and are threaded
 // through this file's state/switches everywhere below, so they stay as-is —
@@ -347,6 +352,7 @@ const WIDGET_TAB_ID: Partial<Record<WidgetTypeId, DockTab & RightTab>> = {
   reference: "docs",
   scanner: "scanner",
   "volume-profile": "volprofile",
+  "market-stats": "marketstats",
 };
 const TAB_ICON: Partial<Record<WidgetTypeId, typeof Star>> = {
   watchlist: Star,
@@ -358,6 +364,7 @@ const TAB_ICON: Partial<Record<WidgetTypeId, typeof Star>> = {
   reference: BookOpen,
   scanner: Search,
   "volume-profile": BarChart3,
+  "market-stats": Gauge,
 };
 
 /**
@@ -3113,6 +3120,12 @@ function Studio() {
     () => findWidgetInstance(layout.root, "alerts"),
     [layout],
   );
+  // UI-4h-5: same "found anywhere in the tree" rationale as watchlistTab/
+  // alertsTab above.
+  const marketStatsTab = useMemo(
+    () => findWidgetInstance(layout.root, "market-stats"),
+    [layout],
+  );
   // Reused by both the Volume Profile and Watchlist widgets — every open
   // chart instance's identity + bars, so either widget can bind to any of
   // them independently of which one currently has focus.
@@ -3768,6 +3781,18 @@ function Studio() {
           config={volumeProfileTab.volumeProfileConfig}
           onConfigChange={(next) =>
             setLayout((prev) => updateVolumeProfileConfig(prev, volumeProfileTab.instanceId, next))
+          }
+        />
+      </div>
+    )}
+    {dockVisible && dock === "marketstats" && marketStatsTab && (
+      <div className="min-h-0 flex-1 overflow-auto">
+        <MarketStatsPanel
+          chartInstances={chartInstanceOptions}
+          activeChartInstanceId={activeChartInstanceId}
+          config={marketStatsTab.marketStatsConfig}
+          onConfigChange={(next) =>
+            setLayout((prev) => updateMarketStatsConfig(prev, marketStatsTab.instanceId, next))
           }
         />
       </div>

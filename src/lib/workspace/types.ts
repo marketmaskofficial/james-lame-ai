@@ -37,7 +37,8 @@ export type WidgetTypeId =
   | "footprint"
   | "time-sales"
   | "heatmap"
-  | "volume-profile";
+  | "volume-profile"
+  | "market-stats";
 
 export type WidgetAvailability = "available" | "coming-soon";
 
@@ -171,6 +172,17 @@ export type WidgetInstance = {
    */
   alertsConfig?: {
     /** Same `"active"` | specific-instanceId convention as the other two. */
+    boundChartInstanceId: string;
+  };
+  /**
+   * UI-4h-5: this instance's own settings, same rationale/shape as
+   * `volumeProfileConfig`/`watchlistConfig`/`alertsConfig` above (opaque tree
+   * field, zero migration). Only meaningful for `widgetTypeId === "market-stats"`.
+   */
+  marketStatsConfig?: {
+    /** Which UTC session bucket is displayed — see src/lib/workspace/marketStats.ts for the exact hour ranges. */
+    session: "day" | "asia" | "london" | "newyork";
+    /** Same `"active"` | specific-instanceId convention as the other widgets. */
     boundChartInstanceId: string;
   };
 };
