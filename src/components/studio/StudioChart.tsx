@@ -858,8 +858,21 @@ export function StudioChart({
       prev.first === displayBars[0].time &&
       (displayBars.length === prev.length || displayBars.length === prev.length + 1);
 
-    if (sameSet) s.update(point(last));
-    else {
+    if (sameSet) {
+      // The `sameSet` heuristic can be fooled by coincidence (a different
+      // symbol/timeframe's first-bar time landing on the same value as the
+      // prior dataset's, most reachable via UI-4g-4's multi-chart symbol
+      // propagation resetting more than one chart's bars in the same tick) —
+      // lightweight-charts' own update() throws in that case ("Cannot update
+      // oldest data") since it requires the new point to be at/after the
+      // series' last known time. Recover with a full setData() instead of
+      // crashing the whole page's error boundary over a redraw heuristic.
+      try {
+        s.update(point(last));
+      } catch {
+        s.setData(displayBars.map(point));
+      }
+    } else {
       s.setData(displayBars.map(point));
       // A fresh dataset (initial load or symbol switch) gets a deterministic
       // "recent window" view instead of fitContent(), which crams every
@@ -890,9 +903,13 @@ export function StudioChart({
           b.close >= b.open ? CHART_COLORS.bullishVolume : CHART_COLORS.bearishVolume,
 
       });
-      if (rev === volumeRevRef.current || volumeRevRef.current.startsWith(`${bars[0]?.time}:`))
-        vol.update(bar(lastRaw));
-      else vol.setData(bars.map(bar));
+      if (rev === volumeRevRef.current || volumeRevRef.current.startsWith(`${bars[0]?.time}:`)) {
+        try {
+          vol.update(bar(lastRaw));
+        } catch {
+          vol.setData(bars.map(bar));
+        }
+      } else vol.setData(bars.map(bar));
       volumeRevRef.current = rev;
     }
   }, [displayBars, bars, chartType, seriesRevision]);

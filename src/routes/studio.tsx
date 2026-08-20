@@ -51,6 +51,7 @@ import {
   MoreHorizontal,
   GripVertical,
   Plus,
+  Link2,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { fetchBars, TIMEFRAMES, timeframeLabel } from "@/lib/marketdata";
@@ -542,6 +543,14 @@ function Studio() {
     drawings: Drawing[];
     /** `"symbol:interval"` this instance's `bars` were actually fetched for — lets the fetch effect skip a redundant re-fetch when merely switching which chart is active, without re-fetching on every switch. */
     barsLoadedFor: string | null;
+    /**
+     * UI-4g-4: opt-in symbol/timeframe linking across chart instances — one
+     * shared linked set, not named groups. Missing/"independent" never sends
+     * or receives propagation; every chart from before this phase and every
+     * newly-added chart defaults here. See `propagateLinkedChartField` for
+     * the actual one-shot (non-chaining) propagation this drives.
+     */
+    linkMode: "independent" | "symbol" | "timeframe" | "both";
   };
   const DEFAULT_CHART_RUNTIME_STATE: ChartRuntimeState = {
     symbol: "BTCUSDT",
@@ -554,6 +563,7 @@ function Studio() {
     indicators: [],
     drawings: [],
     barsLoadedFor: null,
+    linkMode: "independent",
   };
   const [chartStatesMap, setChartStatesMap] = useState<Record<string, ChartRuntimeState>>({
     "chart-1": DEFAULT_CHART_RUNTIME_STATE,
@@ -582,16 +592,64 @@ function Studio() {
     },
     [],
   );
+  /**
+   * UI-4g-4: sets `field` on `forId` AND, in the same atomic update,
+   * propagates the SAME new value to every OTHER chart instance whose own
+   * `linkMode` also includes this field — one shot, not a chain (only
+   * `prev`'s original entries are ever visited, so a propagated instance's
+   * own resulting change is never itself treated as a new source to
+   * propagate from). Only ever touches `symbol`/`interval` — indicators,
+   * drawings, and chartSettings are never copied by linking, on purpose.
+   * A chart whose own mode is "independent" neither sends (checked here)
+   * nor receives (checked in the loop) propagation.
+   */
+  const propagateLinkedChartField = useCallback(
+    (field: "symbol" | "interval", forId: string, value: string) => {
+      setChartStatesMap((prev) => {
+        const source = prev[forId] ?? DEFAULT_CHART_RUNTIME_STATE;
+        let next = prev;
+        if (next[forId]?.[field] !== value) {
+          next = { ...next, [forId]: { ...(next[forId] ?? DEFAULT_CHART_RUNTIME_STATE), [field]: value } };
+        }
+        const sourceLinks =
+          field === "symbol" ? source.linkMode === "symbol" || source.linkMode === "both"
+          : source.linkMode === "timeframe" || source.linkMode === "both";
+        if (!sourceLinks) return next;
+        for (const [id, inst] of Object.entries(prev)) {
+          if (id === forId) continue;
+          const instLinks =
+            field === "symbol" ? inst.linkMode === "symbol" || inst.linkMode === "both"
+            : inst.linkMode === "timeframe" || inst.linkMode === "both";
+          if (!instLinks || inst[field] === value) continue;
+          next = { ...next, [id]: { ...inst, [field]: value } };
+        }
+        return next;
+      });
+    },
+    [],
+  );
   const activeChartState = chartStatesMap[activeChartInstanceId] ?? DEFAULT_CHART_RUNTIME_STATE;
   const symbol = activeChartState.symbol;
   const setSymbol = useCallback(
-    (v: string | ((p: string) => string)) => setChartField(activeChartInstanceId, "symbol", v),
-    [activeChartInstanceId, setChartField],
+    (v: string | ((p: string) => string)) => {
+      if (typeof v === "function") {
+        setChartField(activeChartInstanceId, "symbol", v);
+        return;
+      }
+      propagateLinkedChartField("symbol", activeChartInstanceId, v);
+    },
+    [activeChartInstanceId, setChartField, propagateLinkedChartField],
   );
   const interval = activeChartState.interval;
   const setIntervalStr = useCallback(
-    (v: string | ((p: string) => string)) => setChartField(activeChartInstanceId, "interval", v),
-    [activeChartInstanceId, setChartField],
+    (v: string | ((p: string) => string)) => {
+      if (typeof v === "function") {
+        setChartField(activeChartInstanceId, "interval", v);
+        return;
+      }
+      propagateLinkedChartField("interval", activeChartInstanceId, v);
+    },
+    [activeChartInstanceId, setChartField, propagateLinkedChartField],
   );
   const bars = activeChartState.bars;
   const setBars = useCallback(
@@ -702,6 +760,7 @@ function Studio() {
             chartSettings: cfg?.settings
               ? ({ ...DEFAULT_CHART_SETTINGS, ...(cfg.settings as Partial<ChartSettings>) } as ChartSettings)
               : DEFAULT_CHART_RUNTIME_STATE.chartSettings,
+            linkMode: cfg?.linkMode ?? DEFAULT_CHART_RUNTIME_STATE.linkMode,
           };
         }
         return;
@@ -1681,30 +1740,55 @@ function Studio() {
   // page-level effect, which assumed exactly one chart. `bars`/`lastPrice`
   // stay owned here — read by backtest/trading logic elsewhere on this page
   // — and are updated via this stable callback passed down as a prop.
+  // Frozen ([] deps) like runCode/recompute/the drawing callbacks above —
+  // this is wired only to the ACTIVE chart's <ChartInstance> (the inactive
+  // path below builds its own instanceId-scoped inline handler), so unlike
+  // those async cases there's no capture-at-start needed: read the ref
+  // synchronously at tick time, which is always "whichever chart this
+  // subscription's ChartInstance is currently mounted for."
   const onLiveBar = useCallback((bar: Bar) => {
     setLastPrice(bar.close);
-    setBars((prev) => mergeLiveBar(prev, bar));
-  }, []);
+    setChartField(activeChartInstanceIdRef.current, "bars", (prev) => mergeLiveBar(prev, bar));
+  }, [setChartField]);
 
-  // UI-4g-2: writes the ACTIVE chart's symbol/interval/type/settings into
-  // its own WidgetInstance.chartConfig in the tree whenever any of them
-  // change — the mechanism that makes each chart's config part of the
-  // persisted WorkspaceLayout itself (so it round-trips through the
-  // existing UI-4d autosave to localStorage AND, once signed in, the
-  // Supabase `workspace_layouts` row) rather than page-level state only.
-  // Deliberately does NOT bump layoutKey — this is a content update within
-  // an existing node, not a wholesale tree-shape replacement.
+  // UI-4g-2 wrote only the ACTIVE chart's config here. UI-4g-4 generalizes
+  // this to every chart instance, per-instance — necessary once linking can
+  // change a NON-active chart's symbol/interval (via propagation) and once
+  // a chart's own link mode can be set directly on an inactive pane; both
+  // need their own tree write, not just whichever chart happens to be
+  // active. Keyed off a derived signature (not the raw map) so this only
+  // re-fires when something persistable actually changed, not on every
+  // bars/indicator/drawing update — same pattern as
+  // `chartInstanceSymbolsSignature` below. Deliberately does NOT bump
+  // layoutKey — this is a content update within existing nodes, not a
+  // wholesale tree-shape replacement.
+  const chartConfigPersistSignature = useMemo(
+    () =>
+      Object.entries(chartStatesMap)
+        .map(
+          ([id, s]) =>
+            `${id}:${s.symbol}:${s.interval}:${s.chartType}:${JSON.stringify(s.chartSettings)}:${s.linkMode}`,
+        )
+        .sort()
+        .join("|"),
+    [chartStatesMap],
+  );
   useEffect(() => {
-    setLayout((prev) =>
-      updateChartConfig(prev, activeChartInstanceId, {
-        symbol,
-        interval,
-        chartType,
-        settings: chartSettings as unknown as Record<string, unknown>,
-      }),
-    );
+    setLayout((prev) => {
+      let next = prev;
+      for (const [id, inst] of Object.entries(chartStatesMap)) {
+        next = updateChartConfig(next, id, {
+          symbol: inst.symbol,
+          interval: inst.interval,
+          chartType: inst.chartType,
+          settings: inst.chartSettings as unknown as Record<string, unknown>,
+          linkMode: inst.linkMode,
+        });
+      }
+      return next;
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeChartInstanceId, symbol, interval, chartType, chartSettings]);
+  }, [chartConfigPersistSignature]);
 
   // ---- drawings persistence ----------------------------------------------
   useEffect(() => {
@@ -1714,24 +1798,29 @@ function Studio() {
     saveDrawings(symbol, interval, drawings);
   }, [symbol, interval, drawings]);
 
+  // These four are memoized once ([] deps, same hazard as runCode/recompute
+  // above) so they can't close over a fresh per-active-chart `setDrawings`.
+  // Route through the stable `setChartField` + `activeChartInstanceIdRef`
+  // instead, so a drawing action always lands on whichever chart is
+  // actually active at the moment it fires.
   const addDrawing = useCallback(
-    (d: Drawing) => setDrawings((prev) => [...prev, d]),
-    [],
+    (d: Drawing) => setChartField(activeChartInstanceIdRef.current, "drawings", (prev) => [...prev, d]),
+    [setChartField],
   );
   const removeDrawing = useCallback((id: string) => {
-    setDrawings((prev) => prev.filter((d) => d.id !== id));
+    setChartField(activeChartInstanceIdRef.current, "drawings", (prev) => prev.filter((d) => d.id !== id));
     setSelectedDrawing((cur) => (cur === id ? null : cur));
-  }, []);
+  }, [setChartField]);
   const updateDrawing = useCallback(
     (next: Drawing) =>
-      setDrawings((prev) => prev.map((d) => (d.id === next.id ? next : d))),
-    [],
+      setChartField(activeChartInstanceIdRef.current, "drawings", (prev) => prev.map((d) => (d.id === next.id ? next : d))),
+    [setChartField],
   );
   const duplicateDrawing = useCallback((d: Drawing) => {
     const copy = { ...d, id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}` };
-    setDrawings((prev) => [...prev, copy]);
+    setChartField(activeChartInstanceIdRef.current, "drawings", (prev) => [...prev, copy]);
     setSelectedDrawing(copy.id);
-  }, []);
+  }, [setChartField]);
 
   // ---- run / add to chart -------------------------------------------------
   const barsLiveRef = useRef<Bar[]>(bars);
@@ -1791,6 +1880,13 @@ function Studio() {
         silent?: boolean;
       } = {},
     ): Promise<string | null> => {
+      // Captured up front (not re-read after the awaits below) so a run
+      // started against one chart always lands on that SAME chart even if
+      // the user switches the active/target chart while this is in flight —
+      // `runCode` itself is memoized once (stable deps below) so it can't
+      // close over a fresh `setIndicators`; write through `setChartField` +
+      // this ref instead, the same pattern `recompute` uses.
+      const forInstanceId = activeChartInstanceIdRef.current;
       const data = await waitForBars();
       if (data.length === 0) {
         const msg = "Market data is still loading — try again in a moment.";
@@ -1815,7 +1911,7 @@ function Studio() {
           settings: opts.settings ?? {},
           ...(opts.savedId ? { savedId: opts.savedId } : {}),
         };
-        setIndicators((prev) => {
+        setChartField(forInstanceId, "indicators", (prev) => {
           const idx = prev.findIndex((p) => p.key === key);
           if (idx === -1) return [...prev, next];
           const copy = [...prev];
@@ -1846,7 +1942,7 @@ function Studio() {
         setRunning(false);
       }
     },
-    [waitForBars, waitForRenderStats],
+    [waitForBars, waitForRenderStats, setChartField],
   );
 
   // Pine (or anything non-SGScript) gets ported to SGScript before running.
@@ -2079,6 +2175,12 @@ function Studio() {
     const list = indicatorsRef.current;
     const data = barsRef.current;
     if (list.length === 0 || data.length === 0 || recomputingRef.current) return;
+    // Same stale-closure hazard as runCode: recompute is memoized once
+    // ([] deps) so it can't close over a fresh setIndicators. Capture which
+    // chart this run is FOR up front and write back through setChartField,
+    // so a chart switch mid-recompute can't land these results on whatever
+    // chart happens to be active when the async work finishes.
+    const forInstanceId = activeChartInstanceIdRef.current;
     recomputingRef.current = true;
     lastRecomputeRef.current = Date.now();
     const keyAtRun = symbolIntervalRef.current;
@@ -2103,7 +2205,7 @@ function Studio() {
           ? null
           : `Live update failed — ${failures[0]}. The chart is showing the last good calculation.`,
       );
-      setIndicators((prev) =>
+      setChartField(forInstanceId, "indicators", (prev) =>
         prev.length === updated.length &&
         prev.every((p, i) => p.key === updated[i].key)
           ? updated
@@ -2113,7 +2215,7 @@ function Studio() {
     } finally {
       recomputingRef.current = false;
     }
-  }, []);
+  }, [setChartField]);
 
   const lastBarTime = bars.length ? bars[bars.length - 1].time : 0;
   const lastClose = bars.length ? bars[bars.length - 1].close : 0;
@@ -2558,6 +2660,68 @@ function Studio() {
     [layout],
   );
 
+  // UI-4g-4: which chart's link-mode menu is open, if any — at most one at
+  // a time, same lightweight-popover pattern as every other menu in this
+  // file (a fixed backdrop closes it on outside click).
+  const [linkMenuOpenFor, setLinkMenuOpenFor] = useState<string | null>(null);
+  const LINK_MODE_LABEL: Record<ChartRuntimeState["linkMode"], string> = {
+    independent: "Independent",
+    symbol: "Link Symbol",
+    timeframe: "Link Timeframe",
+    both: "Link Symbol + Timeframe",
+  };
+  /**
+   * UI-4g-4: compact per-chart link-mode control — only meaningful once
+   * &ge;2 charts exist (nothing to link to otherwise), so the caller gates
+   * on `chartInstancesInTreeCount > 1` the same way the close button
+   * already does. Setting the mode itself is a plain `setChartField` (no
+   * propagation) — only a subsequent symbol/interval CHANGE propagates.
+   */
+  const renderLinkModeControl = (instanceId: string, mode: ChartRuntimeState["linkMode"]) => {
+    const open = linkMenuOpenFor === instanceId;
+    return (
+      <div className="absolute right-8 top-1 z-30">
+        <button
+          title={`Symbol/timeframe linking: ${LINK_MODE_LABEL[mode]}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            setLinkMenuOpenFor(open ? null : instanceId);
+          }}
+          className={`flex h-6 w-6 items-center justify-center rounded ${
+            mode !== "independent"
+              ? "text-brand hover:bg-accent"
+              : "text-muted-foreground hover:bg-accent hover:text-foreground"
+          }`}
+        >
+          <Link2 className="h-3.5 w-3.5" />
+        </button>
+        {open && (
+          <>
+            <div className="fixed inset-0 z-30" onClick={() => setLinkMenuOpenFor(null)} />
+            <div className="absolute right-0 z-40 mt-1 w-44 rounded-[8px] border border-border bg-popover p-1 text-[11px] shadow-xl">
+              {(Object.keys(LINK_MODE_LABEL) as Array<ChartRuntimeState["linkMode"]>).map((m) => (
+                <button
+                  key={m}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setChartField(instanceId, "linkMode", m);
+                    setLinkMenuOpenFor(null);
+                  }}
+                  className={`flex w-full items-center justify-between rounded px-2 py-1 text-left hover:bg-accent ${
+                    m === mode ? "text-foreground" : "text-muted-foreground"
+                  }`}
+                >
+                  <span>{LINK_MODE_LABEL[m]}</span>
+                  {m === mode && <Check className="h-3 w-3" />}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    );
+  };
+
   /**
    * UI-4g-2: renders ONE chart leaf, for ANY chart-hosting node in the tree
    * — not just chart-area. When `instanceId` is the active chart, this is
@@ -2635,6 +2799,7 @@ function Studio() {
           builtKeyRef.current = null;
         }}
       />
+      {chartInstancesInTreeCount > 1 && renderLinkModeControl(instanceId, activeChartInstance.linkMode)}
       {chartInstancesInTreeCount > 1 && (
         <button
           title="Close chart"
@@ -2814,6 +2979,7 @@ function Studio() {
           onOpenSettings={() => setActiveChartInstanceId(instanceId)}
           onPickTemplate={() => setActiveChartInstanceId(instanceId)}
         />
+        {chartInstancesInTreeCount > 1 && renderLinkModeControl(instanceId, inst.linkMode)}
         {chartInstancesInTreeCount > 1 && (
           <button
             title="Close chart"

@@ -112,6 +112,17 @@ export type WidgetInstance = {
     interval: string;
     chartType?: string;
     settings?: Record<string, unknown>;
+    /**
+     * UI-4g-4: opt-in symbol/timeframe linking across chart instances — one
+     * shared linked set, not named groups. "independent" (or missing/absent,
+     * which means the same thing — every chart from before this phase and
+     * every newly-added chart defaults here) never sends or receives
+     * propagation. "symbol"/"timeframe"/"both" propagate a user-driven
+     * change on THIS field, once, to every other chart instance whose own
+     * linkMode also includes that field — see `propagateLinkedChartField`
+     * in studio.tsx for the actual one-shot (non-chaining) propagation.
+     */
+    linkMode?: "independent" | "symbol" | "timeframe" | "both";
   };
 };
 

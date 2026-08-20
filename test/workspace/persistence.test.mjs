@@ -475,6 +475,94 @@ function collectDepth(node, depth = 1) {
   ok("legacy topology: bottom-dock survives under the new shape", !!findNodeById(repaired.root, WELL_KNOWN_NODE_IDS.bottomDock));
 }
 
+{
+  // UI-4g-4: a chart instance with no `linkMode` field at all (every chart
+  // saved before this phase, and any chart whose config write hasn't
+  // included it) must parse cleanly, with the field simply absent rather
+  // than rejected or corrupted — the actual "missing means Independent"
+  // defaulting happens in studio.tsx's seedChartStatesFromLayout, same
+  // division of responsibility as chartConfig defaulting has had since
+  // UI-4g-2 (this parser repairs tree STRUCTURE, it doesn't know about
+  // chart-specific runtime defaults).
+  const layout = {
+    version: 1,
+    name: "No linkMode",
+    root: {
+      kind: "split",
+      id: WELL_KNOWN_NODE_IDS.root,
+      direction: "row",
+      sizes: [0.82, 0.18],
+      children: [
+        {
+          kind: "split",
+          id: WELL_KNOWN_NODE_IDS.chartColumn,
+          direction: "column",
+          sizes: [0.78, 0.22],
+          children: [
+            {
+              kind: "tabs",
+              id: WELL_KNOWN_NODE_IDS.chartArea,
+              tabs: [{ instanceId: "chart-1", widgetTypeId: "chart", chartConfig: { symbol: "BTCUSDT", interval: "15m" } }],
+              activeInstanceId: "chart-1",
+            },
+            { kind: "tabs", id: WELL_KNOWN_NODE_IDS.bottomDock, tabs: [{ instanceId: "code-1", widgetTypeId: "code-editor" }], activeInstanceId: "code-1" },
+          ],
+        },
+        { kind: "tabs", id: WELL_KNOWN_NODE_IDS.rightSidebar, tabs: [{ instanceId: "watchlist-1", widgetTypeId: "watchlist" }], activeInstanceId: "watchlist-1" },
+      ],
+    },
+    maximizedNodeId: null,
+    collapsedNodeIds: [],
+  };
+  const repaired = safeParseWorkspaceLayout(layout);
+  const chartNode = findNodeById(repaired.root, WELL_KNOWN_NODE_IDS.chartArea);
+  const chartTab = chartNode.tabs.find((t) => t.instanceId === "chart-1");
+  ok("linkMode: a chart with no linkMode field parses cleanly (not rejected/repaired-away)", !!chartTab);
+  ok("linkMode: the field stays absent rather than being fabricated by the parser", chartTab.chartConfig.linkMode === undefined);
+  check("linkMode: symbol/interval survive alongside the missing linkMode", chartTab.chartConfig.symbol, "BTCUSDT");
+}
+
+{
+  // A chart explicitly saved with a link mode round-trips correctly,
+  // including through a simulated cloud-jsonb-shaped payload (JSON
+  // stringify/parse, matching how a Supabase jsonb column actually
+  // serializes it) — same approach as every other cloud-shaped case above.
+  const layout = {
+    version: 1,
+    name: "Linked pair",
+    root: {
+      kind: "split",
+      id: WELL_KNOWN_NODE_IDS.root,
+      direction: "row",
+      sizes: [0.5, 0.5],
+      children: [
+        {
+          kind: "tabs",
+          id: "chart-pane-a",
+          tabs: [{ instanceId: "chart-a", widgetTypeId: "chart", chartConfig: { symbol: "BTCUSDT", interval: "15m", linkMode: "symbol" } }],
+          activeInstanceId: "chart-a",
+        },
+        {
+          kind: "tabs",
+          id: "chart-pane-b",
+          tabs: [{ instanceId: "chart-b", widgetTypeId: "chart", chartConfig: { symbol: "ETHUSDT", interval: "1h", linkMode: "both" } }],
+          activeInstanceId: "chart-b",
+        },
+      ],
+    },
+    maximizedNodeId: null,
+    collapsedNodeIds: [],
+  };
+  const cloudShaped = JSON.parse(JSON.stringify({ ...layout, id: "cloud-row-456", name: "Linked pair" }));
+  const result = safeParseWorkspaceLayout(cloudShaped);
+  const tabA = findNodeById(result.root, "chart-pane-a").tabs[0];
+  const tabB = findNodeById(result.root, "chart-pane-b").tabs[0];
+  check("linkMode: chart A's explicit linkMode survives a cloud-shaped round-trip", tabA.chartConfig.linkMode, "symbol");
+  check("linkMode: chart B's explicit linkMode (both) survives a cloud-shaped round-trip", tabB.chartConfig.linkMode, "both");
+  check("linkMode: chart A's symbol is untouched by the round-trip", tabA.chartConfig.symbol, "BTCUSDT");
+  check("linkMode: chart B's interval is untouched by the round-trip", tabB.chartConfig.interval, "1h");
+}
+
 // ---- summary ----------------------------------------------------------------
 
 console.log(`\n${pass}/${pass + fail} passed`);
