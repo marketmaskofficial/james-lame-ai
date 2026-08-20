@@ -169,8 +169,7 @@ export const WIDGET_REGISTRY: Record<WidgetTypeId, WidgetTypeDef> = {
     id: "volume-profile",
     label: "Volume Profile",
     category: "analysis",
-    availability: "coming-soon",
-    comingSoonReason: "Needs tick-level volume-at-price data that isn't connected yet.",
+    availability: "available",
     renderableRegions: ["dock"],
   },
 };

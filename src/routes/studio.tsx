@@ -52,6 +52,7 @@ import {
   GripVertical,
   Plus,
   Link2,
+  BarChart3,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { fetchBars, TIMEFRAMES, timeframeLabel } from "@/lib/marketdata";
@@ -85,6 +86,7 @@ import { BrokerConnections } from "@/components/studio/BrokerConnections";
 import { SymbolSearch } from "@/components/studio/SymbolSearch";
 import { WatchlistPanel } from "@/components/studio/WatchlistPanel";
 import { ScannerPanel } from "@/components/studio/ScannerPanel";
+import { VolumeProfilePanel } from "@/components/studio/VolumeProfilePanel";
 import { CodeEditor } from "@/components/studio/CodeEditor";
 import {
   createIndicator,
@@ -143,6 +145,7 @@ import {
   isPortableForNewLeaf,
   createInstanceAsNewPane,
   updateChartConfig,
+  updateVolumeProfileConfig,
   type DropEdge,
 } from "@/lib/workspace/mutations";
 import { DockZone, pickDropZone, type DropZone } from "@/components/studio/DockZone";
@@ -283,7 +286,8 @@ type DockTab =
   | "trade"
   | "ai"
   | "alerts"
-  | "scanner";
+  | "scanner"
+  | "volprofile";
 type RightTab =
   | "watchlist"
   | "trade"
@@ -297,7 +301,8 @@ type RightTab =
   | "journal"
   | "saved"
   | "docs"
-  | "scanner";
+  | "scanner"
+  | "volprofile";
 
 // This route's tab ids/icons predate the workspace registry and are threaded
 // through this file's state/switches everywhere below, so they stay as-is —
@@ -338,6 +343,7 @@ const WIDGET_TAB_ID: Partial<Record<WidgetTypeId, DockTab & RightTab>> = {
   "saved-indicators": "saved",
   reference: "docs",
   scanner: "scanner",
+  "volume-profile": "volprofile",
 };
 const TAB_ICON: Partial<Record<WidgetTypeId, typeof Star>> = {
   watchlist: Star,
@@ -348,6 +354,7 @@ const TAB_ICON: Partial<Record<WidgetTypeId, typeof Star>> = {
   history: History,
   reference: BookOpen,
   scanner: Search,
+  "volume-profile": BarChart3,
 };
 
 /**
@@ -3043,6 +3050,31 @@ function Studio() {
     );
   };
 
+  // UI-4h-2: every open chart instance, in the same "Chart N — SYMBOL tf"
+  // labeling the existing target-chart selector above already uses — reused
+  // as the Volume Profile widget's binding options rather than a second,
+  // differently-worded list.
+  const chartInstanceOptionsForVolumeProfile = useMemo(
+    () =>
+      Object.entries(chartStatesMap).map(([id, s], i) => ({
+        instanceId: id,
+        label: `Chart ${i + 1} — ${s.symbol} ${timeframeLabel(s.interval)}`,
+        symbol: s.symbol,
+        interval: s.interval,
+        bars: s.bars,
+      })),
+    [chartStatesMap],
+  );
+  // The Volume Profile widget is dock-only and single-instance (like
+  // Scanner) — this finds its one possible tree entry so its own persisted
+  // `volumeProfileConfig` can be read/written by instanceId, the same way
+  // every chart's `chartConfig` already is.
+  const volumeProfileTab = useMemo(() => {
+    const node = findNodeById(layout.root, WELL_KNOWN_NODE_IDS.bottomDock);
+    if (!node || node.kind !== "tabs") return null;
+    return node.tabs.find((t) => t.widgetTypeId === "volume-profile") ?? null;
+  }, [layout]);
+
   const renderBottomDock = () => (
     <section
       className={`relative flex shrink-0 flex-col border-t border-border bg-panel ${
@@ -3655,6 +3687,18 @@ function Studio() {
     {dockVisible && dock === "scanner" && (
       <div className="min-h-0 flex-1 overflow-auto">
         <ScannerPanel activeSymbol={symbol} onSelect={(t) => setSymbol(t)} />
+      </div>
+    )}
+    {dockVisible && dock === "volprofile" && volumeProfileTab && (
+      <div className="min-h-0 flex-1 overflow-auto">
+        <VolumeProfilePanel
+          chartInstances={chartInstanceOptionsForVolumeProfile}
+          activeChartInstanceId={activeChartInstanceId}
+          config={volumeProfileTab.volumeProfileConfig}
+          onConfigChange={(next) =>
+            setLayout((prev) => updateVolumeProfileConfig(prev, volumeProfileTab.instanceId, next))
+          }
+        />
       </div>
     )}
     </section>

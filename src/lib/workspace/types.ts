@@ -124,6 +124,29 @@ export type WidgetInstance = {
      */
     linkMode?: "independent" | "symbol" | "timeframe" | "both";
   };
+  /**
+   * UI-4h-2: this instance's own settings, persisted in the tree itself —
+   * same rationale as `chartConfig` above (an opaque field on an opaque jsonb
+   * column, so no migration is needed either way). Only meaningful for
+   * `widgetTypeId === "volume-profile"`.
+   */
+  volumeProfileConfig?: {
+    /** Number of price bins the visible lookback window is divided into. */
+    bins: number;
+    /** How many of the bound chart's most recent bars to compute the profile over. */
+    lookbackBars: number;
+    /** Target % of total volume the Value Area (VAH/VAL) should contain, expanded outward from the POC bin. */
+    valueAreaPct: number;
+    /**
+     * Which open chart instance this widget reads bars/symbol/interval from.
+     * The literal `"active"` tracks whichever chart currently has focus
+     * (studio.tsx's `activeChartInstanceId`); any other value is a specific
+     * chart's own instanceId, pinning this widget to that chart independently
+     * of which one the user is actively working in — falls back to `"active"`
+     * if the pinned chart instance no longer exists (e.g. it was closed).
+     */
+    boundChartInstanceId: string;
+  };
 };
 
 export type LayoutNode =

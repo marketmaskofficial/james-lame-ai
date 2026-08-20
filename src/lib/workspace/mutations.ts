@@ -474,3 +474,34 @@ export function updateChartConfig(
   }
   return withRoot(layout, walk(layout.root));
 }
+
+/**
+ * UI-4h-2: writes `volumeProfileConfig` onto a specific Volume Profile
+ * widget instance's tree entry — same shape/rationale as `updateChartConfig`
+ * above (an instance's own settings live in the tree itself, so the existing
+ * local/cloud layout persistence already covers it with zero extra
+ * plumbing). No-op if the instance can't be found.
+ */
+export function updateVolumeProfileConfig(
+  layout: WorkspaceLayout,
+  instanceId: string,
+  volumeProfileConfig: WidgetInstance["volumeProfileConfig"],
+): WorkspaceLayout {
+  function walk(node: LayoutNode): LayoutNode {
+    if (node.kind === "tabs") {
+      if (!node.tabs.some((t) => t.instanceId === instanceId)) return node;
+      return {
+        ...node,
+        tabs: node.tabs.map((t) => (t.instanceId === instanceId ? { ...t, volumeProfileConfig } : t)),
+      };
+    }
+    let changed = false;
+    const children = node.children.map((c) => {
+      const next = walk(c);
+      if (next !== c) changed = true;
+      return next;
+    });
+    return changed ? { ...node, children } : node;
+  }
+  return withRoot(layout, walk(layout.root));
+}
