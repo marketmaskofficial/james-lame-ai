@@ -36,19 +36,35 @@ function inst(instanceId: string, widgetTypeId: WidgetTypeId) {
   return { instanceId, widgetTypeId };
 }
 
+function chartInst(instanceId: string, symbol: string, interval: string) {
+  return {
+    instanceId,
+    widgetTypeId: "chart" as WidgetTypeId,
+    chartConfig: { symbol, interval, chartType: "candles" },
+  };
+}
+
 export type PresetId =
   | "beginner"
   | "indicatorBuilder"
   | "backtesting"
   | "activeTrader"
+  | "singleChart"
+  | "twoChartHorizontal"
+  | "twoChartVertical"
+  | "fourChartGrid"
   | "orderflowPro";
 
-/** Display order for the Presets picker — Beginner first. */
+/** Display order for the Presets picker — Beginner first, locked preview last. */
 export const PRESET_ORDER: PresetId[] = [
   "beginner",
   "indicatorBuilder",
   "backtesting",
   "activeTrader",
+  "singleChart",
+  "twoChartHorizontal",
+  "twoChartVertical",
+  "fourChartGrid",
   "orderflowPro",
 ];
 
@@ -257,6 +273,293 @@ export const PRESETS: Record<PresetId, WorkspaceLayout> = {
             inst("alerts-1", "alerts"),
           ],
           activeInstanceId: "trade-1",
+        },
+      ],
+    },
+  },
+
+  // UI-4g-3: four presets demonstrating the multi-chart workspace built in
+  // UI-4g-1/4g-2. Each chart leaf carries its own `chartConfig`
+  // (symbol/interval/chartType) via `chartInst`, matching exactly what
+  // `createInstanceAsNewPane` writes onto a chart created interactively — a
+  // preset is just a pre-built version of what a user could construct by
+  // hand with "Add chart" + edge-drop. No new topology primitives: every
+  // shape below is an ordinary nested `"split"`/`"tabs"` tree, the same
+  // generic model `LayoutTree` has walked since UI-4f-1.
+  singleChart: {
+    version: 1,
+    name: "Single Chart",
+    isPreset: true,
+    maximizedNodeId: null,
+    collapsedNodeIds: [],
+    // Deliberately the SAME composition as `beginner` (dock/sidebar
+    // contents, proportions) so this reads as "the current default trading
+    // layout, named explicitly" rather than a different arrangement --
+    // `beginner` itself stays untouched, per every prior phase's rule. This
+    // just gives the 1-chart case its own visible entry in the Presets list
+    // alongside the new 2-chart/4-chart ones, instead of relying on users
+    // already knowing "Beginner" means "one chart."
+    root: {
+      kind: "split",
+      id: "workspace-root",
+      direction: "row",
+      sizes: [0.82, 0.18],
+      children: [
+        {
+          kind: "split",
+          id: "chart-column",
+          direction: "column",
+          sizes: [0.62, 0.38],
+          children: [
+            {
+              kind: "tabs",
+              id: "chart-area",
+              tabs: [chartInst("chart-1", "BTCUSDT", "15m")],
+              activeInstanceId: "chart-1",
+            },
+            {
+              kind: "tabs",
+              id: "bottom-dock",
+              tabs: [
+                { ...inst("code-editor-1", "code-editor"), pinned: true },
+                inst("strategy-tester-1", "strategy-tester"),
+                inst("positions-1", "positions"),
+                inst("orders-1", "orders"),
+                inst("history-1", "history"),
+                inst("journal-1", "journal"),
+                inst("saved-indicators-1", "saved-indicators"),
+                inst("reference-1", "reference"),
+              ],
+              activeInstanceId: "code-editor-1",
+            },
+          ],
+        },
+        {
+          kind: "tabs",
+          id: "right-sidebar",
+          tabs: [
+            inst("watchlist-1", "watchlist"),
+            inst("trade-1", "trade"),
+            inst("ai-builder-1", "ai-builder"),
+            inst("alerts-1", "alerts"),
+          ],
+          activeInstanceId: "watchlist-1",
+        },
+      ],
+    },
+  },
+
+  // Multi-timeframe analysis of one symbol, side by side: the same market's
+  // short-term structure (15m) next to its higher-timeframe context (1h) --
+  // a genuinely common real trading pattern, not an arbitrary pairing.
+  twoChartHorizontal: {
+    version: 1,
+    name: "2 Chart Horizontal",
+    isPreset: true,
+    maximizedNodeId: null,
+    collapsedNodeIds: [],
+    root: {
+      kind: "split",
+      id: "workspace-root",
+      direction: "row",
+      sizes: [0.82, 0.18],
+      children: [
+        {
+          kind: "split",
+          id: "chart-column",
+          direction: "column",
+          sizes: [0.62, 0.38],
+          children: [
+            {
+              kind: "split",
+              id: "chart-region",
+              direction: "row",
+              sizes: [0.5, 0.5],
+              children: [
+                {
+                  kind: "tabs",
+                  id: "chart-area",
+                  tabs: [chartInst("chart-1", "BTCUSDT", "15m")],
+                  activeInstanceId: "chart-1",
+                },
+                {
+                  kind: "tabs",
+                  id: "chart-pane-2",
+                  tabs: [chartInst("chart-2", "BTCUSDT", "1h")],
+                  activeInstanceId: "chart-2",
+                },
+              ],
+            },
+            {
+              kind: "tabs",
+              id: "bottom-dock",
+              tabs: [
+                { ...inst("code-editor-1", "code-editor"), pinned: true },
+                inst("saved-indicators-1", "saved-indicators"),
+              ],
+              activeInstanceId: "code-editor-1",
+            },
+          ],
+        },
+        {
+          kind: "tabs",
+          id: "right-sidebar",
+          tabs: [inst("watchlist-1", "watchlist")],
+          activeInstanceId: "watchlist-1",
+        },
+      ],
+    },
+  },
+
+  // Cross-symbol comparison at the same timeframe, stacked -- a different
+  // analytical purpose from the horizontal preset above (symbol comparison
+  // vs. timeframe comparison), not a redundant layout-direction toggle on
+  // the same idea.
+  twoChartVertical: {
+    version: 1,
+    name: "2 Chart Vertical",
+    isPreset: true,
+    maximizedNodeId: null,
+    collapsedNodeIds: [],
+    root: {
+      kind: "split",
+      id: "workspace-root",
+      direction: "row",
+      sizes: [0.82, 0.18],
+      children: [
+        {
+          kind: "split",
+          id: "chart-column",
+          direction: "column",
+          sizes: [0.62, 0.38],
+          children: [
+            {
+              kind: "split",
+              id: "chart-region",
+              direction: "column",
+              sizes: [0.5, 0.5],
+              children: [
+                {
+                  kind: "tabs",
+                  id: "chart-area",
+                  tabs: [chartInst("chart-1", "BTCUSDT", "15m")],
+                  activeInstanceId: "chart-1",
+                },
+                {
+                  kind: "tabs",
+                  id: "chart-pane-2",
+                  tabs: [chartInst("chart-2", "ETHUSDT", "15m")],
+                  activeInstanceId: "chart-2",
+                },
+              ],
+            },
+            {
+              kind: "tabs",
+              id: "bottom-dock",
+              tabs: [
+                { ...inst("code-editor-1", "code-editor"), pinned: true },
+                inst("saved-indicators-1", "saved-indicators"),
+              ],
+              activeInstanceId: "code-editor-1",
+            },
+          ],
+        },
+        {
+          kind: "tabs",
+          id: "right-sidebar",
+          tabs: [inst("watchlist-1", "watchlist")],
+          activeInstanceId: "watchlist-1",
+        },
+      ],
+    },
+  },
+
+  // A real 2x2 grid, not a 4-in-a-row strip: an outer ROW split of two
+  // COLUMN splits, each holding 2 chart leaves. Four distinct top-liquidity
+  // symbols at the same timeframe -- a market-overview scan, the classic
+  // "four chart terminal" use case, up against the approved 4-chart cap.
+  fourChartGrid: {
+    version: 1,
+    name: "4 Chart Grid",
+    isPreset: true,
+    maximizedNodeId: null,
+    collapsedNodeIds: [],
+    root: {
+      kind: "split",
+      id: "workspace-root",
+      direction: "row",
+      sizes: [0.82, 0.18],
+      children: [
+        {
+          kind: "split",
+          id: "chart-column",
+          direction: "column",
+          sizes: [0.62, 0.38],
+          children: [
+            {
+              kind: "split",
+              id: "chart-region",
+              direction: "row",
+              sizes: [0.5, 0.5],
+              children: [
+                {
+                  kind: "split",
+                  id: "chart-region-left",
+                  direction: "column",
+                  sizes: [0.5, 0.5],
+                  children: [
+                    {
+                      kind: "tabs",
+                      id: "chart-area",
+                      tabs: [chartInst("chart-1", "BTCUSDT", "15m")],
+                      activeInstanceId: "chart-1",
+                    },
+                    {
+                      kind: "tabs",
+                      id: "chart-pane-2",
+                      tabs: [chartInst("chart-2", "ETHUSDT", "15m")],
+                      activeInstanceId: "chart-2",
+                    },
+                  ],
+                },
+                {
+                  kind: "split",
+                  id: "chart-region-right",
+                  direction: "column",
+                  sizes: [0.5, 0.5],
+                  children: [
+                    {
+                      kind: "tabs",
+                      id: "chart-pane-3",
+                      tabs: [chartInst("chart-3", "SOLUSDT", "15m")],
+                      activeInstanceId: "chart-3",
+                    },
+                    {
+                      kind: "tabs",
+                      id: "chart-pane-4",
+                      tabs: [chartInst("chart-4", "BNBUSDT", "15m")],
+                      activeInstanceId: "chart-4",
+                    },
+                  ],
+                },
+              ],
+            },
+            {
+              kind: "tabs",
+              id: "bottom-dock",
+              tabs: [
+                { ...inst("code-editor-1", "code-editor"), pinned: true },
+                inst("saved-indicators-1", "saved-indicators"),
+              ],
+              activeInstanceId: "code-editor-1",
+            },
+          ],
+        },
+        {
+          kind: "tabs",
+          id: "right-sidebar",
+          tabs: [inst("watchlist-1", "watchlist")],
+          activeInstanceId: "watchlist-1",
         },
       ],
     },

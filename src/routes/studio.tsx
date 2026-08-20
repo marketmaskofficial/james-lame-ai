@@ -1595,6 +1595,22 @@ function Studio() {
   // indicator/drawing update to any instance, which the raw map would
   // trigger on. `barsLoadedFor` still dedupes per instance: an instance
   // whose bars already match its own current symbol/interval is skipped.
+  //
+  // UI-4g-3 fix: `layoutKey` is included below too. `seedChartStatesFromLayout`
+  // wholesale-replaces chartStatesMap on every preset/named-layout switch,
+  // resetting each instance's `bars`/`barsLoadedFor` to fresh (null) state —
+  // but if the new preset's chart happens to reuse the same instance id AND
+  // the same symbol/interval as what was already on screen (e.g. switching
+  // into "Single Chart", BTCUSDT/15m, from the also-BTCUSDT/15m default),
+  // the `id:symbol:interval` signature string is byte-identical before and
+  // after, so this effect would never re-fire and the just-wiped bars would
+  // stay empty forever — confirmed by direct reproduction (a real "0 bars"
+  // empty chart), the same class of bug UI-4g-2 fixed via a different path
+  // (there it was a brand-new instance; here it's a same-id/same-symbol
+  // reseed). `layoutKey` is the layout system's own existing signal for
+  // "state was just wholesale-replaced, treat as fresh" (already used to
+  // force LayoutTree's remount) — tying this effect to it too closes the
+  // gap without weakening the dedup for ordinary symbol/interval changes.
   const chartInstanceSymbolsSignature = useMemo(
     () =>
       Object.entries(chartStatesMap)
@@ -1631,7 +1647,7 @@ function Studio() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chartInstanceSymbolsSignature]);
+  }, [chartInstanceSymbolsSignature, layoutKey]);
   // Resyncs the top-toolbar's lastPrice display when the ACTIVE chart
   // changes, independent of the fetch effect above — switching to an
   // already-loaded chart shouldn't refetch anything, just reflect its

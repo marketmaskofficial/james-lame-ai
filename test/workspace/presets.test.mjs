@@ -41,13 +41,27 @@ check("PRESET_ORDER order", PRESET_ORDER, [
   "indicatorBuilder",
   "backtesting",
   "activeTrader",
+  "singleChart",
+  "twoChartHorizontal",
+  "twoChartVertical",
+  "fourChartGrid",
   "orderflowPro",
 ]);
 ok("PRESET_ORDER covers every PRESETS key", PRESET_ORDER.length === Object.keys(PRESETS).length);
 
 // ---- lock status matches whether a preset references a coming-soon widget --
 
-const EXPECTED_LOCKED = { beginner: false, indicatorBuilder: false, backtesting: false, activeTrader: false, orderflowPro: true };
+const EXPECTED_LOCKED = {
+  beginner: false,
+  indicatorBuilder: false,
+  backtesting: false,
+  activeTrader: false,
+  singleChart: false,
+  twoChartHorizontal: false,
+  twoChartVertical: false,
+  fourChartGrid: false,
+  orderflowPro: true,
+};
 for (const id of PRESET_ORDER) {
   ok(`isPresetLocked(${id}) === ${EXPECTED_LOCKED[id]}`, isPresetLocked(PRESETS[id]) === EXPECTED_LOCKED[id]);
 }
@@ -151,6 +165,112 @@ check("beginner: dock composition unchanged", widgetIdsOf("beginner", WELL_KNOWN
   "saved-indicators",
   "reference",
 ]);
+
+// ---- UI-4g-3: multi-chart preset validity ------------------------------------
+// Each new preset's chart instances must: exist in the expected count, have
+// distinct instanceIds (no collisions if two presets' subtrees were ever
+// merged), and carry a real chartConfig (symbol/interval) -- not rely on
+// page-level defaults, since that's the whole point of persisting chart
+// config in the tree (UI-4g-2). Also confirms the 4-chart preset sits
+// exactly at, never over, the approved cap (widgetRegistry.ts's
+// chart.maxInstances).
+
+function collectChartInstances(presetId) {
+  const acc = [];
+  (function walk(node) {
+    if (node.kind === "tabs") {
+      for (const t of node.tabs) if (t.widgetTypeId === "chart") acc.push(t);
+    } else {
+      for (const c of node.children) walk(c);
+    }
+  })(PRESETS[presetId].root);
+  return acc;
+}
+
+const EXPECTED_CHART_COUNT = {
+  beginner: 1,
+  indicatorBuilder: 1,
+  backtesting: 1,
+  activeTrader: 1,
+  singleChart: 1,
+  twoChartHorizontal: 2,
+  twoChartVertical: 2,
+  fourChartGrid: 4,
+  orderflowPro: 1,
+};
+
+for (const id of PRESET_ORDER) {
+  const charts = collectChartInstances(id);
+  ok(`${id}: has exactly ${EXPECTED_CHART_COUNT[id]} chart instance(s)`, charts.length === EXPECTED_CHART_COUNT[id]);
+
+  const ids = charts.map((c) => c.instanceId);
+  ok(`${id}: chart instanceIds are all distinct`, new Set(ids).size === ids.length);
+}
+
+// The 5 pre-existing presets (UI-4a-4e) never set chart.chartConfig -- they
+// rely on seedChartStatesFromLayout's page-level defaulting (UI-4g-2), which
+// is existing, unchanged, correct behavior; those presets are explicitly not
+// touched by this phase. Only the 4 new UI-4g-3 presets are required to carry
+// an explicit chartConfig, since demonstrating persisted per-chart config is
+// this phase's whole point.
+const NEW_PRESETS_WITH_CHART_CONFIG = [
+  "singleChart",
+  "twoChartHorizontal",
+  "twoChartVertical",
+  "fourChartGrid",
+];
+for (const id of NEW_PRESETS_WITH_CHART_CONFIG) {
+  for (const c of collectChartInstances(id)) {
+    ok(
+      `${id}: chart "${c.instanceId}" has a real chartConfig.symbol`,
+      typeof c.chartConfig?.symbol === "string" && c.chartConfig.symbol.length > 0,
+    );
+    ok(
+      `${id}: chart "${c.instanceId}" has a real chartConfig.interval`,
+      typeof c.chartConfig?.interval === "string" && c.chartConfig.interval.length > 0,
+    );
+  }
+}
+
+const CHART_MAX_INSTANCES = WIDGET_REGISTRY.chart.maxInstances;
+ok("widgetRegistry: chart.maxInstances is defined and === 4", CHART_MAX_INSTANCES === 4);
+ok(
+  "fourChartGrid: chart count sits exactly at the approved cap, never over",
+  collectChartInstances("fourChartGrid").length === CHART_MAX_INSTANCES,
+);
+for (const id of PRESET_ORDER) {
+  ok(
+    `${id}: chart count never exceeds the cap`,
+    collectChartInstances(id).length <= CHART_MAX_INSTANCES,
+  );
+}
+
+// ---- exact multi-chart composition matches what was specified ---------------
+
+check("twoChartHorizontal: symbols/intervals", collectChartInstances("twoChartHorizontal").map((c) => `${c.chartConfig.symbol} ${c.chartConfig.interval}`), [
+  "BTCUSDT 15m",
+  "BTCUSDT 1h",
+]);
+check("twoChartVertical: symbols/intervals", collectChartInstances("twoChartVertical").map((c) => `${c.chartConfig.symbol} ${c.chartConfig.interval}`), [
+  "BTCUSDT 15m",
+  "ETHUSDT 15m",
+]);
+check("fourChartGrid: symbols/intervals", collectChartInstances("fourChartGrid").map((c) => `${c.chartConfig.symbol} ${c.chartConfig.interval}`), [
+  "BTCUSDT 15m",
+  "ETHUSDT 15m",
+  "SOLUSDT 15m",
+  "BNBUSDT 15m",
+]);
+
+// ---- singleChart mirrors beginner's composition exactly (explicit 1-chart --
+// ---- entry, per the approved decision -- beginner itself stays untouched) --
+
+check("singleChart: sidebar composition matches beginner", widgetIdsOf("singleChart", WELL_KNOWN_NODE_IDS.rightSidebar), widgetIdsOf("beginner", WELL_KNOWN_NODE_IDS.rightSidebar));
+check("singleChart: dock composition matches beginner", widgetIdsOf("singleChart", WELL_KNOWN_NODE_IDS.bottomDock), widgetIdsOf("beginner", WELL_KNOWN_NODE_IDS.bottomDock));
+
+// ---- beginner remains byte-identical (unaffected by this phase) -------------
+
+check("beginner: chart composition unaffected by UI-4g-3", collectChartInstances("beginner").length, 1);
 
 // ---- summary ----------------------------------------------------------------
 
