@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { evaluateCondition, type AlertCondition } from "@/lib/alerts/evaluateCondition";
 
 // Fetch a spot price for a Binance symbol with fallback endpoints.
 async function fetchPrice(symbol: string): Promise<number | null> {
@@ -14,6 +15,32 @@ async function fetchPrice(symbol: string): Promise<number | null> {
       const j = (await r.json()) as { price?: string };
       const p = j.price ? parseFloat(j.price) : NaN;
       if (Number.isFinite(p)) return p;
+    } catch {
+      // try next
+    }
+  }
+  return null;
+}
+
+// Previous completed 1-minute candle's close, for crosses_above/crosses_below
+// edge detection — which side of the threshold price was already on before
+// now, so a crossing alert doesn't fire immediately just because price
+// already happens to be past the threshold when it's created/first polled.
+async function fetchPreviousClose(symbol: string): Promise<number | null> {
+  const sources = [
+    `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1m&limit=2`,
+    `https://api.binance.us/api/v3/klines?symbol=${symbol}&interval=1m&limit=2`,
+    `https://data-api.binance.vision/api/v3/klines?symbol=${symbol}&interval=1m&limit=2`,
+  ];
+  for (const src of sources) {
+    try {
+      const r = await fetch(src);
+      if (!r.ok) continue;
+      const rows = (await r.json()) as unknown[];
+      if (!Array.isArray(rows) || rows.length < 2) continue;
+      const prev = rows[rows.length - 2] as unknown[];
+      const close = parseFloat(String(prev[4]));
+      if (Number.isFinite(close)) return close;
     } catch {
       // try next
     }
@@ -66,6 +93,25 @@ export const Route = createFileRoute("/api/public/hooks/check-alerts")({
           }),
         );
 
+        // Only the two edge conditions need a previous close — above/below
+        // are pure level checks and never touch this map.
+        const crossingSymbols = Array.from(
+          new Set(
+            list
+              .filter(
+                (a) => a.condition === "crosses_above" || a.condition === "crosses_below",
+              )
+              .map((a) => a.symbol),
+          ),
+        );
+        const prevCloses = new Map<string, number>();
+        await Promise.all(
+          crossingSymbols.map(async (s) => {
+            const c = await fetchPreviousClose(s);
+            if (c !== null) prevCloses.set(s, c);
+          }),
+        );
+
         const now = Date.now();
         let triggered = 0;
 
@@ -73,8 +119,13 @@ export const Route = createFileRoute("/api/public/hooks/check-alerts")({
           const price = prices.get(a.symbol);
           if (price === undefined) continue;
           const threshold = Number(a.threshold);
-          const hit =
-            a.condition === "above" ? price >= threshold : price <= threshold;
+          const prevClose = prevCloses.get(a.symbol) ?? null;
+          const hit = evaluateCondition(
+            a.condition as AlertCondition,
+            price,
+            threshold,
+            prevClose,
+          );
           if (!hit) continue;
 
           if (a.last_triggered_at) {

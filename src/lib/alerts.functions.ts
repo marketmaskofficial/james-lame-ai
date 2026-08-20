@@ -29,7 +29,7 @@ export const createAlert = createServerFn({ method: "POST" })
     z
       .object({
         symbol: symbolSchema,
-        condition: z.enum(["above", "below"]),
+        condition: z.enum(["above", "below", "crosses_above", "crosses_below"]),
         threshold: z.number().positive().finite(),
         cooldownSeconds: z.number().int().min(60).max(86400).optional(),
       })
@@ -60,7 +60,7 @@ export const updateAlert = createServerFn({ method: "POST" })
     z
       .object({
         id: z.string().uuid(),
-        condition: z.enum(["above", "below"]),
+        condition: z.enum(["above", "below", "crosses_above", "crosses_below"]),
         threshold: z.number().positive().finite(),
       })
       .parse(i),

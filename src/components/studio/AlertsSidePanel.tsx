@@ -19,7 +19,15 @@ export const DEFAULT_ALERTS_CONFIG: AlertsConfig = {
   boundChartInstanceId: "active",
 };
 
-type Condition = "above" | "below";
+type Condition = "above" | "below" | "crosses_above" | "crosses_below";
+
+const CONDITIONS: readonly Condition[] = ["above", "below", "crosses_above", "crosses_below"];
+const CONDITION_LABEL: Record<Condition, string> = {
+  above: "Above",
+  below: "Below",
+  crosses_above: "Crosses above",
+  crosses_below: "Crosses below",
+};
 
 /**
  * Derived alert status — none of this is a stored column, all three states
@@ -77,15 +85,14 @@ type Props = {
  * same convention as Volume Profile/Watchlist (`boundChartInstanceId`,
  * `"active"` | a specific chart's instanceId).
  *
- * Deliberately only two condition types (price above / price below a
- * threshold) — "crosses above" / "crosses below" as truly distinct
- * edge-triggered conditions need the `alerts.condition` CHECK constraint
- * loosened to accept two more values, a real (if small) schema change this
- * pass wrote as a migration file but did NOT apply against the live
- * Supabase project; see the migration under supabase/migrations and the
- * task report for exactly what it does and why it's pending approval
- * rather than applied. Shipping a selector that would fail against the
- * live constraint would be worse than not offering it yet.
+ * Four condition types: `above`/`below` are level checks (true whenever
+ * price is already past the threshold — existing behavior, unchanged) and
+ * `crosses_above`/`crosses_below` are edge-triggered (fire only on the
+ * transition through the threshold; see evaluateCondition.ts and
+ * check-alerts.ts's `fetchPreviousClose`). The crossing pair needed the
+ * `alerts.condition` CHECK constraint loosened — that migration has since
+ * been applied against the live Supabase project, so all four are safe to
+ * offer here.
  */
 export function AlertsSidePanel({
   chartInstances,
@@ -229,18 +236,18 @@ export function AlertsSidePanel({
           placeholder="Symbol"
           className="w-full rounded border border-border bg-background px-2 py-1 font-mono text-[11px] uppercase outline-none focus:border-brand"
         />
-        <div className="flex gap-1">
-          {(["above", "below"] as const).map((c) => (
+        <div className="grid grid-cols-2 gap-1">
+          {CONDITIONS.map((c) => (
             <button
               key={c}
               onClick={() => setCondition(c)}
-              className={`flex-1 rounded border px-2 py-1 text-[11px] capitalize ${
+              className={`rounded border px-2 py-1 text-[11px] ${
                 condition === c
                   ? "border-brand text-brand"
                   : "border-border text-muted-foreground hover:text-foreground"
               }`}
             >
-              {c}
+              {CONDITION_LABEL[c]}
             </button>
           ))}
         </div>
@@ -289,18 +296,18 @@ export function AlertsSidePanel({
                   key={a.id}
                   className="space-y-1 rounded border border-brand bg-card px-2 py-1.5 text-[11px]"
                 >
-                  <div className="flex gap-1">
-                    {(["above", "below"] as const).map((c) => (
+                  <div className="grid grid-cols-2 gap-1">
+                    {CONDITIONS.map((c) => (
                       <button
                         key={c}
                         onClick={() => setEditCondition(c)}
-                        className={`flex-1 rounded border px-2 py-0.5 text-[10px] capitalize ${
+                        className={`rounded border px-2 py-0.5 text-[10px] ${
                           editCondition === c
                             ? "border-brand text-brand"
                             : "border-border text-muted-foreground"
                         }`}
                       >
-                        {c}
+                        {CONDITION_LABEL[c]}
                       </button>
                     ))}
                   </div>
@@ -352,7 +359,9 @@ export function AlertsSidePanel({
                 />
                 <span className="flex-1 truncate">
                   {a.symbol}{" "}
-                  <span className="text-muted-foreground">{a.condition}</span>{" "}
+                  <span className="text-muted-foreground">
+                    {CONDITION_LABEL[a.condition as Condition] ?? a.condition}
+                  </span>{" "}
                   <span className="font-mono">{Number(a.threshold)}</span>
                   {status === "triggered" && (
                     <span className="ml-1 rounded bg-amber-400/20 px-1 text-[9px] text-amber-500">
@@ -408,7 +417,8 @@ export function AlertsSidePanel({
                   }`}
                 >
                   <span className="flex-1 truncate">
-                    {n.symbol} {n.condition} <span className="font-mono">{Number(n.threshold)}</span>{" "}
+                    {n.symbol} {CONDITION_LABEL[n.condition as Condition] ?? n.condition}{" "}
+                    <span className="font-mono">{Number(n.threshold)}</span>{" "}
                     <span className="text-muted-foreground">
                       @ {Number(n.triggered_price)} · {new Date(n.triggered_at).toLocaleString()}
                     </span>
