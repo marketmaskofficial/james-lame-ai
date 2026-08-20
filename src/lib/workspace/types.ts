@@ -161,6 +161,18 @@ export type WidgetInstance = {
     /** Same `"active"` | specific-instanceId convention as `volumeProfileConfig.boundChartInstanceId`. */
     boundChartInstanceId: string;
   };
+  /**
+   * UI-4h-4: this instance's own settings, same rationale/shape as
+   * `volumeProfileConfig`/`watchlistConfig` above (opaque tree field, zero
+   * migration). Only meaningful for `widgetTypeId === "alerts"`. Alerts
+   * themselves are user-wide (not per-instance) DB rows in `public.alerts`;
+   * this only controls which chart's symbol/price the widget's own "create
+   * alert" form defaults to.
+   */
+  alertsConfig?: {
+    /** Same `"active"` | specific-instanceId convention as the other two. */
+    boundChartInstanceId: string;
+  };
 };
 
 /**

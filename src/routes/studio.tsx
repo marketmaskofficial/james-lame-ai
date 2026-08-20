@@ -148,6 +148,7 @@ import {
   updateChartConfig,
   updateVolumeProfileConfig,
   updateWatchlistConfig,
+  updateAlertsConfig,
   type DropEdge,
 } from "@/lib/workspace/mutations";
 import { DockZone, pickDropZone, type DropZone } from "@/components/studio/DockZone";
@@ -2526,7 +2527,17 @@ function Studio() {
       );
     }
     if (widgetTypeId === "alerts") {
-      return <AlertsSidePanel symbol={symbol} lastPrice={lastPrice} signedIn={!!user} />;
+      return (
+        <AlertsSidePanel
+          chartInstances={chartInstanceOptions}
+          activeChartInstanceId={activeChartInstanceId}
+          config={alertsTab?.alertsConfig}
+          onConfigChange={(next) =>
+            alertsTab && setLayout((prev) => updateAlertsConfig(prev, alertsTab.instanceId, next))
+          }
+          signedIn={!!user}
+        />
+      );
     }
     return null;
   };
@@ -3093,6 +3104,13 @@ function Studio() {
   // rather than assumed to live in bottomDock.
   const watchlistTab = useMemo(
     () => findWidgetInstance(layout.root, "watchlist"),
+    [layout],
+  );
+  // UI-4h-4: same "placeable in sidebar AND dock, found anywhere in the
+  // tree" rationale as watchlistTab above — Alerts isn't bottomDock-fixed
+  // like Volume Profile.
+  const alertsTab = useMemo(
+    () => findWidgetInstance(layout.root, "alerts"),
     [layout],
   );
   // Reused by both the Volume Profile and Watchlist widgets — every open
@@ -3726,7 +3744,15 @@ function Studio() {
     )}
     {dockVisible && dock === "alerts" && (
       <div className="min-h-0 flex-1 overflow-auto">
-        <AlertsSidePanel symbol={symbol} lastPrice={lastPrice} signedIn={!!user} />
+        <AlertsSidePanel
+          chartInstances={chartInstanceOptions}
+          activeChartInstanceId={activeChartInstanceId}
+          config={alertsTab?.alertsConfig}
+          onConfigChange={(next) =>
+            alertsTab && setLayout((prev) => updateAlertsConfig(prev, alertsTab.instanceId, next))
+          }
+          signedIn={!!user}
+        />
       </div>
     )}
     {dockVisible && dock === "scanner" && (
@@ -3961,8 +3987,12 @@ function Studio() {
             />
           ) : rightTab === "alerts" ? (
             <AlertsSidePanel
-              symbol={symbol}
-              lastPrice={lastPrice}
+              chartInstances={chartInstanceOptions}
+              activeChartInstanceId={activeChartInstanceId}
+              config={alertsTab?.alertsConfig}
+              onConfigChange={(next) =>
+                alertsTab && setLayout((prev) => updateAlertsConfig(prev, alertsTab.instanceId, next))
+              }
               signedIn={!!user}
             />
           ) : rightTab === "trade" ? (

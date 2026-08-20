@@ -54,6 +54,26 @@ export const createAlert = createServerFn({ method: "POST" })
     return row;
   });
 
+export const updateAlert = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((i: unknown) =>
+    z
+      .object({
+        id: z.string().uuid(),
+        condition: z.enum(["above", "below"]),
+        threshold: z.number().positive().finite(),
+      })
+      .parse(i),
+  )
+  .handler(async ({ data, context }) => {
+    const { error } = await context.supabase
+      .from("alerts")
+      .update({ condition: data.condition, threshold: data.threshold })
+      .eq("id", data.id);
+    if (error) throw new Error(error.message);
+    return { ok: true };
+  });
+
 export const toggleAlert = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((i: unknown) =>

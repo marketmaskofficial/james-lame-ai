@@ -507,6 +507,35 @@ export function updateVolumeProfileConfig(
 }
 
 /**
+ * UI-4h-4: writes `alertsConfig` onto a specific Alerts widget instance's
+ * tree entry — same shape/rationale as `updateVolumeProfileConfig`/
+ * `updateWatchlistConfig` above. No-op if the instance can't be found.
+ */
+export function updateAlertsConfig(
+  layout: WorkspaceLayout,
+  instanceId: string,
+  alertsConfig: WidgetInstance["alertsConfig"],
+): WorkspaceLayout {
+  function walk(node: LayoutNode): LayoutNode {
+    if (node.kind === "tabs") {
+      if (!node.tabs.some((t) => t.instanceId === instanceId)) return node;
+      return {
+        ...node,
+        tabs: node.tabs.map((t) => (t.instanceId === instanceId ? { ...t, alertsConfig } : t)),
+      };
+    }
+    let changed = false;
+    const children = node.children.map((c) => {
+      const next = walk(c);
+      if (next !== c) changed = true;
+      return next;
+    });
+    return changed ? { ...node, children } : node;
+  }
+  return withRoot(layout, walk(layout.root));
+}
+
+/**
  * UI-4h-3: writes `watchlistConfig` onto a specific Watchlist widget
  * instance's tree entry — same shape/rationale as `updateVolumeProfileConfig`
  * above. No-op if the instance can't be found.
