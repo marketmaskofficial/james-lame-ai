@@ -304,6 +304,54 @@ export type Database = {
         }
         Relationships: []
       }
+      indicator_messages: {
+        // Hand-added ahead of codegen: backs the pending, not-yet-applied
+        // migration 20260822090000_indicator_messages.sql (UI-5c). Matches
+        // that migration's columns exactly; safe to regenerate over once the
+        // migration is actually applied and `supabase gen types` re-runs.
+        Row: {
+          content: string
+          created_at: string
+          id: string
+          indicator_id: string
+          issues: number | null
+          kind: string
+          role: string
+          status: string | null
+          user_id: string
+        }
+        Insert: {
+          content: string
+          created_at?: string
+          id?: string
+          indicator_id: string
+          issues?: number | null
+          kind?: string
+          role: string
+          status?: string | null
+          user_id: string
+        }
+        Update: {
+          content?: string
+          created_at?: string
+          id?: string
+          indicator_id?: string
+          issues?: number | null
+          kind?: string
+          role?: string
+          status?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "indicator_messages_indicator_id_fkey"
+            columns: ["indicator_id"]
+            isOneToOne: false
+            referencedRelation: "indicators"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       indicator_versions: {
         Row: {
           changelog: string

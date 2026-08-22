@@ -117,7 +117,7 @@ import { TradingTables } from "@/components/studio/TradingTables";
 import { DrawingInspector } from "@/components/studio/DrawingInspector";
 import { AlertsSidePanel } from "@/components/studio/AlertsSidePanel";
 import { AiSidePanel } from "@/components/studio/AiSidePanel";
-import type { IndicatorSpec } from "@/lib/spec/types";
+import { coerceSpec, type IndicatorSpec } from "@/lib/spec/types";
 import { JournalPanel } from "@/components/studio/JournalPanel";
 import { StrategyTester } from "@/components/studio/StrategyTester";
 import type { BacktestTrade } from "@/lib/backtest/engine";
@@ -706,6 +706,14 @@ function Studio() {
   // chart slot its output owns so edits replace it instead of stacking.
   const [projectSpec, setProjectSpec] = useState<IndicatorSpec | null>(null);
   const builtKeyRef = useRef<string | null>(null);
+  // UI-5c: the same AI build session's real, versioned identity
+  // (public.indicators.id) once one exists — null until the first
+  // successful Build. Kept alongside `projectSpec` (not owned by
+  // AiSidePanel) so every place that already loads a saved project's spec
+  // into the editor (Edit code / restore / version history) can point the
+  // AI Builder's conversation at that SAME project instead of leaking a
+  // different one's history into it.
+  const [aiIndicatorId, setAiIndicatorId] = useState<string | null>(null);
   const [tool, setTool] = useState<DrawTool>("cursor");
   // Backtest overlay: entry/exit markers from the last run of the current project.
   const [backtestTrades, setBacktestTrades] = useState<BacktestTrade[] | null>(null);
@@ -2377,8 +2385,13 @@ function Studio() {
   const restoreMut = useMutation({
     mutationFn: (v: { indicatorId: string; version: number }) =>
       restoreVersionFn({ data: v }),
-    onSuccess: (row) => {
+    onSuccess: (row, variables) => {
       setCode(row.restored.code);
+      // The restored version becomes the AI Builder's active working
+      // version too — same project identity, so its own conversation
+      // history keeps showing (restoring never creates a new indicator).
+      setProjectSpec(coerceSpec(row.restored.spec));
+      setAiIndicatorId(variables.indicatorId);
       setDock("code");
       setNotice("Version restored — press Add to Chart to run it.");
       qc.invalidateQueries({ queryKey: ["indicators"] });
@@ -2498,7 +2511,9 @@ function Studio() {
           signedIn={!!user}
           converting={translating}
           spec={projectSpec}
-          onBuilt={(r) => {
+          indicatorId={aiIndicatorId}
+          onIndicatorIdChange={setAiIndicatorId}
+          onBuilt={(r, indicatorId) => {
             setProjectSpec(r.spec);
             setCode(r.sgscript);
             setDock("code");
@@ -2506,7 +2521,12 @@ function Studio() {
             const key = builtKeyRef.current ?? `ai${Date.now()}`;
             builtKeyRef.current = key;
             void (async () => {
-              const err = await runCode(r.sgscript, { settings: {}, silent: true, key });
+              const err = await runCode(r.sgscript, {
+                settings: {},
+                silent: true,
+                key,
+                ...(indicatorId ? { savedId: indicatorId } : {}),
+              });
               if (err) {
                 const err2 = await runSource(r.sgscript, { key });
                 track(err2 ? "add_to_chart_failed" : "add_to_chart_succeeded", { repaired: true });
@@ -2839,6 +2859,7 @@ function Studio() {
           openDock();
           // Start a fresh AI build session too.
           setProjectSpec(null);
+          setAiIndicatorId(null);
           builtKeyRef.current = null;
         }}
       />
@@ -3364,6 +3385,29 @@ function Studio() {
                         }))
                       }
                     />
+                  ) : inp.type === "color" ? (
+                    <input
+                      type="color"
+                      value={String(settings[inp.name] ?? "#000000")}
+                      onChange={(e) =>
+                        setSettings((s) => ({ ...s, [inp.name]: e.target.value }))
+                      }
+                      className="h-6 w-10 rounded border border-border bg-card p-0"
+                    />
+                  ) : inp.options && inp.options.length > 0 ? (
+                    <select
+                      value={String(settings[inp.name] ?? inp.options[0])}
+                      onChange={(e) =>
+                        setSettings((s) => ({ ...s, [inp.name]: e.target.value }))
+                      }
+                      className="w-28 rounded border border-border bg-card px-2 py-1 text-[11px] outline-none focus:border-brand"
+                    >
+                      {inp.options.map((o) => (
+                        <option key={o} value={o}>
+                          {o}
+                        </option>
+                      ))}
+                    </select>
                   ) : (
                     <input
                       type={inp.type === "number" ? "number" : "text"}
@@ -3455,6 +3499,11 @@ function Studio() {
                   onClick={() => {
                     setCode(row.code);
                     setEditingKey(`saved-${row.id}`);
+                    // Point the AI Builder at THIS project too, so Modify /
+                    // Explain / Fix Error act on it and its own conversation
+                    // history loads instead of the previous session's.
+                    setProjectSpec(coerceSpec(row.spec));
+                    setAiIndicatorId(row.id);
                     setDock("code");
                   }}
                   className="rounded p-1 text-muted-foreground hover:text-foreground"
@@ -3526,6 +3575,8 @@ function Studio() {
                         title="Load this version into the editor"
                         onClick={() => {
                           setCode(v.code);
+                          setProjectSpec(coerceSpec(v.spec));
+                          setAiIndicatorId(row.id);
                           setDock("code");
                           setNotice(`Loaded v${v.version} into the editor.`);
                         }}
@@ -3720,7 +3771,9 @@ function Studio() {
           signedIn={!!user}
           converting={translating}
           spec={projectSpec}
-          onBuilt={(r) => {
+          indicatorId={aiIndicatorId}
+          onIndicatorIdChange={setAiIndicatorId}
+          onBuilt={(r, indicatorId) => {
             setProjectSpec(r.spec);
             setCode(r.sgscript);
             setDock("code");
@@ -3728,7 +3781,12 @@ function Studio() {
             const key = builtKeyRef.current ?? `ai${Date.now()}`;
             builtKeyRef.current = key;
             void (async () => {
-              const err = await runCode(r.sgscript, { settings: {}, silent: true, key });
+              const err = await runCode(r.sgscript, {
+                settings: {},
+                silent: true,
+                key,
+                ...(indicatorId ? { savedId: indicatorId } : {}),
+              });
               if (err) {
                 const err2 = await runSource(r.sgscript, { key });
                 track(err2 ? "add_to_chart_failed" : "add_to_chart_succeeded", { repaired: true });
@@ -3965,7 +4023,9 @@ function Studio() {
               signedIn={!!user}
               converting={translating}
               spec={projectSpec}
-              onBuilt={(r) => {
+              indicatorId={aiIndicatorId}
+              onIndicatorIdChange={setAiIndicatorId}
+              onBuilt={(r, indicatorId) => {
                 setProjectSpec(r.spec);
                 setCode(r.sgscript);
                 setDock("code");
@@ -3979,6 +4039,7 @@ function Studio() {
                     settings: {},
                     silent: true,
                     key,
+                    ...(indicatorId ? { savedId: indicatorId } : {}),
                   });
                   if (err) {
                     const err2 = await runSource(r.sgscript, { key });

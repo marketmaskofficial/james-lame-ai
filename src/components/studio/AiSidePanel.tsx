@@ -1,10 +1,17 @@
 import { useEffect, useRef, useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
 import { HelpCircle, Loader2, Send, Sparkles, Wand2, Wrench } from "lucide-react";
 import { analyzeIndicator, type AnalyzeResult } from "@/lib/analyze.functions";
 import { buildProject, type BuildResult } from "@/lib/project.functions";
+import { createIndicator, updateIndicator } from "@/lib/indicators.functions";
+import {
+  appendIndicatorMessage,
+  listIndicatorMessages,
+} from "@/lib/indicatorMessages.functions";
 import type { IndicatorSpec } from "@/lib/spec/types";
 import { explainSpec } from "@/lib/spec/explain";
+import { defaultSettingsFromSpec } from "@/lib/spec/inputDefaults";
 import { track } from "@/lib/telemetry";
 
 type Interval = "1m" | "5m" | "15m" | "1h" | "4h" | "1d";
@@ -61,6 +68,8 @@ export function AiSidePanel({
   onBuilt,
   seedPrompt = null,
   onSeedConsumed,
+  indicatorId,
+  onIndicatorIdChange,
 }: {
   code: string;
   symbol: string;
@@ -69,10 +78,20 @@ export function AiSidePanel({
   onConvert: () => void;
   converting: boolean;
   spec: IndicatorSpec | null;
-  onBuilt: (result: BuildResult) => void;
+  onBuilt: (result: BuildResult, indicatorId: string | null) => void;
   /** Pre-fills the box, e.g. when the tester asks for missing strategy rules. */
   seedPrompt?: string | null;
   onSeedConsumed?: () => void;
+  /**
+   * The AI-built indicator's real, versioned identity (public.indicators.id)
+   * once one exists — null before the first successful Build. Controlled
+   * from the parent (not local state) so loading a different saved project
+   * (Edit code / restore / version-history "load into editor") can point
+   * this panel at that project's own conversation instead of leaking the
+   * previous session's turns into it.
+   */
+  indicatorId: string | null;
+  onIndicatorIdChange: (id: string | null) => void;
 }) {
   const [mode, setMode] = useState<"build" | "analyze">("build");
   const [result, setResult] = useState<AnalyzeResult | null>(null);
@@ -81,6 +100,138 @@ export function AiSidePanel({
   const [turns, setTurns] = useState<Turn[]>([]);
   const [failedDraft, setFailedDraft] = useState<FailedDraft | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
+  const createIndicatorFn = useServerFn(createIndicator);
+  const updateIndicatorFn = useServerFn(updateIndicator);
+  const listIndicatorMessagesFn = useServerFn(listIndicatorMessages);
+  const appendIndicatorMessageFn = useServerFn(appendIndicatorMessage);
+  /** The id this panel itself just created/updated, so the reset-on-switch
+   * effect below can tell "we made this id" from "the parent pointed us at
+   * a different project" — only the latter should clear/reload turns. */
+  const selfAssignedIdRef = useRef<string | null>(null);
+  /** How many of the current `turns` are already durably persisted, so the
+   * persistence effect only ever sends the NEW ones, never re-sends history
+   * that was just loaded from the server. */
+  const persistedCountRef = useRef(0);
+
+  // Switching to a different project (indicatorId changed from outside,
+  // not from this panel's own create/update call) means this panel is now
+  // showing the wrong conversation until the new project's own history
+  // loads — clear it immediately rather than leaving the previous
+  // project's turns visible for even one render.
+  useEffect(() => {
+    if (indicatorId && indicatorId === selfAssignedIdRef.current) return;
+    setTurns([]);
+    setFailedDraft(null);
+    persistedCountRef.current = 0;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [indicatorId]);
+
+  const messagesQuery = useQuery({
+    queryKey: ["indicator-messages", indicatorId],
+    enabled: Boolean(indicatorId) && indicatorId !== selfAssignedIdRef.current,
+    queryFn: () =>
+      listIndicatorMessagesFn({ data: { indicatorId: indicatorId as string } }),
+    retry: false,
+  });
+
+  useEffect(() => {
+    if (!messagesQuery.data || indicatorId === selfAssignedIdRef.current) return;
+    setTurns(
+      messagesQuery.data.map((m) => ({
+        role: m.role as Turn["role"],
+        text: m.content,
+        status: (m.status ?? undefined) as BuildStatus | undefined,
+        issues: m.issues ?? undefined,
+        kind: m.kind as Turn["kind"],
+      })),
+    );
+    persistedCountRef.current = messagesQuery.data.length;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messagesQuery.data]);
+
+  // Durably persist any turn this panel adds locally, as soon as a real
+  // project identity exists to scope it to. Best-effort: if the table isn't
+  // migrated live yet, or the request fails for any reason, the turn stays
+  // visible locally regardless — this never blocks or reverts the chat UI.
+  useEffect(() => {
+    if (!indicatorId) return;
+    const toPersist = turns.slice(persistedCountRef.current);
+    if (toPersist.length === 0) return;
+    persistedCountRef.current = turns.length;
+    for (const t of toPersist) {
+      void appendIndicatorMessageFn({
+        data: {
+          indicatorId,
+          role: t.role,
+          kind: t.kind ?? "build",
+          content: t.text,
+          status: t.status,
+          issues: t.issues,
+        },
+      }).catch(() => {
+        /* Not signed in with a real session, or the migration isn't live
+         * yet — conversation just won't survive a reload this turn. */
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [turns, indicatorId]);
+
+  /**
+   * Snapshots a successful Build/Modify/Fix Error result as a real,
+   * versioned indicator — reusing the exact same `indicators`/
+   * `indicator_versions` storage the manual Save button already writes to
+   * (no second, parallel versioning system). The first success for a fresh
+   * session creates the row; every success after that snapshots a new
+   * version on the same row. Never called for an `error` outcome (see
+   * `handleResult` below) — a failed generation can never become a version.
+   */
+  const persistVersion = async (
+    r: BuildResult,
+    requestText: string,
+  ): Promise<string | null> => {
+    const settings = defaultSettingsFromSpec(r.spec);
+    try {
+      if (!indicatorId) {
+        const row = await createIndicatorFn({
+          data: {
+            name: r.spec.name || "Untitled indicator",
+            code: r.sgscript,
+            pine: r.pine,
+            spec: r.spec as unknown as Record<string, unknown>,
+            symbol,
+            timeframe: safeInterval,
+            settings,
+            isOverlay: r.spec.overlay,
+            changelog: requestText,
+          },
+        });
+        selfAssignedIdRef.current = row.id;
+        onIndicatorIdChange(row.id);
+        return row.id;
+      }
+      await updateIndicatorFn({
+        data: {
+          id: indicatorId,
+          name: r.spec.name || undefined,
+          code: r.sgscript,
+          pine: r.pine,
+          spec: r.spec as unknown as Record<string, unknown>,
+          settings,
+          isOverlay: r.spec.overlay,
+          snapshot: true,
+          changelog: requestText,
+        },
+      });
+      return indicatorId;
+    } catch {
+      // Not signed in with a real session (this action is already gated on
+      // `signedIn` before it can run), or the live schema/network is
+      // unavailable — Build/Modify/Fix Error still fully work locally
+      // either way; this project just won't gain durable
+      // versioning/conversation history for this particular turn.
+      return indicatorId;
+    }
+  };
 
   useEffect(() => {
     if (!seedPrompt) return;
@@ -115,7 +266,10 @@ export function AiSidePanel({
    * instead stashes the failing draft so Fix Error can operate on it without
    * losing the user's project context.
    */
-  const handleResult = (r: BuildResult, opts: { isFix: boolean }) => {
+  const handleResult = (
+    r: BuildResult,
+    opts: { isFix: boolean; requestText: string },
+  ) => {
     const { status, totalIssues } = classify(r);
     track(
       opts.isFix
@@ -140,7 +294,12 @@ export function AiSidePanel({
       setFailedDraft({ spec: r.spec, pine: r.pine, sgscript: r.sgscript, issuesText: formatIssuesForRepair(r) });
     } else {
       setFailedDraft(null);
-      onBuilt(r);
+      // A real validation error is never versioned (see persistVersion's
+      // docstring) — this branch only runs for success/warning outcomes.
+      void (async () => {
+        const id = await persistVersion(r, opts.requestText);
+        onBuilt(r, id);
+      })();
     }
     requestAnimationFrame(() =>
       logRef.current?.scrollTo({ top: logRef.current.scrollHeight }),
@@ -158,7 +317,7 @@ export function AiSidePanel({
           ...(spec && code.trim() ? { currentSgscript: code } : {}),
         },
       }),
-    onSuccess: (r) => handleResult(r, { isFix: false }),
+    onSuccess: (r, request) => handleResult(r, { isFix: false, requestText: request }),
     onError: (e: unknown) => {
       track(spec ? "patch_failed" : "ai_build_failed", {
         message: e instanceof Error ? e.message.slice(0, 120) : "unknown",
@@ -184,7 +343,8 @@ export function AiSidePanel({
         },
       });
     },
-    onSuccess: (r) => handleResult(r, { isFix: true }),
+    onSuccess: (r) =>
+      handleResult(r, { isFix: true, requestText: "Fix the validation error." }),
     onError: (e: unknown) => {
       track("fix_error_request_failed", {
         message: e instanceof Error ? e.message.slice(0, 120) : "unknown",
