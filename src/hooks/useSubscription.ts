@@ -2,13 +2,9 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { getStripeEnvironment } from "@/lib/stripe";
 import { useAuth } from "@/hooks/useAuth";
+import { isSubscriptionRowActive, type SubscriptionRow } from "@/lib/subscription-status";
 
-export interface SubscriptionRow {
-  status: string;
-  price_id: string;
-  current_period_end: string | null;
-  cancel_at_period_end: boolean | null;
-}
+export type { SubscriptionRow };
 
 export function useSubscription() {
   const { user } = useAuth();
@@ -61,14 +57,7 @@ export function useSubscription() {
     };
   }, [user]);
 
-  const isActive =
-    !!subscription &&
-    ((["active", "trialing", "past_due"].includes(subscription.status) &&
-      (!subscription.current_period_end ||
-        new Date(subscription.current_period_end) > new Date())) ||
-      (subscription.status === "canceled" &&
-        !!subscription.current_period_end &&
-        new Date(subscription.current_period_end) > new Date()));
+  const isActive = isSubscriptionRowActive(subscription);
 
   return { subscription, isActive, loading };
 }

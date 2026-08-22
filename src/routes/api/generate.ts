@@ -3,6 +3,9 @@ import { generateText } from "ai";
 import { createOpenAiProvider } from "@/lib/ai-gateway.server";
 import { requireApiUser, rateLimit } from "@/lib/api-auth.server";
 import { validatePine, formatIssues, type PineReport } from "@/lib/validate/pine";
+import { recordAiUsage, accumulateUsage, type AiUsageTokens } from "@/lib/ai-usage.server";
+
+const GENERATE_MODEL = "gpt-5.6-sol";
 
 import {
   SYSTEM_PROMPT,
@@ -70,7 +73,8 @@ export const Route = createFileRoute("/api/generate")({
         });
 
         const gateway = createOpenAiProvider(key);
-        const model = gateway("gpt-5.6-sol");
+        const model = gateway(GENERATE_MODEL);
+        let usage: AiUsageTokens = {};
 
         type Msgs = NonNullable<Parameters<typeof generateText>[0]["messages"]>;
 
@@ -87,38 +91,60 @@ export const Route = createFileRoute("/api/generate")({
             messages: msgs,
           });
 
-        // Buffered (not streamed) on purpose: we validate the Pine code against
-        // our compiler guardrails before anything reaches the user, and repair
-        // it if it fails. That requires the full response, so this trades the
-        // old token-by-token typing effect for a guarantee the code that shows
-        // up has passed static validation.
-        let { text } = await runGeneration(messages as Msgs);
-        text = sanitizeText(text);
-        let report = validateResponse(text);
+        try {
+          // Buffered (not streamed) on purpose: we validate the Pine code against
+          // our compiler guardrails before anything reaches the user, and repair
+          // it if it fails. That requires the full response, so this trades the
+          // old token-by-token typing effect for a guarantee the code that shows
+          // up has passed static validation.
+          const first = await runGeneration(messages as Msgs);
+          usage = accumulateUsage(usage, first.usage);
+          let text = sanitizeText(first.text);
+          let report = validateResponse(text);
 
-        let attempts = 0;
-        while (!report.ok && attempts < MAX_REPAIRS) {
-          attempts++;
-          const repairMsgs = [
-            ...messages,
-            { role: "assistant" as const, content: text },
-            {
-              role: "user" as const,
-              content: `Your last response fails static validation against the Pine v6 compiler guardrails. Fix ONLY these problems and re-output the full response in the same format (one short paragraph, exactly one fenced \`\`\`pinescript code block, optional "Usage:" bullets):\n\n${formatIssues(report.issues)}`,
+          let attempts = 0;
+          while (!report.ok && attempts < MAX_REPAIRS) {
+            attempts++;
+            const repairMsgs = [
+              ...messages,
+              { role: "assistant" as const, content: text },
+              {
+                role: "user" as const,
+                content: `Your last response fails static validation against the Pine v6 compiler guardrails. Fix ONLY these problems and re-output the full response in the same format (one short paragraph, exactly one fenced \`\`\`pinescript code block, optional "Usage:" bullets):\n\n${formatIssues(report.issues)}`,
+              },
+            ];
+            const retry = await runGeneration(repairMsgs as unknown as Msgs);
+            usage = accumulateUsage(usage, retry.usage);
+            text = sanitizeText(retry.text);
+            report = validateResponse(text);
+          }
+
+          await recordAiUsage(auth.supabase, {
+            userId: auth.userId,
+            operation: "generate",
+            success: true,
+            model: GENERATE_MODEL,
+            usage,
+          });
+
+          return new Response(text, {
+            headers: {
+              "Content-Type": "text/plain; charset=utf-8",
+              "Cache-Control": "no-cache",
+              "X-Pine-Validated": report.ok ? "true" : "false",
             },
-          ];
-          const retry = await runGeneration(repairMsgs as unknown as Msgs);
-          text = sanitizeText(retry.text);
-          report = validateResponse(text);
+          });
+        } catch (e) {
+          await recordAiUsage(auth.supabase, {
+            userId: auth.userId,
+            operation: "generate",
+            success: false,
+            model: GENERATE_MODEL,
+            errorMessage: e instanceof Error ? e.message : "Unknown error",
+            usage,
+          });
+          throw e;
         }
-
-        return new Response(text, {
-          headers: {
-            "Content-Type": "text/plain; charset=utf-8",
-            "Cache-Control": "no-cache",
-            "X-Pine-Validated": report.ok ? "true" : "false",
-          },
-        });
       },
     },
   },

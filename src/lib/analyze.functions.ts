@@ -3,6 +3,9 @@ import { z } from "zod";
 import { generateText, Output, NoObjectGeneratedError } from "ai";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { createOpenAiProvider } from "@/lib/ai-gateway.server";
+import { recordAiUsage, accumulateUsage, type AiUsageTokens } from "@/lib/ai-usage.server";
+
+const ANALYZE_MODEL = "gpt-5.6-sol";
 
 const inputSchema = z.object({
   code: z.string().min(1).max(20000),
@@ -138,7 +141,7 @@ export type AnalyzeResult = z.infer<typeof outputSchema> & {
 export const analyzeIndicator = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((i: unknown) => inputSchema.parse(i))
-  .handler(async ({ data }): Promise<AnalyzeResult> => {
+  .handler(async ({ data, context }): Promise<AnalyzeResult> => {
     const key = process.env.OPENAI_API_KEY;
     if (!key) throw new Error("OPENAI_API_KEY not configured");
 
@@ -147,7 +150,17 @@ export const analyzeIndicator = createServerFn({ method: "POST" })
     const stats = summarizeBars(candles)!;
 
     const gateway = createOpenAiProvider(key);
-    const model = gateway("gpt-5.6-sol");
+    const model = gateway(ANALYZE_MODEL);
+    let usage: AiUsageTokens = {};
+    const finishUsage = (success: boolean, errorMessage?: string) =>
+      recordAiUsage(context.supabase, {
+        userId: context.userId,
+        operation: "analyze",
+        success,
+        model: ANALYZE_MODEL,
+        errorMessage,
+        usage,
+      });
 
     const prompt = `Analyze the following TradingView Pine Script v5 indicator/strategy against recent market data for ${data.symbol} on the ${data.interval} timeframe.
 
@@ -180,13 +193,15 @@ Return:
 Never invent numbers not derivable from the snapshot. If the script is not a trading indicator, set signal=neutral, confidence=low, and explain.`;
 
     try {
-      const { output } = await generateText({
+      const result = await generateText({
         model,
         prompt,
         output: Output.object({ schema: outputSchema }),
       });
+      usage = accumulateUsage(usage, result.usage);
+      await finishUsage(true);
       return {
-        ...output,
+        ...result.output,
         symbol: data.symbol,
         interval: data.interval,
         bars: candles.length,
@@ -204,25 +219,33 @@ Never invent numbers not derivable from the snapshot. If the script is not a tra
       // 1. Salvage the JSON the model did emit (fences / trailing prose).
       if (NoObjectGeneratedError.isInstance(err)) {
         const salvaged = outputSchema.safeParse(extractJson(err.text));
-        if (salvaged.success) return finish(salvaged.data);
+        if (salvaged.success) {
+          await finishUsage(true);
+          return finish(salvaged.data);
+        }
       }
 
       // 2. Retry once in plain-text JSON mode, which most models handle even
       //    when structured-output tool calling fails.
       try {
-        const { text } = await generateText({
+        const retryResult = await generateText({
           model,
           prompt: `${prompt}
 
 Reply with ONLY a JSON object, no markdown fence, matching exactly:
 {"summary":string,"strategyType":string,"signal":"buy"|"sell"|"neutral","confidence":"low"|"medium"|"high","reasoning":string,"keyLevels":[{"label":string,"price":number}],"strengths":[string],"risks":[string],"suggestions":[string]}`,
         });
-        const retry = outputSchema.safeParse(extractJson(text));
-        if (retry.success) return finish(retry.data);
+        usage = accumulateUsage(usage, retryResult.usage);
+        const retry = outputSchema.safeParse(extractJson(retryResult.text));
+        if (retry.success) {
+          await finishUsage(true);
+          return finish(retry.data);
+        }
       } catch {
         /* fall through to the error below */
       }
 
+      await finishUsage(false, err instanceof Error ? err.message : "Unknown error");
       throw new Error(
         "The analyzer could not produce a structured result for this script. Try again, or shorten the code.",
       );

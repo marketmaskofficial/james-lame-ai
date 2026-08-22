@@ -14,6 +14,45 @@ export type Database = {
   }
   public: {
     Tables: {
+      ai_usage_events: {
+        Row: {
+          completion_tokens: number | null
+          created_at: string
+          error_message: string | null
+          id: string
+          model: string | null
+          operation: string
+          prompt_tokens: number | null
+          success: boolean
+          total_tokens: number | null
+          user_id: string
+        }
+        Insert: {
+          completion_tokens?: number | null
+          created_at?: string
+          error_message?: string | null
+          id?: string
+          model?: string | null
+          operation: string
+          prompt_tokens?: number | null
+          success: boolean
+          total_tokens?: number | null
+          user_id: string
+        }
+        Update: {
+          completion_tokens?: number | null
+          created_at?: string
+          error_message?: string | null
+          id?: string
+          model?: string | null
+          operation?: string
+          prompt_tokens?: number | null
+          success?: boolean
+          total_tokens?: number | null
+          user_id?: string
+        }
+        Relationships: []
+      }
       alert_notifications: {
         Row: {
           alert_id: string
@@ -595,6 +634,7 @@ export type Database = {
           avatar_url: string | null
           created_at: string
           display_name: string | null
+          has_onboarded: boolean
           id: string
           updated_at: string
         }
@@ -602,6 +642,7 @@ export type Database = {
           avatar_url?: string | null
           created_at?: string
           display_name?: string | null
+          has_onboarded?: boolean
           id: string
           updated_at?: string
         }
@@ -609,6 +650,7 @@ export type Database = {
           avatar_url?: string | null
           created_at?: string
           display_name?: string | null
+          has_onboarded?: boolean
           id?: string
           updated_at?: string
         }

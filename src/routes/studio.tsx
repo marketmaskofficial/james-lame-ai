@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, redirect, useNavigate } from "@tanstack/react-router";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
@@ -57,6 +57,10 @@ import {
   Gauge,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
+import { useSubscription } from "@/hooks/useSubscription";
+import { checkStudioAccess, isStudioGateTestBypassed } from "@/lib/subscription-status";
+import { getOnboardingStatus } from "@/lib/profile.functions";
+import { OnboardingFlow } from "@/components/OnboardingFlow";
 import { fetchBars, TIMEFRAMES, timeframeLabel } from "@/lib/marketdata";
 import {
   DEFAULT_FAVORITE_TIMEFRAMES,
@@ -199,6 +203,34 @@ import {
 
 
 export const Route = createFileRoute("/studio")({
+  // UI-8: Chart Studio is the paid product surface. `ssr: false` means the
+  // server NEVER renders this route's component or runs its `beforeLoad` —
+  // both are skipped server-side and a neutral shell (`pendingComponent`
+  // below) is sent instead, so a direct/unauthenticated request can never
+  // receive real Studio markup in its initial HTML. This is load-bearing:
+  // the Supabase client used everywhere in this app (see
+  // src/integrations/supabase/client.ts) has no session storage on the
+  // server (no cookie-forwarded session either), so a server-side
+  // `beforeLoad` could never have told a real user apart from a guest
+  // anyway — the only trustworthy place to check auth/subscription state is
+  // the browser, and `ssr:false` is what keeps that check from being
+  // bypassable by simply not waiting for JS.
+  ssr: false,
+  // Client-side gate that runs before the Studio component ever mounts, on
+  // every navigation to this route (including a hard refresh, since
+  // `ssr:false` forces a fresh client-side match). Reads the exact same
+  // source of truth as the `useSubscription` hook (see
+  // src/lib/subscription-status.ts) — not a second entitlement system.
+  // A runtime guard inside the `Studio` component below (StudioAccessGate)
+  // additionally covers the case where auth/subscription state CHANGES while
+  // already mounted (logout, subscription lapsing) — beforeLoad alone only
+  // re-runs on navigation.
+  beforeLoad: async () => {
+    const access = await checkStudioAccess();
+    if (access === "unauthenticated") throw redirect({ to: "/auth" });
+    if (access === "unpaid") throw redirect({ to: "/pricing" });
+  },
+  pendingComponent: StudioLoadingScreen,
   head: () => ({
     meta: [
       { title: "Chart Studio — run your indicators on live charts" },
@@ -219,6 +251,89 @@ export const Route = createFileRoute("/studio")({
   }),
   component: Studio,
 });
+
+/** Neutral loading shell shown while the server-skipped route resolves on
+ * the client (see `ssr: false` above) and while the `Studio` gate component
+ * below is still waiting on auth/subscription state. Deliberately renders
+ * nothing about the product itself — no chart, no widgets, no cached data —
+ * so there is never anything for an unpaid/unauthenticated viewer to see
+ * flash by. */
+function StudioLoadingScreen() {
+  return (
+    <div className="flex h-screen w-screen items-center justify-center bg-background text-foreground">
+      <div className="flex flex-col items-center gap-3">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-border border-t-brand" />
+        <p className="text-sm text-muted-foreground">Loading Chart Studio…</p>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Route component: gates the real Studio workspace behind live auth +
+ * subscription state, then renders it. `beforeLoad` above already prevents
+ * an unpaid/unauthenticated user from reaching this component in the first
+ * place on a fresh navigation; this additionally watches for the SAME state
+ * changing while the component stays mounted (sign-out, a subscription
+ * lapsing) via the ordinary reactive hooks (`useAuth`, `useSubscription`)
+ * every other authenticated surface in this app already uses — no second
+ * source of truth, no polling.
+ *
+ * Deliberately a thin wrapper around the pre-existing giant `StudioWorkspace`
+ * component (renamed from `Studio`, otherwise untouched) rather than folding
+ * this logic into it directly: `StudioWorkspace` calls dozens of hooks
+ * unconditionally in a fixed order, so an early return for "not ready yet"
+ * inside that same function would violate the Rules of Hooks the moment
+ * loading state changed between renders.
+ */
+function Studio() {
+  const navigate = useNavigate();
+  const testBypassed = isStudioGateTestBypassed();
+  const { user, loading: authLoading } = useAuth();
+  const { isActive: isPaid, loading: subLoading } = useSubscription();
+  const ready = !authLoading && !subLoading;
+  const authorized = testBypassed || (ready && !!user && isPaid);
+
+  useEffect(() => {
+    if (testBypassed || !ready) return;
+    if (!user) {
+      navigate({ to: "/auth", replace: true });
+      return;
+    }
+    if (!isPaid) {
+      navigate({ to: "/pricing", replace: true });
+    }
+  }, [testBypassed, ready, user, isPaid, navigate]);
+
+  // UI-8 task 3: first-run onboarding. Checked once access is confirmed —
+  // `null` = still checking, so the loading shell (not the real product,
+  // not the onboarding flow) shows while this resolves. Fails open on any
+  // error (see getOnboardingStatus's own docstring): a broken/unmigrated
+  // check must never re-trap or block an existing paid user. Skipped
+  // entirely under the render-regression test bypass (see
+  // isStudioGateTestBypassed) since there is no authenticated user to look
+  // an onboarding row up for.
+  const getOnboardingStatusFn = useServerFn(getOnboardingStatus);
+  const [needsOnboarding, setNeedsOnboarding] = useState<boolean | null>(testBypassed ? false : null);
+  useEffect(() => {
+    if (testBypassed || !authorized) return;
+    let cancelled = false;
+    getOnboardingStatusFn()
+      .then((r) => {
+        if (!cancelled) setNeedsOnboarding(!r.hasOnboarded);
+      })
+      .catch(() => {
+        if (!cancelled) setNeedsOnboarding(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [testBypassed, authorized, getOnboardingStatusFn]);
+
+  if (!authorized || needsOnboarding === null) return <StudioLoadingScreen />;
+  if (needsOnboarding) return <OnboardingFlow onDone={() => setNeedsOnboarding(false)} />;
+  return <StudioWorkspace />;
+}
 
 /** `group` only drives a subtle divider between clusters in the toolbar — it
  * has no effect on tool behaviour. */
@@ -537,7 +652,7 @@ function logRenderOutcome(
 }
 
 
-function Studio() {
+function StudioWorkspace() {
 
   const { user } = useAuth();
   const qc = useQueryClient();
@@ -851,7 +966,40 @@ function Studio() {
   // back on it without the user having to name/save anything first. Named
   // layouts (layouts[]) are NOT touched by this — they only change when the
   // user explicitly saves again (see saveActiveNamedLayout below).
+  //
+  // UI-8 bugfix: skip this effect's very first (mount) run, AND skip the
+  // persist effect's very first run below, for the same reason. On mount,
+  // EVERY effect in this component fires once in the SAME commit, each
+  // using THAT render's closures — still `layout = PRESETS.beginner` and
+  // `workspaceStore = defaultLocalStore()` (the `useState` initializers),
+  // not yet whatever the load effect above just found via `loadLocalStore()`
+  // (its `setLayout`/`setWorkspaceStore` calls only apply to the NEXT
+  // render; sibling effects in the same commit don't see them). Left
+  // unguarded, this effect used that stale `layout` to blow the real loaded
+  // layout's name back to "Beginner" inside `workspaceStore`, and the
+  // persist effect below then wrote that corrupted value to localStorage —
+  // reproducible even without any onboarding/AI-Builder change involved,
+  // just by switching to any non-Beginner preset via the ordinary Layouts
+  // menu and reloading (confirmed via `git stash` against pre-UI-8 HEAD:
+  // present there too). Because Chart Studio's route can genuinely remount
+  // this whole component more than once during one page load (TanStack
+  // Router's pending -> resolved swap under this route's `ssr: false`,
+  // confirmed via instrumentation), guarding only the mirror effect was not
+  // sufficient by itself — the persist effect's OWN stale first write could
+  // still land on disk before a second mount's load effect ever ran, and
+  // that second mount would then load the corrupted value as if it were the
+  // real saved preference. Guarding both effects' first pass means neither
+  // one ever touches `workspaceStore`/disk before the real loaded value is
+  // in play, on any mount, so nothing is ever written to correct later.
+  // Once `layout`/`workspaceStore` update for real (next render), each
+  // effect reruns anyway (their own dependency), so skipping the mount run
+  // loses nothing.
+  const mirrorMountedRef = useRef(false);
   useEffect(() => {
+    if (!mirrorMountedRef.current) {
+      mirrorMountedRef.current = true;
+      return;
+    }
     setWorkspaceStore((prev) => (prev.currentLayout === layout ? prev : { ...prev, currentLayout: layout }));
   }, [layout]);
 
@@ -859,7 +1007,12 @@ function Studio() {
   // the mirrored scratch slot — whenever any of it changes. The only place
   // that writes to localStorage; every action below just calls
   // setWorkspaceStore and this effect does the actual autosave.
+  const saveMountedRef = useRef(false);
   useEffect(() => {
+    if (!saveMountedRef.current) {
+      saveMountedRef.current = true;
+      return;
+    }
     saveLocalStore(workspaceStore);
   }, [workspaceStore]);
 
