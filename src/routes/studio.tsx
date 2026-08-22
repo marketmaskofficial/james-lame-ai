@@ -107,6 +107,7 @@ import {
 } from "@/components/studio/TradingPanel";
 import { AccountBar, EnvBadge } from "@/components/studio/AccountBar";
 import { FeedbackButton } from "@/components/FeedbackButton";
+import { AppNavRail } from "@/components/AppNavRail";
 import { ChartLegendStrip } from "@/components/studio/ChartLegendStrip";
 import { ChartInstance } from "@/components/studio/ChartInstance";
 import { LayoutTree } from "@/components/studio/LayoutTree";
@@ -1402,6 +1403,41 @@ function Studio() {
   );
   const openSidebar = useCallback(() => setSidebarState("expanded"), []);
 
+  /**
+   * UI-5c-studio-shell-fix: makes a widget instance's tab the visible one,
+   * wherever it currently lives (right sidebar, bottom dock, or a
+   * generic edge-drop leaf), and if it isn't open ANYWHERE in the current
+   * layout, adds one to the right sidebar first — every preset that
+   * includes this widget already places it there, and `addWidgetToNode`
+   * itself already sets a freshly-added tab as its node's active one. This
+   * is the shared "make this singleton widget visible" primitive the
+   * global rail's New/History/Alerts shortcuts all use — it never touches
+   * indicator/AI build state itself, only which tab is showing.
+   */
+  const focusWidgetTab = useCallback(
+    (widgetTypeId: WidgetTypeId) => {
+      const tabId = WIDGET_TAB_ID[widgetTypeId];
+      const existing = findWidgetInstance(layout.root, widgetTypeId);
+      if (existing) {
+        const leafId = findLeafIdHoldingInstance(layout.root, existing.instanceId);
+        if (leafId === WELL_KNOWN_NODE_IDS.rightSidebar) {
+          openSidebar();
+          if (tabId) setRightTab(tabId);
+        } else if (leafId === WELL_KNOWN_NODE_IDS.bottomDock) {
+          openDock();
+          if (tabId) setDock(tabId);
+        } else if (leafId) {
+          setActiveTabInLeaf(leafId, existing.instanceId);
+        }
+        return;
+      }
+      setLayout((prev) => addWidgetToNode(prev, WELL_KNOWN_NODE_IDS.rightSidebar, widgetTypeId));
+      openSidebar();
+      if (tabId) setRightTab(tabId);
+    },
+    [layout, findLeafIdHoldingInstance, openSidebar, openDock, setActiveTabInLeaf],
+  );
+
   const listIndicatorsFn = useServerFn(listIndicators);
   const createIndicatorFn = useServerFn(createIndicator);
   const updateIndicatorFn = useServerFn(updateIndicator);
@@ -1410,6 +1446,52 @@ function Studio() {
   const listVersionsFn = useServerFn(listVersions);
   const restoreVersionFn = useServerFn(restoreVersion);
   const [historyFor, setHistoryFor] = useState<string | null>(null);
+
+  /**
+   * UI-5c-studio-shell-fix: the ONE "start a fresh AI Builder project"
+   * reset — same three lines "Pick a template" already used inline before
+   * this pass (see the onPickTemplate handler below). Factored out so the
+   * global rail's New icon triggers this exact mechanism instead of a
+   * second, competing one.
+   */
+  const resetAiBuildSession = useCallback(() => {
+    setProjectSpec(null);
+    setAiIndicatorId(null);
+    builtKeyRef.current = null;
+  }, []);
+
+  /** Global rail "New": starts a fresh AI Builder project and brings the AI panel into view. */
+  const handleNewAiProject = useCallback(() => {
+    setEditingKey(null);
+    setCode(DEFAULT_SCRIPT);
+    resetAiBuildSession();
+    focusWidgetTab("ai-builder");
+  }, [resetAiBuildSession, focusWidgetTab]);
+
+  /**
+   * Global rail "History": opens Chart Studio's persisted AI-project
+   * history surface — the Saved dock panel (per-project version history via
+   * `historyFor`/`listVersions`), NOT the dock's own "history" tab (that one
+   * is unrelated trade-order history, see the DockTab union above). If an
+   * AI Builder project is currently open, its own version-history row is
+   * expanded immediately instead of leaving the user to find it in the list.
+   */
+  const handleOpenAiHistory = useCallback(() => {
+    focusWidgetTab("saved-indicators");
+    if (aiIndicatorId) setHistoryFor(aiIndicatorId);
+  }, [focusWidgetTab, aiIndicatorId]);
+
+  /**
+   * Global rail "Alerts": no distinct site-wide notifications system exists
+   * in this codebase (confirmed by search) — the old /app bell's real
+   * backing data now lives entirely inside Chart Studio's own trading
+   * Alerts widget (AlertsSidePanel, `alert_notifications`). This is an
+   * honest shortcut to that SAME widget instance, not a second one.
+   */
+  const handleOpenAlerts = useCallback(() => {
+    focusWidgetTab("alerts");
+  }, [focusWidgetTab]);
+
   const translateFn = useServerFn(translateToSgScript);
   const repairFn = useServerFn(repairSgScript);
 
@@ -2857,9 +2939,7 @@ function Studio() {
           setDock("code");
           openDock();
           // Start a fresh AI build session too.
-          setProjectSpec(null);
-          setAiIndicatorId(null);
-          builtKeyRef.current = null;
+          resetAiBuildSession();
         }}
       />
       {chartInstancesInTreeCount > 1 && renderLinkModeControl(instanceId, activeChartInstance.linkMode)}
@@ -4226,7 +4306,14 @@ function Studio() {
   }, []);
 
   return (
-    <div ref={rootRef} className="flex h-screen flex-col bg-background text-foreground">
+    <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
+      {/* global app nav — same shell every authenticated route uses */}
+      <AppNavRail
+        onNewProject={handleNewAiProject}
+        onOpenHistory={handleOpenAiHistory}
+        onOpenAlerts={handleOpenAlerts}
+      />
+      <div ref={rootRef} className="flex h-full min-w-0 flex-1 flex-col bg-background text-foreground">
       {/* top bar */}
       <header className="flex h-10 shrink-0 items-center gap-1.5 border-b border-border bg-sidebar px-2">
         <span className="hidden shrink-0 text-[13px] font-medium tracking-tight text-muted-foreground md:inline">
@@ -4649,6 +4736,7 @@ function Studio() {
           onClose={() => setSymbolOpen(false)}
         />
       )}
+      </div>
     </div>
   );
 }
