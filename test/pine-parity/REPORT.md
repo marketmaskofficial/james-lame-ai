@@ -1,6 +1,6 @@
 # Pine parity report
 
-Generated 2026-08-20T18:30:14.207Z — 29/29 passed.
+Generated 2026-08-22T10:41:01.908Z — 29/29 passed.
 
 | Fixture | Category | Pine valid | Repaint | SGScript valid | Runtime | Check | Result |
 |---|---|---|---|---|---|---|---|

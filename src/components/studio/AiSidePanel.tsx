@@ -1,19 +1,47 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { Loader2, Send, Sparkles, Wand2 } from "lucide-react";
+import { HelpCircle, Loader2, Send, Sparkles, Wand2, Wrench } from "lucide-react";
 import { analyzeIndicator, type AnalyzeResult } from "@/lib/analyze.functions";
 import { buildProject, type BuildResult } from "@/lib/project.functions";
 import type { IndicatorSpec } from "@/lib/spec/types";
+import { explainSpec } from "@/lib/spec/explain";
 import { track } from "@/lib/telemetry";
 
 type Interval = "1m" | "5m" | "15m" | "1h" | "4h" | "1d";
 const SUPPORTED: Interval[] = ["1m", "5m", "15m", "1h", "4h", "1d"];
 
+/** Real outcome of a build/fix attempt, derived only from the pipeline's own validation result — never optimistic. */
+type BuildStatus = "success" | "warning" | "error";
+
 type Turn = {
   role: "user" | "ai";
   text: string;
   issues?: number;
+  status?: BuildStatus;
+  /** "explain" turns are a plain description of the current spec — no validation ran, nothing was built. */
+  kind?: "build" | "explain";
 };
+
+/** A build/fix attempt whose validation reported an unresolved error: kept locally so Fix Error can
+ * repair the actual failing draft, without ever committing it to the chart/editor as if it succeeded. */
+type FailedDraft = {
+  spec: IndicatorSpec;
+  pine: string;
+  sgscript: string;
+  issuesText: string;
+};
+
+function classify(r: BuildResult): { status: BuildStatus; totalIssues: number } {
+  const hasError = !r.validation.pine.ok || !r.validation.sgscript.ok;
+  const totalIssues = r.validation.pine.issues.length + r.validation.sgscript.issues.length;
+  return { status: hasError ? "error" : totalIssues > 0 ? "warning" : "success", totalIssues };
+}
+
+function formatIssuesForRepair(r: BuildResult): string {
+  return [...r.validation.pine.issues, ...r.validation.sgscript.issues]
+    .map((i) => `[${i.severity}] ${i.code}: ${i.message}${i.line ? ` (line ${i.line})` : ""}`)
+    .join("\n");
+}
 
 /**
  * Signal Goat AI beside the chart. Two modes:
@@ -51,6 +79,7 @@ export function AiSidePanel({
   const [error, setError] = useState<string | null>(null);
   const [prompt, setPrompt] = useState("");
   const [turns, setTurns] = useState<Turn[]>([]);
+  const [failedDraft, setFailedDraft] = useState<FailedDraft | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -76,6 +105,48 @@ export function AiSidePanel({
       setError(e instanceof Error ? e.message : "Analysis failed"),
   });
 
+  /**
+   * Shared outcome handler for both Build/Modify and the explicit Fix Error
+   * action — both call `buildProject` and both must be judged the same way:
+   * a real, unresolved validation error (still `!ok` after the pipeline's
+   * own bounded repair passes) is NEVER treated as success. Only success and
+   * warning-only outcomes are committed to the chart/editor via `onBuilt`;
+   * an error outcome keeps the last-good chart/editor state untouched and
+   * instead stashes the failing draft so Fix Error can operate on it without
+   * losing the user's project context.
+   */
+  const handleResult = (r: BuildResult, opts: { isFix: boolean }) => {
+    const { status, totalIssues } = classify(r);
+    track(
+      opts.isFix
+        ? status === "error"
+          ? "fix_error_still_failing"
+          : "fix_error_succeeded"
+        : status === "error"
+          ? spec
+            ? "patch_failed_validation"
+            : "ai_build_failed_validation"
+          : spec
+            ? "patch_succeeded"
+            : "ai_build_succeeded",
+      { repairPasses: r.validation.repairPasses, status },
+    );
+    setTurns((t) => [
+      ...t,
+      { role: "ai", text: r.summary || r.changelog, issues: totalIssues, status, kind: "build" },
+    ]);
+    setError(null);
+    if (status === "error") {
+      setFailedDraft({ spec: r.spec, pine: r.pine, sgscript: r.sgscript, issuesText: formatIssuesForRepair(r) });
+    } else {
+      setFailedDraft(null);
+      onBuilt(r);
+    }
+    requestAnimationFrame(() =>
+      logRef.current?.scrollTo({ top: logRef.current.scrollHeight }),
+    );
+  };
+
   const build = useMutation({
     mutationFn: (request: string) =>
       buildProject({
@@ -87,22 +158,7 @@ export function AiSidePanel({
           ...(spec && code.trim() ? { currentSgscript: code } : {}),
         },
       }),
-    onSuccess: (r) => {
-      track(spec ? "patch_succeeded" : "ai_build_succeeded", {
-        repairPasses: r.validation.repairPasses,
-      });
-      const issues =
-        r.validation.pine.issues.length + r.validation.sgscript.issues.length;
-      setTurns((t) => [
-        ...t,
-        { role: "ai", text: r.summary || r.changelog, issues },
-      ]);
-      setError(null);
-      onBuilt(r);
-      requestAnimationFrame(() =>
-        logRef.current?.scrollTo({ top: logRef.current.scrollHeight }),
-      );
-    },
+    onSuccess: (r) => handleResult(r, { isFix: false }),
     onError: (e: unknown) => {
       track(spec ? "patch_failed" : "ai_build_failed", {
         message: e instanceof Error ? e.message.slice(0, 120) : "unknown",
@@ -111,14 +167,65 @@ export function AiSidePanel({
     },
   });
 
+  /** Explicit, user-triggered repair of the CURRENT failed draft — reuses
+   * buildProject's own validate+repair pipeline (same as Build/Modify), just
+   * seeded with the failing spec/sgscript and its exact issues instead of a
+   * fresh instruction, so the user's project context is never discarded. */
+  const fixError = useMutation({
+    mutationFn: () => {
+      if (!failedDraft) throw new Error("Nothing to fix");
+      return buildProject({
+        data: {
+          request: `Fix these validation errors without changing the indicator's intent:\n${failedDraft.issuesText}`,
+          symbol,
+          timeframe: safeInterval,
+          currentSpec: failedDraft.spec as unknown as Record<string, unknown>,
+          currentSgscript: failedDraft.sgscript,
+        },
+      });
+    },
+    onSuccess: (r) => handleResult(r, { isFix: true }),
+    onError: (e: unknown) => {
+      track("fix_error_request_failed", {
+        message: e instanceof Error ? e.message.slice(0, 120) : "unknown",
+      });
+      setError(e instanceof Error ? e.message : "Fix failed");
+    },
+  });
+
+  const busy = build.isPending || fixError.isPending;
+
   const submit = () => {
     const text = prompt.trim();
-    if (!text || build.isPending || !signedIn) return;
+    if (!text || busy || !signedIn) return;
     setTurns((t) => [...t, { role: "user", text }]);
     setPrompt("");
     setError(null);
     track("ai_build_started", { patch: !!spec });
     build.mutate(text);
+  };
+
+  const handleFixError = () => {
+    if (!failedDraft || busy || !signedIn) return;
+    setTurns((t) => [...t, { role: "user", text: "Fix the validation error." }]);
+    setError(null);
+    track("fix_error_started", {});
+    fixError.mutate();
+  };
+
+  /** Describes the CURRENT spec in plain language — a pure, synchronous read
+   * of state already held here. No model call, no market data, and it never
+   * touches `spec`/`code`, so it can never modify or regenerate anything. */
+  const handleExplain = () => {
+    if (!spec) return;
+    setTurns((t) => [
+      ...t,
+      { role: "user", text: "Explain this indicator." },
+      { role: "ai", text: explainSpec(spec), kind: "explain" },
+    ]);
+    requestAnimationFrame(() =>
+      logRef.current?.scrollTo({ top: logRef.current.scrollHeight }),
+    );
   };
 
   return (
@@ -183,28 +290,57 @@ export function AiSidePanel({
               >
                 {t.role === "ai" && (
                   <p className="mb-0.5 text-[9px] uppercase tracking-wide text-brand">
-                    Signal Goat
+                    Signal Goat{t.kind === "explain" ? " · Explain" : ""}
                   </p>
                 )}
-                <p>{t.text}</p>
-                {t.role === "ai" && (
-                  <p className="mt-0.5 text-[9.5px] text-muted-foreground">
-                    {t.issues
-                      ? `${t.issues} static-validation note${t.issues === 1 ? "" : "s"}`
-                      : "Passed static validation"}{" "}
-                    · plotted on the chart
+                <p className={t.kind === "explain" ? "whitespace-pre-line" : ""}>{t.text}</p>
+                {t.role === "ai" && t.kind !== "explain" && (
+                  <p
+                    className={`mt-0.5 text-[9.5px] ${
+                      t.status === "error"
+                        ? "font-medium text-destructive"
+                        : t.status === "warning"
+                          ? "text-amber-500"
+                          : "text-muted-foreground"
+                    }`}
+                  >
+                    {t.status === "error"
+                      ? `${t.issues ?? 0} static-validation issue${(t.issues ?? 0) === 1 ? "" : "s"} — unresolved, not added to chart`
+                      : t.status === "warning"
+                        ? `${t.issues} static-validation note${t.issues === 1 ? "" : "s"} · plotted on the chart`
+                        : "Passed static validation · plotted on the chart"}
                   </p>
                 )}
               </div>
             ))}
-            {build.isPending && (
+            {busy && (
               <p className="flex items-center gap-1.5 text-muted-foreground">
                 <Loader2 className="h-3 w-3 animate-spin" />
-                {spec ? "Applying your change…" : "Building your indicator…"}
+                {fixError.isPending
+                  ? "Fixing the error & validating…"
+                  : spec
+                    ? "Applying your change & validating…"
+                    : "Building your indicator & validating…"}
               </p>
             )}
             {error && <p className="text-[10px] text-destructive">{error}</p>}
           </div>
+
+          {failedDraft && !busy && (
+            <div className="mx-2 mb-1.5 space-y-1 rounded-md border border-destructive/40 bg-destructive/5 p-1.5">
+              <p className="text-[10px] font-medium text-destructive">
+                Build has an unresolved validation error — not added to the chart.
+              </p>
+              <button
+                type="button"
+                disabled={!signedIn}
+                onClick={handleFixError}
+                className="flex w-full items-center justify-center gap-1 rounded-md border border-destructive/50 py-1 text-[10.5px] text-destructive hover:bg-destructive/10 disabled:opacity-50"
+              >
+                <Wrench className="h-3 w-3" /> Fix Error
+              </button>
+            </div>
+          )}
 
           <div className="space-y-1.5 border-t border-border p-2">
             <textarea
@@ -224,18 +360,30 @@ export function AiSidePanel({
               }
               className="w-full resize-none rounded-md border border-border bg-background p-1.5 text-[11px] outline-none focus:border-brand"
             />
-            <button
-              disabled={!signedIn || build.isPending || !prompt.trim()}
-              onClick={submit}
-              className="flex w-full items-center justify-center gap-1 rounded-md bg-brand py-1.5 text-[11px] font-medium text-brand-foreground disabled:opacity-50"
-            >
-              {build.isPending ? (
-                <Loader2 className="h-3 w-3 animate-spin" />
-              ) : (
-                <Send className="h-3 w-3" />
-              )}
-              {spec ? "Apply change" : "Build & add to chart"}
-            </button>
+            <div className="flex gap-1.5">
+              <button
+                type="button"
+                disabled={!spec || busy}
+                onClick={handleExplain}
+                title={spec ? "Describe the current indicator — doesn't change anything" : "Build an indicator first"}
+                className="flex items-center justify-center gap-1 rounded-md border border-border px-2 py-1.5 text-[11px] hover:bg-accent disabled:opacity-50"
+              >
+                <HelpCircle className="h-3 w-3" />
+                Explain
+              </button>
+              <button
+                disabled={!signedIn || busy || !prompt.trim()}
+                onClick={submit}
+                className="flex flex-1 items-center justify-center gap-1 rounded-md bg-brand py-1.5 text-[11px] font-medium text-brand-foreground disabled:opacity-50"
+              >
+                {build.isPending ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Send className="h-3 w-3" />
+                )}
+                {spec ? "Apply change" : "Build & add to chart"}
+              </button>
+            </div>
             {spec && (
               <p className="truncate text-[9.5px] text-muted-foreground">
                 Editing: {spec.name}
