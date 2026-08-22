@@ -14,6 +14,8 @@ export type TelemetryEvent =
   | "ai_build_failed"
   | "add_to_chart_succeeded"
   | "add_to_chart_failed"
+  | "apply_changes_succeeded"
+  | "apply_changes_failed"
   | "patch_succeeded"
   | "patch_failed"
   | "ai_build_failed_validation"

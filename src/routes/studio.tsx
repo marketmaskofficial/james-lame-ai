@@ -3,6 +3,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type React
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import {
+  AlertTriangle,
   Bell,
   BookOpen,
   Check,
@@ -31,6 +32,7 @@ import {
   Save,
   Search,
   Settings2,
+  ShieldCheck,
   Sliders,
   Square,
   Trash2,
@@ -109,6 +111,7 @@ import { AccountBar, EnvBadge } from "@/components/studio/AccountBar";
 import { FeedbackButton } from "@/components/FeedbackButton";
 import { AppNavRail } from "@/components/AppNavRail";
 import { ChartLegendStrip } from "@/components/studio/ChartLegendStrip";
+import { IndicatorSettingsPopout } from "@/components/studio/IndicatorSettingsPopout";
 import { ChartInstance } from "@/components/studio/ChartInstance";
 import { LayoutTree } from "@/components/studio/LayoutTree";
 
@@ -702,6 +705,27 @@ function Studio() {
   const [activeInputs, setActiveInputs] = useState<InputSpec[]>([]);
   const [settings, setSettings] = useState<Record<string, number | boolean | string>>({});
   const [editingKey, setEditingKey] = useState<string | null>(null);
+  // UI-5d: which on-chart indicator's floating settings pop-out is open, if
+  // any, and where the gear button that opened it sits (so the panel floats
+  // beside it instead of a fixed corner). Purely a UI surface toggle — the
+  // actual settings VALUES it edits are still `settings`/`activeInputs`
+  // above, the same state the old inline Code-panel form used. Only one can
+  // be open at a time, same as the code editor only ever edits one indicator
+  // at a time today.
+  const [settingsPopoutKey, setSettingsPopoutKey] = useState<string | null>(null);
+  const [settingsPopoutAnchor, setSettingsPopoutAnchor] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  // UI-5d: the manual code-edit workflow's own state — separate from
+  // `runError`/`notice` (which cover many other flows: translating, paste,
+  // AI build, live recompute) so a validation result never gets stomped by
+  // or confused with an unrelated notice. `checkedSourceRef` remembers which
+  // exact source string the last successful validation was FOR, so Apply
+  // changes can tell a still-fresh validation from a stale one (the user
+  // edited again since) without re-running the script twice for nothing.
+  const [validation, setValidation] = useState<{ status: "idle" | "checking" | "valid" | "invalid"; error: string | null }>({
+    status: "idle",
+    error: null,
+  });
+  const checkedSourceRef = useRef<string | null>(null);
   // AI build session: the spec being patched by follow-up messages, plus the
   // chart slot its output owns so edits replace it instead of stacking.
   const [projectSpec, setProjectSpec] = useState<IndicatorSpec | null>(null);
@@ -2231,7 +2255,85 @@ function Studio() {
     })();
   };
 
+  // UI-5d: the manual code-edit workflow (Edit code -> Validate -> Apply
+  // changes -> Save Version) for an indicator ALREADY on the chart
+  // (`editingKey` set). Distinct from `addToChart`/`runSource` above, which
+  // still own the "brand-new or pasted script" path (including Pine
+  // conversion) — this is specifically the dry-run/commit split the settings
+  // pop-out and the redesigned Code panel need: a manual edit must be able to
+  // fail loudly WITHOUT ever touching the chart's last-good indicator state.
+  const currentEditingIndicator = indicators.find((i) => i.key === editingKey) ?? null;
+  const isCodeDirty = currentEditingIndicator
+    ? cleanPasted(code) !== currentEditingIndicator.code
+    : false;
 
+  /** Dry-run compile+execute check: never writes to `indicators`/the chart.
+   * A failing script is reported here and NEVER treated as if it plotted. */
+  const validateDraft = useCallback(async (): Promise<boolean> => {
+    const src = cleanPasted(code);
+    if (!src) {
+      setValidation({ status: "invalid", error: "Nothing to validate — write or paste a script first." });
+      checkedSourceRef.current = null;
+      return false;
+    }
+    setValidation({ status: "checking", error: null });
+    try {
+      const data = await waitForBars();
+      await runIndicator(src, data, settings);
+      setValidation({ status: "valid", error: null });
+      checkedSourceRef.current = src;
+      return true;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Script failed";
+      setValidation({ status: "invalid", error: msg });
+      checkedSourceRef.current = null;
+      return false;
+    }
+  }, [code, settings, waitForBars]);
+
+  /** Commits the draft to the chart — but only once validation of THIS exact
+   * source has succeeded (re-validates first if the draft changed since the
+   * last check, so this can never commit code that hasn't actually passed).
+   * Only updates the indicator this editor session is scoped to
+   * (`editingKey`) — never any other instance, on this chart or any other. */
+  const applyChanges = useCallback(async () => {
+    const src = cleanPasted(code);
+    if (src !== code) setCode(src);
+    if (!editingKey) {
+      // Nothing committed yet to apply "changes" to — same as a fresh script.
+      addToChart();
+      return;
+    }
+    const alreadyChecked = checkedSourceRef.current === src && validation.status === "valid";
+    const ok = alreadyChecked || (await validateDraft());
+    if (!ok) return;
+    const err = await runCode(src, {
+      settings,
+      key: editingKey,
+      silent: true,
+      ...(currentEditingIndicator?.savedId ? { savedId: currentEditingIndicator.savedId } : {}),
+    });
+    if (err) {
+      setValidation({ status: "invalid", error: err });
+      track("apply_changes_failed", {});
+    } else {
+      setNotice(finalNotice("Indicator updated on the chart."));
+      track("apply_changes_succeeded", {});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code, editingKey, settings, validation.status, validateDraft, currentEditingIndicator]);
+
+  /** Discards the unsaved draft, returning the editor to the chart's actual
+   * current (last-applied) code/settings for this indicator. */
+  const revertCode = useCallback(() => {
+    if (!currentEditingIndicator) return;
+    setCode(currentEditingIndicator.code);
+    setSettings(currentEditingIndicator.settings);
+    setValidation({ status: "idle", error: null });
+    checkedSourceRef.current = null;
+    setNotice("Reverted to the last applied version.");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentEditingIndicator]);
 
   const pasteFromClipboard = async () => {
     try {
@@ -2468,13 +2570,36 @@ function Studio() {
       restoreVersionFn({ data: v }),
     onSuccess: (row, variables) => {
       setCode(row.restored.code);
+      // UI-5d fix: the restored version's OWN settings must load into the
+      // editing session too — previously only `code` was restored here, so
+      // a restore that changed input values (not just the script text) left
+      // the settings panel showing whatever the PREVIOUS editing session
+      // happened to have, not this version's actual settings.
+      const restoredSettings = (row.restored.settings ?? {}) as Record<
+        string,
+        number | boolean | string
+      >;
+      setSettings(restoredSettings);
+      setValidation({ status: "idle", error: null });
+      checkedSourceRef.current = null;
+      // If this saved indicator is already on the chart, point the editing
+      // session at that exact instance so Apply changes updates it in
+      // place; otherwise leave editingKey null (same as loading a saved
+      // indicator that isn't on the chart yet) — either way Apply
+      // changes/Add to Chart will carry the restored settings forward.
+      const onChart = indicators.find((i) => i.savedId === variables.indicatorId);
+      setEditingKey(onChart ? onChart.key : null);
       // The restored version becomes the AI Builder's active working
       // version too — same project identity, so its own conversation
       // history keeps showing (restoring never creates a new indicator).
       setProjectSpec(coerceSpec(row.restored.spec));
       setAiIndicatorId(variables.indicatorId);
       setDock("code");
-      setNotice("Version restored — press Add to Chart to run it.");
+      setNotice(
+        onChart
+          ? "Version restored with its saved settings — press Apply changes to plot it."
+          : "Version restored with its saved settings — press Add to Chart to plot it.",
+      );
       qc.invalidateQueries({ queryKey: ["indicators"] });
       qc.invalidateQueries({ queryKey: ["indicator-versions"] });
     },
@@ -2887,8 +3012,12 @@ function Studio() {
       return renderInactiveChartLeaf(instanceId, nodeId);
     }
     const activeChartInstance = chartStatesMap[instanceId] ?? DEFAULT_CHART_RUNTIME_STATE;
+    const settingsPopoutIndicator = settingsPopoutKey
+      ? (indicators.find((i) => i.key === settingsPopoutKey) ?? null)
+      : null;
     return (
     <div
+      data-chart-leaf
       className={`relative min-h-0 overflow-hidden ${
         dockState === "maximized" ? "flex-none basis-14" : "flex-1"
       } ${chartInstancesInTreeCount > 1 ? "ring-1 ring-brand/60" : ""}`}
@@ -2913,6 +3042,8 @@ function Studio() {
           setCode(ind.code);
           setActiveInputs(ind.result.inputs);
           setSettings(ind.settings);
+          setValidation({ status: "idle", error: null });
+          checkedSourceRef.current = null;
           setDock("code");
         }}
         onToggleVisible={(key) =>
@@ -2920,28 +3051,105 @@ function Studio() {
             prev.map((p) => (p.key === key ? { ...p, visible: !p.visible } : p)),
           )
         }
-        onRemoveIndicator={(key) =>
-          setIndicators((prev) => prev.filter((p) => p.key !== key))
-        }
-        onOpenSettings={(key) => {
+        onRemoveIndicator={(key) => {
+          setIndicators((prev) => prev.filter((p) => p.key !== key));
+          if (settingsPopoutKey === key) setSettingsPopoutKey(null);
+        }}
+        onOpenSettings={(key, anchor) => {
+          // UI-5d: settings now open as a floating pop-out over the chart —
+          // this NEVER touches the bottom dock (no setDock/openDock here),
+          // so the trader keeps their chart space. It still points the same
+          // shared editing session (code/settings/activeInputs/editingKey)
+          // at this indicator, exactly like the Code panel's "Edit" did, so
+          // Apply/Validate/Save Version all keep working on it unchanged.
           const ind = indicators.find((i) => i.key === key);
           if (!ind) return;
           setEditingKey(key);
           setCode(ind.code);
           setActiveInputs(ind.result.inputs);
           setSettings(ind.settings);
-          setDock("code");
-          openDock();
+          setValidation({ status: "idle", error: null });
+          checkedSourceRef.current = null;
+          setSettingsPopoutAnchor(anchor);
+          setSettingsPopoutKey(key);
         }}
         onPickTemplate={(templateCode) => {
           setEditingKey(null);
           setCode(templateCode ?? DEFAULT_SCRIPT);
+          setValidation({ status: "idle", error: null });
+          checkedSourceRef.current = null;
           setDock("code");
           openDock();
           // Start a fresh AI build session too.
           resetAiBuildSession();
         }}
       />
+      {settingsPopoutIndicator && (
+        <IndicatorSettingsPopout
+          name={settingsPopoutIndicator.name}
+          visible={settingsPopoutIndicator.visible}
+          inputs={settingsPopoutIndicator.result.inputs}
+          settings={settings}
+          chartLabel={
+            chartInstancesInTreeCount > 1
+              ? `${activeChartInstance.symbol} ${timeframeLabel(activeChartInstance.interval)}`
+              : null
+          }
+          anchor={settingsPopoutAnchor}
+          onChangeSetting={(name, value) => {
+            const key = settingsPopoutIndicator.key;
+            const next = { ...settings, [name]: value };
+            setSettings(next);
+            // Live-apply: a settings change is always re-running ALREADY
+            // -valid code (it got onto the chart in the first place), so
+            // this can reuse `runCode` directly instead of the manual-edit
+            // Validate/Apply gate above, which exists for CODE TEXT edits.
+            void runCode(settingsPopoutIndicator.code, {
+              settings: next,
+              key,
+              silent: true,
+              ...(settingsPopoutIndicator.savedId ? { savedId: settingsPopoutIndicator.savedId } : {}),
+            });
+          }}
+          onToggleVisible={() =>
+            setIndicators((prev) =>
+              prev.map((p) =>
+                p.key === settingsPopoutIndicator.key ? { ...p, visible: !p.visible } : p,
+              ),
+            )
+          }
+          onReset={() => {
+            const key = settingsPopoutIndicator.key;
+            const code0 = settingsPopoutIndicator.code;
+            void (async () => {
+              const data = await waitForBars();
+              try {
+                // Empty settings override => the script's own coded defaults
+                // come back as `value` (see input() in sgscript/runtime.ts).
+                const defaults = await runIndicator(code0, data, {});
+                const defaultSettings = Object.fromEntries(
+                  defaults.inputs.map((i) => [i.name, i.value]),
+                );
+                setSettings(defaultSettings);
+                await runCode(code0, {
+                  settings: defaultSettings,
+                  key,
+                  silent: true,
+                  ...(settingsPopoutIndicator.savedId ? { savedId: settingsPopoutIndicator.savedId } : {}),
+                });
+                setNotice("Reset to default settings.");
+              } catch (e) {
+                setRunError(e instanceof Error ? e.message : "Could not reset to defaults");
+              }
+            })();
+          }}
+          onRemove={() => {
+            setIndicators((prev) => prev.filter((p) => p.key !== settingsPopoutIndicator.key));
+            setSettingsPopoutKey(null);
+          }}
+          onClose={() => setSettingsPopoutKey(null)}
+        />
+      )}
       {chartInstancesInTreeCount > 1 && renderLinkModeControl(instanceId, activeChartInstance.linkMode)}
       {chartInstancesInTreeCount > 1 && (
         <button
@@ -3374,147 +3582,142 @@ function Studio() {
         openWidgetTypeIds={dockWidgetTypeIds}
         onAdd={(widgetTypeId) => addWidget(WELL_KNOWN_NODE_IDS.bottomDock, widgetTypeId)}
       />
-      <div className="ml-auto flex items-center gap-1">
-        <button
-          onClick={pasteFromClipboard}
-          disabled={running || translating}
-          title="Paste code from clipboard and plot it"
-          className="flex h-7 items-center gap-1 rounded-[6px] px-2 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
-        >
-          <ClipboardPaste className="h-3.5 w-3.5" /> Paste
-        </button>
-        <button
-          onClick={copyCode}
-          title="Copy this script"
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground"
-        >
-          {copied ? (
-            <Check className="h-3.5 w-3.5 text-brand" />
-          ) : (
-            <Copy className="h-3.5 w-3.5" />
-          )}
-        </button>
-        {chartInstancesInTreeCount > 1 && (
-          <select
-            title="Which chart Add to Chart / indicator edits apply to"
-            value={activeChartInstanceId}
-            onChange={(e) => setActiveChartInstanceId(e.target.value)}
-            className="h-7 rounded-[6px] border border-border bg-card px-1.5 text-[11px] outline-none focus:border-brand"
+      {/* UI-5d: these actions only make sense for the code-development
+       * surface — scoping them to `dock === "code"` keeps every other dock
+       * tab (Saved, Docs, Tester, Journal, …) free of controls that don't
+       * apply to it, instead of the same row showing regardless of which
+       * tab is active. Directly the "reduce visual clutter" ask (part 4). */}
+      {dock === "code" && (
+        <div className="ml-auto flex items-center gap-1">
+          <button
+            onClick={pasteFromClipboard}
+            disabled={running || translating}
+            title="Paste code from clipboard and plot it"
+            className="flex h-7 items-center gap-1 rounded-[6px] px-2 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
           >
-            {Object.keys(chartStatesMap).map((id, i) => {
-              const s = chartStatesMap[id];
-              return (
-                <option key={id} value={id}>
-                  {`Chart ${i + 1} — ${s.symbol} ${timeframeLabel(s.interval)}`}
-                </option>
-              );
-            })}
-          </select>
-        )}
-        <button
-          onClick={addToChart}
-          disabled={running || translating || bars.length === 0}
-          className="flex h-7 items-center gap-1 rounded-[6px] bg-brand px-2.5 text-[13px] font-medium text-brand-foreground disabled:opacity-50"
-        >
-          {running || translating ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <Play className="h-3.5 w-3.5" />
+            <ClipboardPaste className="h-3.5 w-3.5" /> Paste
+          </button>
+          <button
+            onClick={copyCode}
+            title="Copy this script"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            {copied ? (
+              <Check className="h-3.5 w-3.5 text-brand" />
+            ) : (
+              <Copy className="h-3.5 w-3.5" />
+            )}
+          </button>
+          {chartInstancesInTreeCount > 1 && (
+            <select
+              title="Which chart Add to Chart / indicator edits apply to"
+              value={activeChartInstanceId}
+              onChange={(e) => setActiveChartInstanceId(e.target.value)}
+              className="h-7 rounded-[6px] border border-border bg-card px-1.5 text-[11px] outline-none focus:border-brand"
+            >
+              {Object.keys(chartStatesMap).map((id, i) => {
+                const s = chartStatesMap[id];
+                return (
+                  <option key={id} value={id}>
+                    {`Chart ${i + 1} — ${s.symbol} ${timeframeLabel(s.interval)}`}
+                  </option>
+                );
+              })}
+            </select>
           )}
-          Add to Chart
-        </button>
-        <button
-          onClick={() => saveMut.mutate()}
-          disabled={!user || saveMut.isPending || !editingKey}
-          title={user ? "Save indicator" : "Sign in to save"}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
-        >
-          <Save className="h-3.5 w-3.5" />
-        </button>
-      </div>
+          {/* Unconditional, unchanged from before UI-5d — brand-new/pasted
+           * scripts (and Pine translation) still go through this exact same
+           * button/behavior regardless of whether an indicator is also
+           * loaded for editing. */}
+          <button
+            onClick={addToChart}
+            disabled={running || translating || bars.length === 0}
+            className="flex h-7 items-center gap-1 rounded-[6px] bg-brand px-2.5 text-[13px] font-medium text-brand-foreground disabled:opacity-50"
+          >
+            {running || translating ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Play className="h-3.5 w-3.5" />
+            )}
+            Add to Chart
+          </button>
+          {editingKey && (
+            <>
+              <button
+                onClick={() => void validateDraft()}
+                disabled={running || translating || validation.status === "checking"}
+                title="Check the current code for errors without touching the chart"
+                className="flex h-7 items-center gap-1 rounded-[6px] px-2 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
+              >
+                {validation.status === "checking" ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                )}
+                Validate
+              </button>
+              <button
+                onClick={() => void applyChanges()}
+                disabled={running || translating || bars.length === 0}
+                title="Validate and update this indicator on the chart"
+                className="flex h-7 items-center gap-1 rounded-[6px] border border-brand/50 px-2.5 text-[11px] font-medium text-brand hover:bg-brand/10 disabled:opacity-50"
+              >
+                {running || translating ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Check className="h-3.5 w-3.5" />
+                )}
+                Apply changes
+              </button>
+              <button
+                onClick={revertCode}
+                disabled={!isCodeDirty}
+                title="Discard edits and return to the last applied version"
+                className="flex h-7 items-center gap-1 rounded-[6px] px-2 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
+              >
+                <RotateCcw className="h-3.5 w-3.5" /> Revert
+              </button>
+            </>
+          )}
+          <button
+            onClick={() => saveMut.mutate()}
+            disabled={!user || saveMut.isPending || !editingKey}
+            title={user ? "Save a new version of this indicator" : "Sign in to save"}
+            className="flex h-7 items-center gap-1 rounded-[6px] px-2 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
+          >
+            <Save className="h-3.5 w-3.5" /> Save Version
+          </button>
+        </div>
+      )}
 
     </div>
 
     {dockVisible && dock === "code" && (
       <div className="flex min-h-0 flex-1 flex-col">
+        {editingKey && (
+          <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1 text-[10.5px]">
+            {isCodeDirty ? (
+              <span className="flex items-center gap-1 text-amber-500">
+                <span className="h-1.5 w-1.5 rounded-full bg-amber-500" /> Unsaved changes
+              </span>
+            ) : (
+              <span className="text-muted-foreground">Up to date with the chart</span>
+            )}
+            {validation.status === "valid" && checkedSourceRef.current === cleanPasted(code) && (
+              <span className="flex items-center gap-1 text-emerald-400">
+                <ShieldCheck className="h-3 w-3" /> Validated
+              </span>
+            )}
+          </div>
+        )}
         <div className="min-h-0 flex-1 overflow-hidden">
           <CodeEditor value={code} onChange={setCode} />
         </div>
 
-        {activeInputs.length > 0 && (
-          <div className="max-h-56 shrink-0 overflow-auto border-t border-border p-3">
-            <p className="mb-2 text-[11px] font-medium text-muted-foreground">
-              Settings
-            </p>
-            <div className="space-y-2">
-              {activeInputs.map((inp) => (
-                <label
-                  key={inp.name}
-                  className="flex items-center justify-between gap-2 text-[11px]"
-                >
-                  <span className="text-muted-foreground">{inp.label}</span>
-                  {inp.type === "bool" ? (
-                    <input
-                      type="checkbox"
-                      checked={Boolean(settings[inp.name])}
-                      onChange={(e) =>
-                        setSettings((s) => ({
-                          ...s,
-                          [inp.name]: e.target.checked,
-                        }))
-                      }
-                    />
-                  ) : inp.type === "color" ? (
-                    <input
-                      type="color"
-                      value={String(settings[inp.name] ?? "#000000")}
-                      onChange={(e) =>
-                        setSettings((s) => ({ ...s, [inp.name]: e.target.value }))
-                      }
-                      className="h-6 w-10 rounded border border-border bg-card p-0"
-                    />
-                  ) : inp.options && inp.options.length > 0 ? (
-                    <select
-                      value={String(settings[inp.name] ?? inp.options[0])}
-                      onChange={(e) =>
-                        setSettings((s) => ({ ...s, [inp.name]: e.target.value }))
-                      }
-                      className="w-28 rounded border border-border bg-card px-2 py-1 text-[11px] outline-none focus:border-brand"
-                    >
-                      {inp.options.map((o) => (
-                        <option key={o} value={o}>
-                          {o}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <input
-                      type={inp.type === "number" ? "number" : "text"}
-                      value={String(settings[inp.name] ?? "")}
-                      min={inp.min}
-                      max={inp.max}
-                      step={inp.step}
-                      onChange={(e) =>
-                        setSettings((s) => ({
-                          ...s,
-                          [inp.name]:
-                            inp.type === "number"
-                              ? Number(e.target.value)
-                              : e.target.value,
-                        }))
-                      }
-                      className="w-28 rounded border border-border bg-card px-2 py-1 outline-none focus:border-brand"
-                    />
-                  )}
-                </label>
-              ))}
-            </div>
-            <button
-              onClick={addToChart}
-              className="mt-3 w-full rounded-[6px] border border-border py-1 text-[11px] hover:bg-accent"
-            >
-              Apply settings
-            </button>
+        {validation.status === "invalid" && validation.error && (
+          <div className="flex shrink-0 items-start gap-1.5 border-t border-destructive/40 bg-destructive/5 px-3 py-2 text-[11px] text-destructive">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span className="leading-relaxed">{validation.error}</span>
           </div>
         )}
 
@@ -3578,6 +3781,12 @@ function Studio() {
                   onClick={() => {
                     setCode(row.code);
                     setEditingKey(`saved-${row.id}`);
+                    // UI-5d fix: load this project's OWN settings too, not
+                    // whatever the previous editing session had — same gap
+                    // restoreMut had.
+                    setSettings((row.settings ?? {}) as Record<string, number | boolean | string>);
+                    setValidation({ status: "idle", error: null });
+                    checkedSourceRef.current = null;
                     // Point the AI Builder at THIS project too, so Modify /
                     // Explain / Fix Error act on it and its own conversation
                     // history loads instead of the previous session's.
@@ -3654,6 +3863,16 @@ function Studio() {
                         title="Load this version into the editor"
                         onClick={() => {
                           setCode(v.code);
+                          // UI-5d fix: this version's OWN settings, and point
+                          // the editing session at the matching on-chart
+                          // instance (if any) — same fix as restoreMut, so a
+                          // previewed-but-not-restored version's settings
+                          // aren't left showing the last-edited instance's.
+                          setSettings((v.settings ?? {}) as Record<string, number | boolean | string>);
+                          setValidation({ status: "idle", error: null });
+                          checkedSourceRef.current = null;
+                          const onChartForVersion = indicators.find((i) => i.savedId === row.id);
+                          setEditingKey(onChartForVersion ? onChartForVersion.key : null);
                           setProjectSpec(coerceSpec(v.spec));
                           setAiIndicatorId(row.id);
                           setDock("code");

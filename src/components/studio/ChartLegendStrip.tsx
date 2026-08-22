@@ -25,7 +25,11 @@ type Props = {
   onSelectIndicator: (key: string) => void;
   onToggleVisible: (key: string) => void;
   onRemoveIndicator: (key: string) => void;
-  onOpenSettings: (key: string) => void;
+  /** `anchor` is the settings-gear button's own position (relative to the
+   * nearest positioned ancestor — the chart leaf), so the caller can float
+   * its settings pop-out right beside the control that opened it instead of
+   * a fixed, potentially-colliding corner. */
+  onOpenSettings: (key: string, anchor: { x: number; y: number }) => void;
   /** null = blank starter script. */
   onPickTemplate: (code: string | null) => void;
 };
@@ -126,7 +130,15 @@ export function ChartLegendStrip({
             </button>
             <button
               title="Settings"
-              onClick={() => onOpenSettings(ind.key)}
+              onClick={(e) => {
+                const container = e.currentTarget.closest<HTMLElement>("[data-chart-leaf]");
+                const btnRect = e.currentTarget.getBoundingClientRect();
+                const containerRect = container?.getBoundingClientRect();
+                onOpenSettings(ind.key, {
+                  x: btnRect.left - (containerRect?.left ?? 0),
+                  y: btnRect.bottom - (containerRect?.top ?? 0) + 4,
+                });
+              }}
               className="text-muted-foreground hover:text-foreground"
             >
               <Settings2 className="h-3 w-3" />
