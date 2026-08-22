@@ -3,7 +3,6 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type React
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import {
-  ArrowLeft,
   Bell,
   BookOpen,
   Check,
@@ -4230,13 +4229,6 @@ function Studio() {
     <div ref={rootRef} className="flex h-screen flex-col bg-background text-foreground">
       {/* top bar */}
       <header className="flex h-10 shrink-0 items-center gap-1.5 border-b border-border bg-sidebar px-2">
-        <Link
-          to="/app"
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground"
-          title="Back to chat"
-        >
-          <ArrowLeft className="h-3.5 w-3.5" />
-        </Link>
         <span className="hidden shrink-0 text-[13px] font-medium tracking-tight text-muted-foreground md:inline">
           Chart Studio
         </span>

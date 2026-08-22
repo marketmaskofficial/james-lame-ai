@@ -144,7 +144,7 @@ function ShareView() {
           Describe a strategy, let Signal Goat AI write the Pine Script.
         </p>
         <Link
-          to="/app"
+          to="/studio"
           className="mt-4 inline-flex items-center gap-1.5 rounded-md bg-brand px-4 py-2 text-sm font-semibold text-brand-foreground hover:opacity-90"
         >
           Try Signal Goat AI

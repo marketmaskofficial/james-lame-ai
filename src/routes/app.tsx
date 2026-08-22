@@ -1,4 +1,4 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, redirect, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
@@ -70,6 +70,13 @@ const FREE_INTERVALS = new Set(["15m", "1h", "1d"]);
 const FREE_HISTORY_LIMIT = 5;
 
 export const Route = createFileRoute("/app")({
+  // Retired: Chart Studio (/studio) is now the single canonical chart/AI-builder
+  // surface. /app never accepted meaningful query params (no validateSearch),
+  // so there is nothing to forward — this is a plain redirect, not a rebuild.
+  // The rest of this file is kept in place, unreached, rather than deleted.
+  beforeLoad: () => {
+    throw redirect({ to: "/studio" });
+  },
   head: () => ({
     meta: [
       { title: "Signal Goat AI — Chat & iterate on Pine Script" },

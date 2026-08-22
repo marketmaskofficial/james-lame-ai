@@ -26,7 +26,7 @@ function CheckoutReturn() {
             : "We couldn't find a checkout session."}
         </p>
         <Link
-          to="/app"
+          to="/studio"
           className="mt-6 inline-flex items-center justify-center rounded-md bg-brand px-4 py-2 text-sm font-semibold text-brand-foreground hover:opacity-90"
         >
           Open the app
