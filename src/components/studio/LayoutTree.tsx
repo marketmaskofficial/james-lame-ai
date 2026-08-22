@@ -73,6 +73,29 @@ type LayoutTreeProps = {
    * generic and doesn't hardcode any itself, per its own design principle).
    */
   neverSuppressChildIds?: ReadonlySet<string>;
+  /**
+   * UI-5 close-out (Chart/Split/Code): which ONE child of this plain split
+   * should actually receive `flex-1` (grow to fill the split) — every other
+   * non-hidden child at that same split gets `flex-none` (shrink to its own
+   * natural content size) instead of also competing for equal space.
+   *
+   * Before this existed, EVERY non-hidden child of a plain split got the
+   * same blanket `flex-1`, so two children left visible together (the
+   * emphasized one plus anything `neverSuppressChildIds` protects from
+   * hiding) always split the space 50/50 by construction — regardless of
+   * how small one side's own content actually was. That silently capped
+   * both "collapse the dock" (chart never got more than half the screen,
+   * the rest sat blank behind the dock's own ~40px header) and "maximize
+   * the dock" (the code editor never got more than half either, blank
+   * space behind chart-area's own basis-14 sliver) at exactly half instead
+   * of the near-full space each was supposed to reclaim — reproduced by
+   * measuring actual DOM rects in each state before this existed.
+   *
+   * Deliberately optional and per-split-id, not a blanket rule: a plain
+   * split with no entry here (e.g. the sidebar's collapse path, untouched
+   * by this change) keeps the exact prior blanket-`flex-1` behavior.
+   */
+  growChildOf?: ReadonlyMap<string, string>;
 };
 
 function PlainSplit({
@@ -84,8 +107,10 @@ function PlainSplit({
   maxSizeForChild,
   emphasizedChildOf,
   neverSuppressChildIds,
+  growChildOf,
 }: LayoutTreeProps & { node: SplitNode }) {
   const emphasized = emphasizedChildOf?.get(node.id);
+  const grow = growChildOf?.get(node.id);
   return (
     <div
       className={`flex min-h-0 min-w-0 flex-1 ${
@@ -98,7 +123,26 @@ function PlainSplit({
           className={
             emphasized && child.id !== emphasized && !neverSuppressChildIds?.has(child.id)
               ? "hidden"
-              : "flex min-h-0 min-w-0 flex-1 flex-col"
+              : grow
+                ? child.id === grow
+                  ? "flex min-h-0 min-w-0 flex-1 flex-col"
+                  : // UI-5 close-out: the shrinking side is capped at the same
+                    // basis-14 (56px) footprint chart-area's own sliver CSS
+                    // already uses, with overflow clipped — not just
+                    // `flex-none` on its own. A single-chart chart-area (or
+                    // bottom-dock's own header strip) already naturally fits
+                    // in that footprint via ITS OWN CSS, so the cap is a
+                    // no-op there; it only actually matters once 2+ nested
+                    // chart panes sit inside this wrapper, none of which
+                    // (besides the active one) know how to shrink themselves
+                    // — reproduced by opening 4 charts, then maximizing the
+                    // code editor: without this cap the un-shrinkable nested
+                    // chart row pushed the dock down past the viewport
+                    // instead of the dock actually getting the space.
+                    `flex min-h-0 min-w-0 flex-none flex-col overflow-hidden ${
+                      node.direction === "column" ? "max-h-14" : "max-w-14"
+                    }`
+                : "flex min-h-0 min-w-0 flex-1 flex-col"
           }
         >
           <LayoutTree
@@ -110,6 +154,7 @@ function PlainSplit({
             maxSizeForChild={maxSizeForChild}
             emphasizedChildOf={emphasizedChildOf}
             neverSuppressChildIds={neverSuppressChildIds}
+            growChildOf={growChildOf}
           />
         </div>
       ))}
@@ -126,6 +171,7 @@ function ResizableSplit({
   maxSizeForChild,
   emphasizedChildOf,
   neverSuppressChildIds,
+  growChildOf,
 }: LayoutTreeProps & { node: SplitNode }) {
   const isRow = node.direction === "row";
   const equalShare = 100 / node.children.length;
@@ -165,6 +211,7 @@ function ResizableSplit({
               maxSizeForChild={maxSizeForChild}
               emphasizedChildOf={emphasizedChildOf}
               neverSuppressChildIds={neverSuppressChildIds}
+              growChildOf={growChildOf}
             />
           </Panel>
         </Fragment>

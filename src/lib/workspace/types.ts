@@ -284,6 +284,41 @@ export function collectWidgetTypeIds(node: LayoutNode): WidgetTypeId[] {
   return node.children.flatMap(collectWidgetTypeIds);
 }
 
+/**
+ * UI-5 close-out: every node id (split or tabs) whose subtree holds at least
+ * one "chart" tab. `chart-area` is the only chart-bearing id LayoutTree's
+ * `neverSuppressChildIds` originally knew to protect from the dock
+ * maximize/collapse "hide the other sibling" treatment (see PlainSplit in
+ * LayoutTree.tsx) — true only while a single chart existed. "Add Chart"
+ * (multi-chart) wraps `chart-area` and the new pane together in a
+ * freshly-generated split id, which is a sibling of `bottom-dock` under
+ * `chart-column` once 2+ charts are open. That generated id was never in the
+ * protected set, so collapsing or maximizing the dock with 2+ charts open
+ * hid the ENTIRE chart row instead of just resizing it — reproduced by
+ * opening a second chart, then collapsing the dock. This walks the real
+ * tree so every ancestor between a chart tab and the root is protected,
+ * regardless of how many charts are open or how they're nested, without
+ * hardcoding a specific id or inventing a second layout/visibility system.
+ */
+export function collectChartBearingNodeIds(node: LayoutNode): Set<string> {
+  const ids = new Set<string>();
+  function walk(n: LayoutNode): boolean {
+    if (n.kind === "tabs") {
+      const hasChart = n.tabs.some((t) => t.widgetTypeId === "chart");
+      if (hasChart) ids.add(n.id);
+      return hasChart;
+    }
+    let hasChart = false;
+    for (const child of n.children) {
+      if (walk(child)) hasChart = true;
+    }
+    if (hasChart) ids.add(n.id);
+    return hasChart;
+  }
+  walk(node);
+  return ids;
+}
+
 /** Depth-first find of a node by id, or null if absent. */
 export function findNodeById(node: LayoutNode, id: string): LayoutNode | null {
   if (node.id === id) return node;

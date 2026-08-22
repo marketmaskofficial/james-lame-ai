@@ -127,6 +127,7 @@ import type { BacktestTrade } from "@/lib/backtest/engine";
 import { track } from "@/lib/telemetry";
 import type { AccountSnapshot, TradingAccount } from "@/lib/trading/types";
 import {
+  collectChartBearingNodeIds,
   collectWidgetTypeIds,
   findNodeById,
   findWidgetInstance,
@@ -1426,6 +1427,37 @@ function Studio() {
     [],
   );
   const openSidebar = useCallback(() => setSidebarState("expanded"), []);
+
+  /**
+   * UI-5 close-out gap #1: Chart / Split / Code is a thin derived view over
+   * `dock`/`dockState` — NOT a second layout/visibility engine. "Chart" is
+   * exactly `dockState === "collapsed"` (whatever tab was last docked stays
+   * remembered, just hidden). "Split" and "Code" both mean the dock is
+   * showing the code surface (`dock === "code"`), just at `"normal"` vs
+   * `"maximized"` size. Because this only ever calls setDock/setDockState —
+   * the exact same setters every pre-existing dock control already uses —
+   * it can never reset chart/project/version/editing state, and
+   * activeChartInstanceId (multi-chart targeting) is untouched entirely.
+   * `viewMode` is `null` when the dock is open on some other tab (e.g. the
+   * user picked "Saved"/"Watchlist" from the dock's own tab strip) — none of
+   * the three segments claims to represent that state.
+   */
+  type ViewMode = "chart" | "split" | "code";
+  const viewMode: ViewMode | null = !dockVisible
+    ? "chart"
+    : dock !== "code"
+      ? null
+      : dockState === "maximized"
+        ? "code"
+        : "split";
+  const setViewMode = useCallback((m: ViewMode) => {
+    if (m === "chart") {
+      setDockState("collapsed");
+      return;
+    }
+    setDock("code");
+    setDockState(m === "code" ? "maximized" : "normal");
+  }, []);
 
   /**
    * UI-5c-studio-shell-fix: makes a widget instance's tab the visible one,
@@ -3625,10 +3657,13 @@ function Studio() {
               })}
             </select>
           )}
+          <div className="mx-0.5 h-4 w-px shrink-0 bg-border" />
           {/* Unconditional, unchanged from before UI-5d — brand-new/pasted
            * scripts (and Pine translation) still go through this exact same
            * button/behavior regardless of whether an indicator is also
-           * loaded for editing. */}
+           * loaded for editing. Kept the one solid-brand action in this row
+           * so "run this code" stays visually primary against the muted
+           * validate/apply/revert/save cluster next to it. */}
           <button
             onClick={addToChart}
             disabled={running || translating || bars.length === 0}
@@ -3643,6 +3678,7 @@ function Studio() {
           </button>
           {editingKey && (
             <>
+              <div className="mx-0.5 h-4 w-px shrink-0 bg-border" />
               <button
                 onClick={() => void validateDraft()}
                 disabled={running || translating || validation.status === "checking"}
@@ -3679,6 +3715,7 @@ function Studio() {
               </button>
             </>
           )}
+          <div className="mx-0.5 h-4 w-px shrink-0 bg-border" />
           <button
             onClick={() => saveMut.mutate()}
             disabled={!user || saveMut.isPending || !editingKey}
@@ -4474,9 +4511,10 @@ function Studio() {
   // on the path also needs to know WHICH child continues toward the
   // maximized/collapsed leaf, so PlainSplit can hide the other one instead of
   // still splitting space with it -- see LayoutTree.tsx.
-  const { nonResizableSplitIds, emphasizedChildOf } = useMemo(() => {
+  const { nonResizableSplitIds, emphasizedChildOf, growChildOf } = useMemo(() => {
     const ids = new Set<string>();
     const emphasized = new Map<string, string>();
+    const grow = new Map<string, string>();
     function applyPath(boundaryId: string, leafId: string) {
       const boundary = findNodeById(layout.root, boundaryId);
       if (!boundary) return;
@@ -4487,10 +4525,45 @@ function Studio() {
         emphasized.set(path[i], path[i + 1]);
       }
     }
-    if (dockState !== "normal") applyPath(WELL_KNOWN_NODE_IDS.chartColumn, WELL_KNOWN_NODE_IDS.bottomDock);
+    if (dockState !== "normal") {
+      applyPath(WELL_KNOWN_NODE_IDS.chartColumn, WELL_KNOWN_NODE_IDS.bottomDock);
+      // UI-5 close-out: chart-column's own two children (bottom-dock and
+      // whatever holds the chart(s) beside it) must NOT split space 50/50
+      // just because neither is hidden — see growChildOf's docstring in
+      // LayoutTree.tsx. Maximized means the dock is the side that should
+      // actually grow (chart-area/the chart row already shrinks itself to
+      // its own basis-14 sliver); collapsed means the opposite — the dock
+      // only wants its own natural ~header-row height, so the chart side
+      // is the one that should grow instead.
+      const chartColumnNode = findNodeById(layout.root, WELL_KNOWN_NODE_IDS.chartColumn);
+      if (chartColumnNode && chartColumnNode.kind === "split") {
+        if (dockState === "maximized") {
+          grow.set(chartColumnNode.id, WELL_KNOWN_NODE_IDS.bottomDock);
+        } else {
+          const chartSide = chartColumnNode.children.find(
+            (c) => c.id !== WELL_KNOWN_NODE_IDS.bottomDock,
+          );
+          if (chartSide) grow.set(chartColumnNode.id, chartSide.id);
+        }
+      }
+    }
     if (sidebarState !== "expanded") applyPath(WELL_KNOWN_NODE_IDS.root, WELL_KNOWN_NODE_IDS.rightSidebar);
-    return { nonResizableSplitIds: ids, emphasizedChildOf: emphasized };
+    return { nonResizableSplitIds: ids, emphasizedChildOf: emphasized, growChildOf: grow };
   }, [dockState, sidebarState, layout]);
+
+  /**
+   * UI-5 close-out (Chart/Split/Code, gap #1): union of the static
+   * well-known ids and every id currently holding a chart tab anywhere in
+   * its subtree (see `collectChartBearingNodeIds`'s docstring for the bug
+   * this closes — a 2nd/3rd/4th chart's wrapping split had no protection
+   * from the dock's maximize/collapse "hide the other sibling" logic, so
+   * "Chart" mode with 2+ charts open hid every chart instead of maximizing
+   * them). Recomputed only when the tree actually changes shape.
+   */
+  const neverSuppressChildIds = useMemo(
+    () => new Set([...NEVER_SUPPRESS_CHILD_IDS, ...collectChartBearingNodeIds(layout.root)]),
+    [layout],
+  );
 
   // Same floors (and the sidebar's ceiling) the old hand-rolled pointer-drag
   // handles enforced (`Math.max(160, ...)` for the dock, `Math.max(240,
@@ -4799,17 +4872,38 @@ function Studio() {
           >
             <Rewind className="h-3.5 w-3.5" />
           </button>
-          <button
-            title={dockVisible ? "Hide editor panel" : "Show editor panel"}
-            onClick={toggleDockCollapse}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[6px] hover:bg-accent hover:text-foreground"
+          {/* UI-5 close-out gap #1: Chart / Split / Code — reuses dock/
+           * dockState exactly as every other dock control here already
+           * does (see setViewMode above), so this is the one clear place
+           * to switch working mode instead of two separate, less legible
+           * controls (a collapse toggle here + a maximize toggle buried in
+           * the dock's own tab strip). */}
+          <div
+            role="group"
+            aria-label="Chart, Split, or Code working mode"
+            className="flex h-8 shrink-0 items-center gap-0.5 rounded-[6px] border border-border bg-card px-0.5"
           >
-            {dockVisible ? (
-              <PanelBottomClose className="h-3.5 w-3.5" />
-            ) : (
-              <PanelBottomOpen className="h-3.5 w-3.5" />
-            )}
-          </button>
+            {(
+              [
+                ["chart", "Chart", "Maximize chart space — hide the code editor"],
+                ["split", "Split", "Chart and code editor side by side"],
+                ["code", "Code", "Maximize the code editor for manual editing"],
+              ] as const
+            ).map(([m, label, title]) => (
+              <button
+                key={m}
+                onClick={() => setViewMode(m)}
+                title={title}
+                className={`rounded-[4px] px-2 py-1 text-[11px] font-medium ${
+                  viewMode === m
+                    ? "bg-brand text-brand-foreground"
+                    : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <button
             title={sidebarState === "expanded" ? "Collapse sidebar" : "Expand sidebar"}
             onClick={() =>
@@ -4938,7 +5032,8 @@ function Studio() {
           renderLeaf={renderLeaf}
           nonResizableSplitIds={nonResizableSplitIds}
           emphasizedChildOf={emphasizedChildOf}
-          neverSuppressChildIds={NEVER_SUPPRESS_CHILD_IDS}
+          growChildOf={growChildOf}
+          neverSuppressChildIds={neverSuppressChildIds}
           minSizeForChild={minSizeForChild}
           maxSizeForChild={maxSizeForChild}
           onResizeCommit={onResizeCommit}
