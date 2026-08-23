@@ -1,5 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useAuth } from "@/hooks/useAuth";
+import { useSubscription } from "@/hooks/useSubscription";
 import {
   ArrowRight,
   Sparkles,
@@ -35,8 +36,13 @@ export const Route = createFileRoute("/")({
 
 function Landing() {
   const { user, loading } = useAuth();
-  const ctaHref = user ? "/studio" : "/auth";
-  const ctaLabel = user ? "Open the app" : "Try it free";
+  const { isActive } = useSubscription();
+  // Paid beta funnel: signed out -> create account; signed in + unpaid ->
+  // finish joining on the pricing page; signed in + active subscription ->
+  // straight into Chart Studio.
+  const ctaHref = !user ? "/auth" : isActive ? "/studio" : "/pricing";
+  const ctaSearch = !user ? { mode: "signup" as const } : undefined;
+  const ctaLabel = !user ? "Join the beta" : isActive ? "Open Studio" : "Finish joining the beta";
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -58,16 +64,17 @@ function Landing() {
             {!loading && !user && (
               <Link
                 to="/auth"
-                className="hidden rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground sm:inline-flex"
+                className="inline-flex rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground"
               >
                 Sign in
               </Link>
             )}
             <Link
               to={ctaHref}
+              search={ctaSearch}
               className="inline-flex items-center gap-1.5 rounded-md bg-brand px-3 py-1.5 text-sm font-semibold text-brand-foreground hover:opacity-90"
             >
-              {user ? "Open app" : "Get started"}
+              {ctaLabel}
               <ArrowRight className="h-3.5 w-3.5" />
             </Link>
           </div>
@@ -100,6 +107,7 @@ function Landing() {
             <div className="mt-8 flex items-center justify-center gap-3">
               <Link
                 to={ctaHref}
+                search={ctaSearch}
                 className="inline-flex items-center gap-2 rounded-md bg-brand px-5 py-2.5 text-sm font-semibold text-brand-foreground hover:opacity-90"
               >
                 {ctaLabel}
@@ -113,7 +121,7 @@ function Landing() {
               </a>
             </div>
             <p className="mt-4 text-xs text-muted-foreground">
-              No credit card. Generate your first script in under a minute.
+              Paid beta access. Cancel anytime from your account settings.
             </p>
           </div>
 
@@ -257,51 +265,26 @@ plotshape(long, style=shape.triangleup, ...)`}
       <section id="pricing" className="border-t border-border/60 bg-card/30">
         <div className="mx-auto max-w-6xl px-4 py-20">
           <div className="mx-auto max-w-2xl text-center">
-            <h2 className="text-3xl font-bold tracking-tight md:text-4xl">Simple pricing</h2>
-            <p className="mt-3 text-muted-foreground">Start free. Upgrade when you're shipping serious strategies.</p>
+            <h2 className="text-3xl font-bold tracking-tight md:text-4xl">One plan, full access</h2>
+            <p className="mt-3 text-muted-foreground">
+              Signal Goat AI is in paid beta. A single subscription unlocks everything —
+              Chart Studio, the AI Builder, Strategy Tester, and Paper Trading.
+            </p>
           </div>
-          <div className="mt-12 grid gap-4 md:grid-cols-2">
-            <div className="rounded-xl border border-border bg-background p-6">
-              <div className="text-sm font-semibold text-muted-foreground">Free</div>
-              <div className="mt-2 text-4xl font-black">$0</div>
-              <div className="text-xs text-muted-foreground">forever</div>
-              <ul className="mt-5 space-y-2 text-sm">
-                {["Unlimited prompts", "Live BTC chart preview", "History (last 50 scripts)"].map((i) => (
-                  <li key={i} className="flex items-center gap-2">
-                    <Check className="h-4 w-4 text-brand" /> {i}
-                  </li>
-                ))}
-              </ul>
-              <Link
-                to={ctaHref}
-                className="mt-6 inline-flex w-full items-center justify-center rounded-md border border-border bg-card px-3 py-2 text-sm font-medium hover:bg-accent"
-              >
-                Get started
-              </Link>
-            </div>
-            <div className="rounded-xl border border-brand bg-background p-6 shadow-lg shadow-brand/10">
-              <div className="text-sm font-semibold text-brand">Pro</div>
-              <div className="mt-2 text-4xl font-black">$19</div>
-              <div className="text-xs text-muted-foreground">per month</div>
-              <ul className="mt-5 space-y-2 text-sm">
-                {[
-                  "Everything in Free",
-                  "Unlimited history",
-                  "Custom symbols & timeframes",
-                  "Priority AI models",
-                ].map((i) => (
-                  <li key={i} className="flex items-center gap-2">
-                    <Check className="h-4 w-4 text-brand" /> {i}
-                  </li>
-                ))}
-              </ul>
-              <Link
-                to="/pricing"
-                className="mt-6 inline-flex w-full items-center justify-center rounded-md bg-brand px-3 py-2 text-sm font-semibold text-brand-foreground hover:opacity-90"
-              >
-                Upgrade to Pro
-              </Link>
-            </div>
+          <div className="mx-auto mt-12 max-w-md rounded-xl border border-brand bg-background p-6 text-center shadow-lg shadow-brand/10">
+            <ul className="space-y-2 text-left text-sm">
+              {["Chart Studio", "AI Builder", "Strategy Tester", "Paper Trading"].map((i) => (
+                <li key={i} className="flex items-center gap-2">
+                  <Check className="h-4 w-4 text-brand" /> {i}
+                </li>
+              ))}
+            </ul>
+            <Link
+              to="/pricing"
+              className="mt-6 inline-flex w-full items-center justify-center rounded-md bg-brand px-3 py-2 text-sm font-semibold text-brand-foreground hover:opacity-90"
+            >
+              See beta pricing
+            </Link>
           </div>
         </div>
       </section>
@@ -318,6 +301,7 @@ plotshape(long, style=shape.triangleup, ...)`}
           <div className="mt-8">
             <Link
               to={ctaHref}
+              search={ctaSearch}
               className="inline-flex items-center gap-2 rounded-md bg-brand px-6 py-3 text-sm font-semibold text-brand-foreground hover:opacity-90"
             >
               {ctaLabel}

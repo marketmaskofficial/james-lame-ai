@@ -8,15 +8,19 @@ export const Route = createFileRoute("/auth")({
   head: () => ({
     meta: [
       { title: "Sign in — Signal Goat AI" },
-      { name: "description", content: "Sign in to Signal Goat AI to save and revisit your Pine Script generations." },
+      { name: "description", content: "Sign in to Signal Goat AI, or create an account to join the paid beta." },
     ],
+  }),
+  validateSearch: (search: Record<string, unknown>): { mode?: "signin" | "signup" } => ({
+    mode: search.mode === "signup" ? "signup" : undefined,
   }),
   component: AuthPage,
 });
 
 function AuthPage() {
   const navigate = useNavigate();
-  const [mode, setMode] = useState<"signin" | "signup">("signin");
+  const { mode: initialMode } = Route.useSearch();
+  const [mode, setMode] = useState<"signin" | "signup">(initialMode ?? "signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");

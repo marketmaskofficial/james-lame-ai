@@ -8,6 +8,21 @@ const getEnv = (key: string): string => {
 
 export type StripeEnv = "sandbox" | "live";
 
+/**
+ * The single paid beta plan's Stripe Price lookup_key. This is the ONE place
+ * that names it — `getBetaPlan` reads the live price (amount, currency,
+ * interval, product name) from Stripe by this key so the pricing page never
+ * hardcodes a dollar figure, and `createCheckoutSession` receives that same
+ * key from the client so the price actually charged always matches what was
+ * displayed. Kept as the pre-existing "pro_monthly" value on purpose: this
+ * lookup_key is already wired into checkout.sessions.create() and the
+ * webhook's resolvePriceId() fallback, so it must match whatever Price object
+ * actually exists in the connected Stripe account. Renaming it here without
+ * being able to verify the real Stripe dashboard would silently break
+ * checkout for anyone where it currently works.
+ */
+export const BETA_PLAN_LOOKUP_KEY = "pro_monthly";
+
 const GATEWAY_STRIPE_BASE = "https://connector-gateway.lovable.dev/stripe";
 
 export function getConnectionApiKey(env: StripeEnv): string {
