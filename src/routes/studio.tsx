@@ -58,7 +58,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useSubscription } from "@/hooks/useSubscription";
-import { checkStudioAccess, isStudioGateTestBypassed } from "@/lib/subscription-status";
+import { checkStudioAccess, isStudioGateTestBypassed, isStudioGateLocalPaidBypassed } from "@/lib/subscription-status";
 import { getOnboardingStatus } from "@/lib/profile.functions";
 import { OnboardingFlow } from "@/components/OnboardingFlow";
 import { fetchBars, TIMEFRAMES, timeframeLabel } from "@/lib/marketdata";
@@ -289,10 +289,17 @@ function StudioLoadingScreen() {
 function Studio() {
   const navigate = useNavigate();
   const testBypassed = isStudioGateTestBypassed();
+  // Local-dev-only, doubly-guarded (see isStudioGateLocalPaidBypassed's
+  // docstring): unlike `testBypassed` above, this NEVER substitutes for a
+  // real signed-in user below — it only ever widens what counts as "paid"
+  // for a user who already passed the `!!user` check, so a signed-out
+  // visitor is still redirected to /auth exactly as in production.
+  const localPaidBypassed = isStudioGateLocalPaidBypassed();
   const { user, loading: authLoading } = useAuth();
   const { isActive: isPaid, loading: subLoading } = useSubscription();
   const ready = !authLoading && !subLoading;
-  const authorized = testBypassed || (ready && !!user && isPaid);
+  const effectivelyPaid = isPaid || localPaidBypassed;
+  const authorized = testBypassed || (ready && !!user && effectivelyPaid);
 
   useEffect(() => {
     if (testBypassed || !ready) return;
@@ -300,10 +307,10 @@ function Studio() {
       navigate({ to: "/auth", replace: true });
       return;
     }
-    if (!isPaid) {
+    if (!effectivelyPaid) {
       navigate({ to: "/pricing", replace: true });
     }
-  }, [testBypassed, ready, user, isPaid, navigate]);
+  }, [testBypassed, ready, user, effectivelyPaid, navigate]);
 
   // UI-8 task 3: first-run onboarding. Checked once access is confirmed —
   // `null` = still checking, so the loading shell (not the real product,
