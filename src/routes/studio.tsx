@@ -86,8 +86,14 @@ import {
   type ChartTrade,
   type PositionPlan,
   type RenderStats,
+  type MagnetMode,
   DEFAULT_CHART_SETTINGS,
 } from "@/components/studio/StudioChart";
+import { DrawToolbar } from "@/components/studio/DrawToolbar";
+import { DrawingSettingsPopover } from "@/components/studio/DrawingSettingsPopover";
+import { loadDrawingsFor, saveDrawingsFor } from "@/lib/workspace/drawings";
+import { TOOL_BY_ID } from "@/lib/drawing/registry";
+import { recordDrawingChange, undoDrawings, redoDrawings, clearDrawingHistory } from "@/lib/drawing/history";
 import { BrokerConnections } from "@/components/studio/BrokerConnections";
 import { SymbolSearch } from "@/components/studio/SymbolSearch";
 import { WatchlistPanel } from "@/components/studio/WatchlistPanel";
@@ -105,7 +111,7 @@ import {
   updateIndicator,
 } from "@/lib/indicators.functions";
 import { repairSgScript, translateToSgScript } from "@/lib/sgscript.functions";
-import { loadDrawings, saveDrawings, takeStudioHandoff } from "@/lib/studio-handoff";
+import { takeStudioHandoff } from "@/lib/studio-handoff";
 import {
   TradingPanel,
   type OrderDraft,
@@ -342,25 +348,10 @@ function Studio() {
   return <StudioWorkspace />;
 }
 
-/** `group` only drives a subtle divider between clusters in the toolbar — it
- * has no effect on tool behaviour. */
-const TOOLS: { id: DrawTool; icon: typeof MousePointer2; label: string; group: string }[] = [
-  { id: "cursor", icon: MousePointer2, label: "Cursor", group: "select" },
-  { id: "select", icon: MousePointer2, label: "Select / move drawings", group: "select" },
-  { id: "trend", icon: TrendingUp, label: "Trend line", group: "shapes" },
-  { id: "ray", icon: Crosshair, label: "Ray", group: "shapes" },
-  { id: "hline", icon: Minus, label: "Horizontal line", group: "shapes" },
-  { id: "vline", icon: Minus, label: "Vertical line", group: "shapes" },
-  { id: "rect", icon: Square, label: "Rectangle", group: "shapes" },
-  { id: "fib", icon: Ruler, label: "Fib retracement", group: "annotate" },
-  { id: "text", icon: TypeIcon, label: "Text", group: "annotate" },
-  { id: "arrow", icon: ArrowUpRight, label: "Arrow", group: "annotate" },
-  { id: "marker", icon: MapPin, label: "Marker", group: "annotate" },
-  { id: "measure", icon: Pencil, label: "Measure", group: "annotate" },
-  { id: "long", icon: TrendingUp, label: "Long position", group: "position" },
-  { id: "short", icon: TrendingDown, label: "Short position", group: "position" },
-  { id: "erase", icon: Trash2, label: "Erase", group: "erase" },
-];
+// The old flat TOOLS array (cursor/select/trend/.../erase, one flavor-text
+// "group" per divider) was replaced by the grouped-flyout toolbar
+// (`DrawToolbar.tsx`), which reads its tool list from the shared
+// `src/lib/drawing/registry.ts` instead.
 
 const CHART_TYPES: { id: ChartType; label: string }[] = [
   { id: "candles", label: "Candles" },
@@ -867,12 +858,14 @@ function StudioWorkspace() {
   // Prompt handed to the AI panel when the tester asks for missing rules.
   const [aiSeed, setAiSeed] = useState<string | null>(null);
   const drawings = activeChartState.drawings;
-  const setDrawings = useCallback(
-    (v: Drawing[] | ((p: Drawing[]) => Drawing[])) => setChartField(activeChartInstanceId, "drawings", v),
-    [activeChartInstanceId, setChartField],
-  );
   const [selectedDrawing, setSelectedDrawing] = useState<string | null>(null);
   const [objectsOpen, setObjectsOpen] = useState(false);
+  // Drawing-anchor snap strength (distinct from chartSettings.crosshairMagnet,
+  // which only affects the crosshair display, not where a new anchor lands).
+  // One studio-wide value, not per-chart — same rationale as `tool` itself.
+  const [magnet, setMagnet] = useState<MagnetMode>("off");
+  // Which drawing (by id) has its DrawingSettingsPopover open, if any.
+  const [drawingSettingsFor, setDrawingSettingsFor] = useState<string | null>(null);
 
   // UI-4c: live, mutable workspace layout tree — source of truth for which
   // widgets are open in the sidebar/dock and in what order.
@@ -929,15 +922,29 @@ function StudioWorkspace() {
         for (const tab of node.tabs) {
           if (tab.widgetTypeId !== "chart") continue;
           const cfg = tab.chartConfig;
+          const symbol = cfg?.symbol ?? DEFAULT_CHART_RUNTIME_STATE.symbol;
+          const interval = cfg?.interval ?? DEFAULT_CHART_RUNTIME_STATE.interval;
           found[tab.instanceId] = {
             ...DEFAULT_CHART_RUNTIME_STATE,
-            symbol: cfg?.symbol ?? DEFAULT_CHART_RUNTIME_STATE.symbol,
-            interval: cfg?.interval ?? DEFAULT_CHART_RUNTIME_STATE.interval,
+            symbol,
+            interval,
             chartType: (cfg?.chartType as ChartType | undefined) ?? DEFAULT_CHART_RUNTIME_STATE.chartType,
             chartSettings: cfg?.settings
               ? ({ ...DEFAULT_CHART_SETTINGS, ...(cfg.settings as Partial<ChartSettings>) } as ChartSettings)
               : DEFAULT_CHART_RUNTIME_STATE.chartSettings,
             linkMode: cfg?.linkMode ?? DEFAULT_CHART_RUNTIME_STATE.linkMode,
+            // This call REPLACES chartStatesMap wholesale (a plain
+            // setChartStatesMap(found) below, not a merge) — every site that
+            // triggers it (initial load, preset switch, named-layout
+            // switch, cloud sync) would otherwise silently discard each
+            // chart's drawings back to `[]`, since a fresh runtime-state
+            // object built from DEFAULT_CHART_RUNTIME_STATE has no way to
+            // know what was saved. Hydrating from the SAME persisted store
+            // `StudioChart`'s own drawings-persistence effect reads keeps
+            // this one atomic instead of racing that effect's async
+            // setChartField (see the "justHydratedRef" comment further
+            // down for the mount-order race this sidesteps entirely).
+            drawings: loadDrawingsFor(tab.instanceId, symbol, interval) as Drawing[],
           };
         }
         return;
@@ -1406,6 +1413,7 @@ function StudioWorkspace() {
           const { [instanceId]: _removed, ...rest } = prevStates;
           return rest;
         });
+        clearDrawingHistory(instanceId);
         if (activeChartInstanceId === instanceId) {
           const stillThere = findLeafIdHoldingInstance(next.root, instanceId);
           if (!stillThere) {
@@ -2117,37 +2125,176 @@ function StudioWorkspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chartConfigPersistSignature]);
 
-  // ---- drawings persistence ----------------------------------------------
+  // ---- drawings persistence ------------------------------------------------
+  // Generalized across EVERY open chart instance (not just the active one) —
+  // see src/lib/workspace/drawings.ts's doc comment for why the old
+  // active-chart-only, symbol:interval-only version of this could silently
+  // collide or lose non-active charts' drawings. Loading is keyed on each
+  // instance's OWN (instanceId, symbol, interval) triple, tracked in a ref so
+  // it only fires on a genuine symbol/timeframe change for that instance —
+  // never re-fires (and never clobbers in-progress edits) on every
+  // chartStatesMap update, e.g. a live price tick.
+  //
+  // `justHydratedRef` closes a real mount-time data-loss race: on first
+  // mount (and again any time a chart instance is newly added), the LOAD
+  // effect below correctly calls `setChartField(id, "drawings", ...)` with
+  // whatever was in storage — but that's an async state update, so the SAVE
+  // effect, which runs in the SAME commit right after, still sees this
+  // render's STALE `chartStatesMap` (the instance's brand-new, still-empty
+  // `drawings: []`) and would otherwise immediately overwrite the very data
+  // LOAD just fetched with an empty array, a heartbeat before the loaded
+  // value ever reaches a render. Reproduced directly: draw something, reload
+  // — without this guard the drawing survives the in-memory reload (LOAD's
+  // state update does land) but is gone again on the NEXT reload, because
+  // SAVE's stale-empty write already clobbered localStorage right after the
+  // first one. Marking an instance "just hydrated" and skipping exactly its
+  // next SAVE pass (the SAVE effect fires again, with the now-current data,
+  // as soon as LOAD's state update lands on the following render) fixes it
+  // without needing the two effects to somehow run in the same tick.
+  const drawingsLoadTrackRef = useRef<Record<string, string>>({});
+  const justHydratedRef = useRef<Set<string>>(new Set());
+  const chartSymbolIntervalSig = useMemo(
+    () => Object.entries(chartStatesMap).map(([id, s]) => `${id}:${s.symbol}:${s.interval}`).join("|"),
+    [chartStatesMap],
+  );
   useEffect(() => {
-    setDrawings(loadDrawings(symbol, interval) as Drawing[]);
-  }, [symbol, interval]);
-  useEffect(() => {
-    saveDrawings(symbol, interval, drawings);
-  }, [symbol, interval, drawings]);
+    for (const [id, inst] of Object.entries(chartStatesMap)) {
+      const combo = `${inst.symbol}:${inst.interval}`;
+      if (drawingsLoadTrackRef.current[id] === combo) continue;
+      drawingsLoadTrackRef.current[id] = combo;
+      justHydratedRef.current.add(id);
+      setChartField(id, "drawings", loadDrawingsFor(id, inst.symbol, inst.interval) as Drawing[]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chartSymbolIntervalSig]);
 
-  // These four are memoized once ([] deps, same hazard as runCode/recompute
+  const drawingsSaveSig = useMemo(
+    () => JSON.stringify(Object.entries(chartStatesMap).map(([id, s]) => [id, s.symbol, s.interval, s.drawings])),
+    [chartStatesMap],
+  );
+  useEffect(() => {
+    for (const [id, inst] of Object.entries(chartStatesMap)) {
+      if (justHydratedRef.current.has(id)) {
+        // Skip exactly the one pass immediately following this instance's
+        // load — see the doc comment above. The next pass (triggered by
+        // LOAD's own state update changing `drawingsSaveSig`) saves for
+        // real, with the now-current, actually-loaded data.
+        justHydratedRef.current.delete(id);
+        continue;
+      }
+      saveDrawingsFor(id, inst.symbol, inst.interval, inst.drawings);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drawingsSaveSig]);
+
+  // ---- drawing mutators + undo/redo history --------------------------------
+  // These are memoized once ([] deps, same hazard as runCode/recompute
   // above) so they can't close over a fresh per-active-chart `setDrawings`.
   // Route through the stable `setChartField` + `activeChartInstanceIdRef`
   // instead, so a drawing action always lands on whichever chart is
   // actually active at the moment it fires.
+  //
+  // History (src/lib/drawing/history.ts) is a full before/after array
+  // snapshot per committed change. `updateDrawing` also backs StudioChart's
+  // per-pointermove drag callback, which would otherwise record one history
+  // entry per animation frame — `dragCoalesceRef` collapses any burst of
+  // updates to the SAME drawing within 400ms into the single history entry
+  // for "the whole drag/edit", exactly like create/delete/setting-change
+  // each already are.
+  const dragCoalesceRef = useRef<{ id: string; lastTs: number } | null>(null);
   const addDrawing = useCallback(
-    (d: Drawing) => setChartField(activeChartInstanceIdRef.current, "drawings", (prev) => [...prev, d]),
+    (d: Drawing) =>
+      setChartField(activeChartInstanceIdRef.current, "drawings", (prev) => {
+        const after = [...prev, d];
+        recordDrawingChange(activeChartInstanceIdRef.current, prev, after);
+        return after;
+      }),
     [setChartField],
   );
   const removeDrawing = useCallback((id: string) => {
-    setChartField(activeChartInstanceIdRef.current, "drawings", (prev) => prev.filter((d) => d.id !== id));
+    setChartField(activeChartInstanceIdRef.current, "drawings", (prev) => {
+      const after = prev.filter((d) => d.id !== id);
+      if (after.length === prev.length) return prev;
+      recordDrawingChange(activeChartInstanceIdRef.current, prev, after);
+      return after;
+    });
     setSelectedDrawing((cur) => (cur === id ? null : cur));
+    setDrawingSettingsFor((cur) => (cur === id ? null : cur));
   }, [setChartField]);
   const updateDrawing = useCallback(
     (next: Drawing) =>
-      setChartField(activeChartInstanceIdRef.current, "drawings", (prev) => prev.map((d) => (d.id === next.id ? next : d))),
+      setChartField(activeChartInstanceIdRef.current, "drawings", (prev) => {
+        const after = prev.map((d) => (d.id === next.id ? next : d));
+        const now = Date.now();
+        const active = dragCoalesceRef.current;
+        if (!active || active.id !== next.id || now - active.lastTs > 400) {
+          recordDrawingChange(activeChartInstanceIdRef.current, prev, after);
+        }
+        dragCoalesceRef.current = { id: next.id, lastTs: now };
+        return after;
+      }),
     [setChartField],
   );
   const duplicateDrawing = useCallback((d: Drawing) => {
-    const copy = { ...d, id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}` };
-    setChartField(activeChartInstanceIdRef.current, "drawings", (prev) => [...prev, copy]);
+    const now = Date.now();
+    const copy: Drawing = { ...d, id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, createdAt: now, updatedAt: now };
+    setChartField(activeChartInstanceIdRef.current, "drawings", (prev) => {
+      const after = [...prev, copy];
+      recordDrawingChange(activeChartInstanceIdRef.current, prev, after);
+      return after;
+    });
     setSelectedDrawing(copy.id);
   }, [setChartField]);
+
+  // Global drawing controls (lock/hide/delete all, delete selected) — always
+  // scoped to `activeChartInstanceIdRef.current` alone, never touching
+  // indicators, chart data, or another chart instance's drawings.
+  const setAllDrawingsField = useCallback(
+    (field: "locked" | "hidden", value: boolean) =>
+      setChartField(activeChartInstanceIdRef.current, "drawings", (prev) => {
+        const after = prev.map((d) => ({ ...d, [field]: value, updatedAt: Date.now() }));
+        recordDrawingChange(activeChartInstanceIdRef.current, prev, after);
+        return after;
+      }),
+    [setChartField],
+  );
+  const deleteAllDrawings = useCallback(() => {
+    setChartField(activeChartInstanceIdRef.current, "drawings", (prev) => {
+      if (prev.length === 0) return prev;
+      recordDrawingChange(activeChartInstanceIdRef.current, prev, []);
+      return [];
+    });
+    setSelectedDrawing(null);
+    setDrawingSettingsFor(null);
+  }, [setChartField]);
+  const undoDrawingsForActive = useCallback(() => {
+    const id = activeChartInstanceIdRef.current;
+    setChartField(id, "drawings", (prev) => undoDrawings(id, prev) ?? prev);
+  }, [setChartField]);
+  const redoDrawingsForActive = useCallback(() => {
+    const id = activeChartInstanceIdRef.current;
+    setChartField(id, "drawings", (prev) => redoDrawings(id, prev) ?? prev);
+  }, [setChartField]);
+
+  // Ctrl/Cmd+Z / Ctrl/Cmd+Shift+Z: undo/redo the ACTIVE chart's drawings
+  // only. Guarded against firing while typing anywhere else in Studio (the
+  // code editor, a text input, a contenteditable) so it never fights those
+  // surfaces' own undo/redo.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const typing =
+        target &&
+        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+      if (typing) return;
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "z") return;
+      e.preventDefault();
+      if (e.shiftKey) redoDrawingsForActive();
+      else undoDrawingsForActive();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undoDrawingsForActive, redoDrawingsForActive]);
 
   // ---- run / add to chart -------------------------------------------------
   const barsLiveRef = useRef<Bar[]>(bars);
@@ -3407,6 +3554,8 @@ function StudioWorkspace() {
             onCrosshair={setCrosshair}
             onReady={onChartReady}
             onRenderStats={handleRenderStats}
+            chartInstanceId={chartInstanceId}
+            magnet={magnet}
           />
         </ChartInstance>
       )}
@@ -3419,7 +3568,25 @@ function StudioWorkspace() {
           onUpdate={updateDrawing}
           onRemove={removeDrawing}
           onDuplicate={duplicateDrawing}
+          onOpenSettings={(d) => setDrawingSettingsFor(d.id)}
           onClose={() => setObjectsOpen(false)}
+        />
+      )}
+
+      {drawingSettingsFor && activeChartInstance.drawings.find((d) => d.id === drawingSettingsFor) && (
+        <DrawingSettingsPopover
+          drawing={activeChartInstance.drawings.find((d) => d.id === drawingSettingsFor)!}
+          label={TOOL_BY_ID[activeChartInstance.drawings.find((d) => d.id === drawingSettingsFor)!.tool]?.label ?? "Drawing"}
+          anchor={{ x: 300, y: 60 }}
+          onChange={updateDrawing}
+          onDuplicate={() => {
+            const d = activeChartInstance.drawings.find((x) => x.id === drawingSettingsFor);
+            if (d) duplicateDrawing(d);
+          }}
+          onRemove={() => {
+            if (drawingSettingsFor) removeDrawing(drawingSettingsFor);
+          }}
+          onClose={() => setDrawingSettingsFor(null)}
         />
       )}
 
@@ -3574,6 +3741,8 @@ function StudioWorkspace() {
               chartType={inst.chartType}
               settings={inst.chartSettings}
               onCrosshair={() => {}}
+              chartInstanceId={instanceId}
+              magnet={magnet}
             />
           </ChartInstance>
         )}
@@ -5135,47 +5304,24 @@ function StudioWorkspace() {
 
       <div className="flex min-h-0 flex-1">
         {/* drawing rail */}
-        <nav className="flex w-[42px] shrink-0 flex-col items-center gap-0.5 border-r border-border bg-sidebar py-1.5">
-          {TOOLS.map((t, i) => (
-            <Fragment key={t.id}>
-              {i > 0 && t.group !== TOOLS[i - 1].group && (
-                <div className="my-1 h-px w-5 bg-border" />
-              )}
-              <button
-                title={t.label}
-                onClick={() => setTool(t.id)}
-                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[6px] ${
-                  tool === t.id
-                    ? "bg-brand text-brand-foreground"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground"
-                }`}
-              >
-                <t.icon className="h-[18px] w-[18px]" />
-              </button>
-            </Fragment>
-          ))}
-          <div className="my-1 h-px w-5 bg-border" />
-          <button
-            title="Objects & styles"
-            onClick={() => setObjectsOpen((v) => !v)}
-            className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[6px] ${
-              objectsOpen
-                ? "bg-accent text-foreground"
-                : "text-muted-foreground hover:bg-accent hover:text-foreground"
-            }`}
-          >
-            <Layers className="h-[18px] w-[18px]" />
-          </button>
-          {drawings.length > 0 && (
-            <button
-              title="Clear all drawings"
-              onClick={() => setDrawings([])}
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground"
-            >
-              <span className="text-[10px]">clr</span>
-            </button>
-          )}
-        </nav>
+        <DrawToolbar
+          tool={tool}
+          onSelectTool={setTool}
+          magnet={magnet}
+          onSetMagnet={setMagnet}
+          objectsOpen={objectsOpen}
+          onToggleObjects={() => setObjectsOpen((v) => !v)}
+          hasDrawings={drawings.length > 0}
+          hasSelection={Boolean(selectedDrawing)}
+          allLocked={drawings.length > 0 && drawings.every((d) => d.locked)}
+          allHidden={drawings.length > 0 && drawings.every((d) => d.hidden)}
+          onLockAll={() => setAllDrawingsField("locked", true)}
+          onUnlockAll={() => setAllDrawingsField("locked", false)}
+          onHideAll={() => setAllDrawingsField("hidden", true)}
+          onShowAll={() => setAllDrawingsField("hidden", false)}
+          onDeleteSelected={() => selectedDrawing && removeDrawing(selectedDrawing)}
+          onDeleteAll={deleteAllDrawings}
+        />
 
         {/* chart + sidebar, generically rendered from the workspace tree
             (UI-4f-1) -- structure is tree-driven, leaf content/resize

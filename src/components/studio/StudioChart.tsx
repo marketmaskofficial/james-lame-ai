@@ -2,6 +2,28 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import type { Bar, MarkerOut, RunResult } from "@/lib/sgscript/types";
 import { MARKER_PRESETS, DEFAULT_MAX_VISIBLE } from "@/lib/sgscript/style";
+import {
+  logicalToTime,
+  timeToLogicalExtrapolated,
+  nearestBarIndex,
+  snapPoint,
+  distToSegment,
+  pixelDist,
+} from "@/lib/drawing/geometry";
+import {
+  DEFAULT_FIB_LEVELS,
+  computeFibLevels,
+  anchoredVwap,
+  computePositionMetrics,
+  type FibLevel,
+} from "@/lib/drawing/calc";
+
+/** Magnet strength for drawing-anchor snapping (distinct from the chart's own
+ * `crosshairMagnet` display setting, which only affects the crosshair, not
+ * where a drawing's anchor is actually placed). "off" never alters a user's
+ * chosen coordinate; "weak" only pulls in when already close to a candle's
+ * O/H/L/C; "strong" always snaps to the nearest of the four. */
+export type MagnetMode = "off" | "weak" | "strong";
 
 /**
  * Single source of truth for the chart's canvas-rendered chrome colors.
@@ -28,29 +50,101 @@ export type LoadedIndicator = {
 };
 
 export type DrawTool =
+  // Cursor / Interaction
   | "cursor"
   | "select"
+  // Trend / Line Tools
   | "trend"
+  | "ray"
+  | "extended"
   | "hline"
   | "vline"
-  | "ray"
-  | "rect"
-  | "fib"
-  | "text"
+  | "hray"
+  | "channel"
   | "arrow"
-  | "marker"
-  | "measure"
+  // Fibonacci / Advanced
+  | "fib"
+  | "fib-ext"
+  | "fib-channel"
+  | "fib-time"
+  | "pitchfan"
+  // Pattern Tools (menu/registry only — see registry.ts, deferred per spec)
+  | "xabcd"
+  | "cypher"
+  | "head-shoulders"
+  | "abcd"
+  | "triangle-pattern"
+  | "three-drives"
+  | "elliott"
+  // Position / Forecast
   | "long"
   | "short"
+  | "forecast"
+  // Volume-based
+  | "vwap"
+  | "vp-fixed"
+  | "vp-anchored"
+  // Brushes / Freehand
+  | "brush"
+  | "highlighter"
+  // Shapes
+  | "rect"
+  | "circle"
+  | "triangle"
+  // Text / Notes
+  | "text"
+  | "marker"
+  // Measurement
+  | "price-range"
+  | "date-range"
+  | "measure"
+  // legacy point-eraser tool, superseded by Delete/Backspace on a selection
+  // but kept functional rather than ripped out mid-phase
   | "erase";
 
 export type DrawStyle = "solid" | "dashed" | "dotted";
 
+/** A single anchor in MARKET coordinates — bar time (unix seconds) + price.
+ * Never a raw screen pixel: pixel position is re-derived from this every
+ * render frame (see `logicalToPixel`/`timeToLogicalExtrapolated`), which is
+ * what keeps a drawing's geometry correct across resize, layout changes, and
+ * history backfill (which shifts every bar's logical INDEX but never its
+ * time). See src/lib/drawing/geometry.ts's module doc for the full story. */
+export type MarketPoint = { time: number; price: number };
+
+/** Free-form bag for tool-specific configuration that doesn't need its own
+ * typed field — Fib's level set, VWAP's cached series, position tick
+ * metadata overrides, extend-line flags, fill color/opacity, font
+ * size/weight, label visibility, etc. Kept loose (not a big discriminated
+ * union per tool) so new tools can add settings without a schema change;
+ * `DrawingSettingsPopover.tsx` and each tool's render/calc code are the only
+ * things that need to agree on the keys they use for `d.tool`. */
+export type DrawingSettings = Record<string, unknown>;
+
+/**
+ * One persisted drawing object. `tool` is this object's "type" (the spec's
+ * external-facing schema calls it `type`; kept as `tool` here to match
+ * every existing call site and avoid a purely-cosmetic rename across this
+ * file's ~2000 lines) and `p1`/`p2`/`points` together are its "anchors" (a
+ * uniform `anchors: MarketPoint[]` array wasn't worth the churn either, since
+ * two-anchor tools are the overwhelming majority and read far more clearly
+ * as named `p1`/`p2` in the hit-test/render code below — `anchorsOf()`
+ * exposes the uniform view for serialization/tests/multi-anchor tools).
+ */
 export type Drawing = {
   id: string;
   tool: Exclude<DrawTool, "cursor" | "select" | "erase">;
-  p1: { logical: number; price: number };
-  p2: { logical: number; price: number };
+  /** Owning chart instance — stamped on creation, authoritative for
+   * multi-chart isolation (see `anchorsOf`/persistence). Optional only so a
+   * pre-this-phase persisted drawing (which never had this field) still
+   * parses; every current call site stamps it. */
+  chartInstanceId?: string;
+  p1: MarketPoint;
+  p2: MarketPoint;
+  /** Extra anchors beyond p1/p2: brush's freehand path (arbitrary length),
+   * or a single third point for Parallel Channel (channel width) / Triangle
+   * (third vertex). */
+  points?: MarketPoint[];
   text?: string;
   /** Position tools carry a third anchor: the protective stop. */
   stop?: number;
@@ -60,7 +154,19 @@ export type Drawing = {
   style?: DrawStyle;
   locked?: boolean;
   hidden?: boolean;
+  settings?: DrawingSettings;
+  metadata?: Record<string, unknown>;
+  createdAt?: number;
+  updatedAt?: number;
 };
+
+/** Uniform anchors view — every point this drawing is defined by, in one
+ * array, for code (serialization, tests, "does this fit on screen at all")
+ * that genuinely doesn't care about each tool's specific anchor roles. */
+export function anchorsOf(d: Pick<Drawing, "p1" | "p2" | "points" | "tool">): MarketPoint[] {
+  if (d.tool === "brush" || d.tool === "highlighter") return d.points?.length ? d.points : [d.p1, d.p2];
+  return [d.p1, d.p2, ...(d.points ?? [])];
+}
 
 const DEFAULT_DRAW_COLOR = "#e6b800";
 
@@ -68,6 +174,33 @@ function dash(style: DrawStyle | undefined, width: number): number[] {
   if (style === "dashed") return [Math.max(4, width * 3), Math.max(3, width * 2)];
   if (style === "dotted") return [1, Math.max(3, width * 2)];
   return [];
+}
+
+/** Sign of the signed area of triangle (x1,y1)-(x2,y2)-(x3,y3) — the
+ * standard barycentric same-side test used by `pointInTriangle`. */
+function triSign(px: number, py: number, x1: number, y1: number, x2: number, y2: number): number {
+  return (px - x2) * (y1 - y2) - (x1 - x2) * (py - y2);
+}
+
+/** True if (px,py) lies inside (or on) the triangle — used so a Triangle
+ * drawing's whole filled interior is a valid select/drag hit region, not
+ * just its three edges. */
+function pointInTriangle(
+  px: number,
+  py: number,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  x3: number,
+  y3: number,
+): boolean {
+  const d1 = triSign(px, py, x1, y1, x2, y2);
+  const d2 = triSign(px, py, x2, y2, x3, y3);
+  const d3 = triSign(px, py, x3, y3, x1, y1);
+  const hasNeg = d1 < 0 || d2 < 0 || d3 < 0;
+  const hasPos = d1 > 0 || d2 > 0 || d3 > 0;
+  return !(hasNeg && hasPos);
 }
 
 function withAlpha(hex: string, opacity: number): string {
@@ -332,10 +465,20 @@ function heikinAshi(bars: Bar[]): Bar[] {
   return out;
 }
 
-const FIB_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
-
 function money(n: number) {
   return `$${Math.abs(n).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+}
+
+/** Humanizes a duration in seconds for the Date Range tool — "3d 4h", "2h 15m", "45s". */
+function fmtDuration(seconds: number): string {
+  const s = Math.round(Math.abs(seconds));
+  const days = Math.floor(s / 86400);
+  const hours = Math.floor((s % 86400) / 3600);
+  const mins = Math.floor((s % 3600) / 60);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${mins}m`;
+  if (mins > 0) return `${mins}m`;
+  return `${s}s`;
 }
 
 function fmt(n: number) {
@@ -374,6 +517,11 @@ export function StudioChart({
    * says nothing about whether anything ended up on screen.
    */
   onRenderStats,
+  /** Owning chart instance, stamped onto every new Drawing this canvas
+   * creates — the multi-chart-isolation source of truth. */
+  chartInstanceId,
+  /** Drawing-anchor snap strength — see `MagnetMode`'s doc comment. */
+  magnet = "off",
 
 }: {
   bars: Bar[];
@@ -404,6 +552,8 @@ export function StudioChart({
   selectedId?: string | null;
   onSelectDrawing?: (id: string | null) => void;
   onRenderStats?: (statsByIndicatorKey: Record<string, RenderStats>) => void;
+  chartInstanceId?: string;
+  magnet?: MagnetMode;
 }) {
 
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -432,8 +582,8 @@ export function StudioChart({
   settingsRef.current = settings;
 
   // Live refs for the overlay renderer (avoids stale closures in rAF).
-  const stateRef = useRef({ indicators, drawings, tool, bars, instrument, selectedId });
-  stateRef.current = { indicators, drawings, tool, bars, instrument, selectedId };
+  const stateRef = useRef({ indicators, drawings, tool, bars, instrument, selectedId, magnet, chartInstanceId });
+  stateRef.current = { indicators, drawings, tool, bars, instrument, selectedId, magnet, chartInstanceId };
 
   // Render telemetry, recomputed every drawOverlay() frame and pushed to the
   // parent so it can drive an honest success/failure notice instead of a
@@ -455,11 +605,18 @@ export function StudioChart({
   onRenderStatsRef.current = onRenderStats;
 
   const draftRef = useRef<Drawing | null>(null);
+  type AnchorKind = "p1" | "p2" | "p3" | "stop" | "body";
   const editRef = useRef<{
     drawing: Drawing;
-    anchor: "p1" | "p2" | "body";
-    start: { logical: number; price: number };
+    anchor: AnchorKind;
+    start: MarketPoint;
   } | null>(null);
+  /** In-progress anchors for multi-click tools (Triangle: 3 plain clicks;
+   * Parallel Channel: a drag for p1/p2 followed by one more click for the
+   * width point). Cleared on commit, Escape, or a tool change. */
+  const pendingRef = useRef<{ tool: DrawTool; anchors: MarketPoint[] } | null>(null);
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
 
   const [ready, setReady] = useState(0);
 
@@ -1465,30 +1622,51 @@ export function StudioChart({
     lastRenderStatsRef.current = statsByKey;
     onRenderStatsRef.current?.(statsByKey);
 
+    // Time -> pixel for user drawings (as opposed to indicator primitives,
+    // which use the stricter geometryReady-gated `x()` above): a drawing's
+    // anchor time can legitimately sit outside the loaded range (a ray drawn
+    // toward the future, a channel's baseline extending past the last bar),
+    // and — unlike an indicator result — there's no "stale computation"
+    // reading to guard against, so extrapolation is always safe here.
+    const toLogicalD = (t: number) => timeToLogicalExtrapolated(stateRef.current.bars, t);
+    const px = (p: MarketPoint) => (geometryReady ? logicalToPixel(ts, toLogicalD(p.time), host.clientWidth) : null);
+    const py = (p: MarketPoint) => y(p.price);
+
     const all = draftRef.current ? [...draws, draftRef.current] : draws;
+    const pending = pendingRef.current;
     const selected = stateRef.current.selectedId;
     const handles: Array<{ x: number; y: number }> = [];
+
     for (const d of all) {
       if (d.hidden) continue;
-      const x1 = x(d.p1.logical);
-      const x2 = x(d.p2.logical);
-      const y1 = y(d.p1.price);
-      const y2 = y(d.p2.price);
+      const x1 = px(d.p1);
+      const x2 = px(d.p2);
+      const y1 = py(d.p1);
+      const y2 = py(d.p2);
       if (x1 == null || y1 == null) continue;
       const col = d.color ?? DEFAULT_DRAW_COLOR;
       const alpha = d.opacity ?? 1;
-      const lw = d.width ?? 1.5;
+      const lw = d.width ?? (d.tool === "highlighter" ? 10 : 1.5);
       ctx.save();
       ctx.strokeStyle = withAlpha(col, alpha);
-      ctx.fillStyle = withAlpha(col, alpha * 0.14);
+      const fillOpacity = (d.settings?.fillOpacity as number | undefined) ?? 0.14;
+      ctx.fillStyle = withAlpha(col, d.tool === "highlighter" ? Math.min(alpha, 0.35) : alpha * fillOpacity);
       ctx.lineWidth = lw;
+      ctx.lineCap = d.tool === "brush" || d.tool === "highlighter" ? "round" : "butt";
+      ctx.lineJoin = "round";
       ctx.setLineDash(dash(d.style, lw));
       ctx.font = "11px ui-sans-serif, system-ui";
 
       if (d.id === selected) {
         handles.push({ x: x1, y: y1 });
-        if (x2 != null && y2 != null && d.tool !== "hline" && d.tool !== "vline")
+        if (x2 != null && y2 != null && d.tool !== "hline" && d.tool !== "vline" && d.tool !== "hray")
           handles.push({ x: x2, y: y2 });
+        const p3 = d.points?.[0];
+        if (p3 && (d.tool === "channel" || d.tool === "triangle")) {
+          const hx = px(p3);
+          const hy = py(p3);
+          if (hx != null && hy != null) handles.push({ x: hx, y: hy });
+        }
       }
 
       if (d.tool === "vline") {
@@ -1527,19 +1705,60 @@ export function StudioChart({
         ctx.restore();
         continue;
       }
-
-
-
-      if (d.tool === "hline") {
+      if (d.tool === "vwap") {
+        const inst = stateRef.current.instrument;
+        void inst;
+        const series = anchoredVwap(stateRef.current.bars, d.p1.time);
+        ctx.setLineDash([]);
         ctx.beginPath();
-        ctx.moveTo(0, y1);
+        let started = false;
+        for (const pt of series) {
+          const sx = geometryReady ? logicalToPixel(ts, toLogicalD(pt.time), host.clientWidth) : null;
+          const sy = y(pt.value);
+          if (sx == null || sy == null) continue;
+          if (!started) {
+            ctx.moveTo(sx, sy);
+            started = true;
+          } else ctx.lineTo(sx, sy);
+        }
+        if (started) ctx.stroke();
+        ctx.fillStyle = withAlpha(col, alpha);
+        ctx.beginPath();
+        ctx.arc(x1, y1, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillText("VWAP anchor", x1 + 8, y1 - 6);
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "brush" || d.tool === "highlighter") {
+        const pts = d.points && d.points.length > 0 ? d.points : [d.p1, d.p2];
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        let started = false;
+        for (const pt of pts) {
+          const sx = px(pt);
+          const sy = py(pt);
+          if (sx == null || sy == null) continue;
+          if (!started) {
+            ctx.moveTo(sx, sy);
+            started = true;
+          } else ctx.lineTo(sx, sy);
+        }
+        if (started) ctx.stroke();
+        ctx.restore();
+        continue;
+      }
+
+      if (d.tool === "hline" || d.tool === "hray") {
+        const fromX = d.tool === "hray" ? x1 : 0;
+        ctx.beginPath();
+        ctx.moveTo(fromX, y1);
         ctx.lineTo(host.clientWidth, y1);
         ctx.stroke();
         ctx.fillStyle = withAlpha(col, alpha);
-
-        ctx.fillText(fmt(d.p1.price), 6, y1 - 4);
+        ctx.fillText(fmt(d.p1.price), Math.max(6, fromX + 4), y1 - 4);
       } else if (x2 != null && y2 != null) {
-        if (d.tool === "trend" || d.tool === "ray" || d.tool === "measure") {
+        if (d.tool === "trend" || d.tool === "ray" || d.tool === "measure" || d.tool === "price-range" || d.tool === "date-range") {
           let ex = x2;
           let ey = y2;
           if (d.tool === "ray") {
@@ -1555,43 +1774,93 @@ export function StudioChart({
           ctx.moveTo(x1, y1);
           ctx.lineTo(ex, ey);
           ctx.stroke();
-          if (d.tool === "measure") {
+          if (d.tool === "measure" || d.tool === "price-range" || d.tool === "date-range") {
             const diff = d.p2.price - d.p1.price;
-            const pct = (diff / d.p1.price) * 100;
-            const barsSpan = Math.round(d.p2.logical - d.p1.logical);
+            const pct = d.p1.price !== 0 ? (diff / d.p1.price) * 100 : 0;
+            const barsSpan = Math.round(toLogicalD(d.p2.time) - toLogicalD(d.p1.time));
+            const label =
+              d.tool === "price-range"
+                ? `${fmt(diff)} (${pct.toFixed(2)}%)`
+                : d.tool === "date-range"
+                  ? `${Math.abs(barsSpan)} bars · ${fmtDuration(Math.abs(d.p2.time - d.p1.time))}`
+                  : `${fmt(diff)} (${pct.toFixed(2)}%) · ${Math.abs(barsSpan)} bars`;
             ctx.fillStyle = diff >= 0 ? "#22c55e" : "#ef4444";
-            ctx.fillText(
-              `${fmt(diff)} (${pct.toFixed(2)}%) · ${barsSpan} bars`,
-              x2 + 6,
-              y2 - 6,
-            );
+            ctx.fillText(label, x2 + 6, y2 - 6);
           }
         } else if (d.tool === "rect") {
-          ctx.fillRect(
-            Math.min(x1, x2),
-            Math.min(y1, y2),
-            Math.abs(x2 - x1),
-            Math.abs(y2 - y1),
-          );
-          ctx.strokeRect(
-            Math.min(x1, x2),
-            Math.min(y1, y2),
-            Math.abs(x2 - x1),
-            Math.abs(y2 - y1),
-          );
+          ctx.fillRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
+          ctx.strokeRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
+        } else if (d.tool === "circle") {
+          const cx = (x1 + x2) / 2;
+          const cy = (y1 + y2) / 2;
+          const rx = Math.abs(x2 - x1) / 2;
+          const ry = Math.abs(y2 - y1) / 2;
+          ctx.beginPath();
+          ctx.ellipse(cx, cy, Math.max(1, rx), Math.max(1, ry), 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        } else if (d.tool === "triangle") {
+          const p3 = d.points?.[0];
+          const x3 = p3 ? px(p3) : null;
+          const y3 = p3 ? py(p3) : null;
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x2, y2);
+          if (x3 != null && y3 != null) ctx.lineTo(x3, y3);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+        } else if (d.tool === "channel") {
+          const p3 = d.points?.[0];
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x2, y2);
+          ctx.stroke();
+          if (p3) {
+            const x3 = px(p3);
+            const y3 = py(p3);
+            if (x3 != null && y3 != null) {
+              const dx = x2 - x1;
+              const dy = y2 - y1;
+              const len = Math.hypot(dx, dy) || 1;
+              const nx = -dy / len;
+              const ny = dx / len;
+              const offset = (x3 - x1) * nx + (y3 - y1) * ny;
+              const ox = nx * offset;
+              const oy = ny * offset;
+              ctx.beginPath();
+              ctx.moveTo(x1 + ox, y1 + oy);
+              ctx.lineTo(x2 + ox, y2 + oy);
+              ctx.stroke();
+              // subtle fill between the two rails
+              ctx.save();
+              ctx.globalAlpha = 0.08;
+              ctx.beginPath();
+              ctx.moveTo(x1, y1);
+              ctx.lineTo(x2, y2);
+              ctx.lineTo(x2 + ox, y2 + oy);
+              ctx.lineTo(x1 + ox, y1 + oy);
+              ctx.closePath();
+              ctx.fill();
+              ctx.restore();
+            }
+          }
         } else if (d.tool === "fib") {
-          const range = d.p2.price - d.p1.price;
-          for (const lvl of FIB_LEVELS) {
-            const p = d.p1.price + range * lvl;
-            const py = y(p);
-            if (py == null) continue;
-            ctx.strokeStyle = "rgba(230,184,0,0.5)";
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? DEFAULT_FIB_LEVELS;
+          const computed = computeFibLevels(d.p1.price, d.p2.price, levels.filter((l) => l.enabled !== false));
+          const extendRight = Boolean(d.settings?.extendRight);
+          const leftX = Math.min(x1, x2);
+          const rightX = extendRight ? host.clientWidth : Math.max(x1, x2);
+          for (const lvl of computed) {
+            const levelY = y(lvl.price);
+            if (levelY == null) continue;
+            ctx.strokeStyle = withAlpha(lvl.color ?? col, 0.5);
             ctx.beginPath();
-            ctx.moveTo(Math.min(x1, x2), py);
-            ctx.lineTo(Math.max(x1, x2), py);
+            ctx.moveTo(leftX, levelY);
+            ctx.lineTo(rightX, levelY);
             ctx.stroke();
-            ctx.fillStyle = "rgba(230,184,0,0.9)";
-            ctx.fillText(`${(lvl * 100).toFixed(1)}%  ${fmt(p)}`, Math.max(x1, x2) + 4, py - 2);
+            ctx.fillStyle = withAlpha(lvl.color ?? col, 0.9);
+            ctx.fillText(`${(lvl.value * 100).toFixed(1)}%  ${fmt(lvl.price)}`, rightX + 4, levelY - 2);
           }
         } else if (d.tool === "long" || d.tool === "short") {
           const entry = d.p1.price;
@@ -1617,39 +1886,65 @@ export function StudioChart({
           const inst = stateRef.current.instrument;
           const tick = inst?.tickSize && inst.tickSize > 0 ? inst.tickSize : 0.01;
           const vpp = inst?.valuePerPoint ?? 1;
-          const riskPts = Math.abs(entry - stop);
-          const rewardPts = Math.abs(target - entry);
-          const rr = riskPts > 0 ? rewardPts / riskPts : 0;
+          const metrics = computePositionMetrics(entry, stop, target, tick, vpp);
 
-          const row = (py: number, color: string, text: string) => {
+          const row = (rowY: number, color: string, text: string) => {
             ctx.strokeStyle = color;
             ctx.setLineDash([]);
             ctx.beginPath();
-            ctx.moveTo(left, py);
-            ctx.lineTo(right, py);
+            ctx.moveTo(left, rowY);
+            ctx.lineTo(right, rowY);
             ctx.stroke();
             ctx.fillStyle = color;
             ctx.font = "10px ui-sans-serif, system-ui";
-            ctx.fillText(text, left + 6, py - 4);
+            ctx.fillText(text, left + 6, rowY - 4);
           };
-          row(yTarget, "#22c55e", `TARGET ${fmt(target)} · +${Math.round(rewardPts / tick)} ticks · ${money(rewardPts * vpp)}`);
+          row(yTarget, "#22c55e", `TARGET ${fmt(target)} · +${metrics.rewardTicks} ticks · ${money(metrics.rewardValue)}`);
           row(yEntry, "#e6b800", `${d.tool === "long" ? "LONG" : "SHORT"} ENTRY ${fmt(entry)}`);
-          row(yStop, "#ef4444", `STOP ${fmt(stop)} · ${Math.round(riskPts / tick)} ticks · ${money(riskPts * vpp)}`);
+          row(yStop, "#ef4444", `STOP ${fmt(stop)} · ${metrics.riskTicks} ticks · ${money(metrics.riskValue)}`);
 
           ctx.fillStyle = "rgba(232,234,240,0.9)";
           ctx.font = "11px ui-sans-serif, system-ui";
-          ctx.fillText(`R:R ${rr.toFixed(2)}`, right + 8, yEntry - 4);
+          ctx.fillText(`R:R ${metrics.riskRewardRatio.toFixed(2)}`, right + 8, yEntry - 4);
           planBoxes.push({ id: d.id, x: right + 8, y: yEntry + 6 });
+
+          if (d.id === selected) handles.push({ x: (left + right) / 2, y: yStop });
         } else if (d.tool === "text") {
-          ctx.fillStyle = "#e6b800";
+          ctx.font = `${LABEL_FONT_PX[(d.settings?.fontSize as string) ?? "normal"] ?? 11}px ui-sans-serif, system-ui`;
+          ctx.fillStyle = withAlpha(col, alpha);
           ctx.fillText(d.text ?? "", x1, y1);
         }
 
       } else if (d.tool === "text") {
+        ctx.font = `${LABEL_FONT_PX[(d.settings?.fontSize as string) ?? "normal"] ?? 11}px ui-sans-serif, system-ui`;
         ctx.fillStyle = withAlpha(col, alpha);
         ctx.fillText(d.text ?? "", x1, y1);
       }
       ctx.restore();
+    }
+
+    // Live preview for a multi-click tool in progress (Triangle: 3 plain
+    // clicks; Parallel Channel: drag then one more click) — Escape cancels
+    // this without ever touching the committed `drawings` array.
+    if (pending && pending.anchors.length > 0) {
+      const pts = pending.anchors.map((p) => ({ x: px(p), y: py(p) })).filter((p): p is { x: number; y: number } => p.x != null && p.y != null);
+      if (pts.length > 0) {
+        ctx.save();
+        ctx.strokeStyle = "rgba(230,184,0,0.7)";
+        ctx.setLineDash([4, 3]);
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x, pts[0].y);
+        for (const p of pts.slice(1)) ctx.lineTo(p.x, p.y);
+        ctx.stroke();
+        for (const p of pts) {
+          ctx.fillStyle = "#e6b800";
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+      }
     }
 
     // Selection handles for the selected drawing.
@@ -1683,50 +1978,113 @@ export function StudioChart({
   drawOverlayRef.current = drawOverlay;
 
 
+  // Multi-click anchor tracking (Triangle: 3 plain clicks; Parallel Channel:
+  // a drag for the baseline followed by one more click for channel width).
+  // Read by drawOverlay() to render the in-progress preview.
+  const previewPointRef = useRef<MarketPoint | null>(null);
+
+  const NO_ANCHOR_2_TOOLS = new Set<DrawTool>(["hline", "vline", "hray", "text", "marker", "vwap"]);
+
   // ---- pointer interaction for drawing tools ------------------------------
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     if (tool === "cursor") return;
+    // Switching tools mid-flight abandons any unfinished multi-click drawing
+    // — same as Escape (see the keyboard effect below).
+    pendingRef.current = null;
+    previewPointRef.current = null;
 
-    const toPoint = (e: PointerEvent) => {
+    const rawPoint = (e: PointerEvent): MarketPoint | null => {
       const rect = canvas.getBoundingClientRect();
       const chart = chartRef.current;
       const price = priceSeriesRef.current;
       if (!chart || !price) return null;
-      const logical = chart
-        .timeScale()
-        .coordinateToLogical(e.clientX - rect.left);
+      const logical = chart.timeScale().coordinateToLogical(e.clientX - rect.left);
       const p = price.coordinateToPrice(e.clientY - rect.top);
       if (logical == null || p == null) return null;
-      return { logical, price: p };
+      return { time: logicalToTime(stateRef.current.bars, logical), price: p };
+    };
+    const toPoint = (e: PointerEvent): MarketPoint | null => {
+      const raw = rawPoint(e);
+      if (!raw) return null;
+      return snapPoint(stateRef.current.bars, raw, stateRef.current.magnet);
     };
 
-    // Closest drawing to a screen point (used by select + erase).
+    const newId = () => `d${Date.now()}${Math.round(Math.random() * 1e4)}`;
+    // Always mints a FRESH id here, regardless of whatever placeholder the
+    // caller's draft object was carrying (draftRef entries use the constant
+    // "__draft__" while a shape is still being dragged/multi-clicked, purely
+    // so the in-progress object has some id shape — see draftRef assignments
+    // below). Committing every drawing's real id in exactly one place is
+    // what guarantees two drawings can never collide on id, which id-keyed
+    // selection/update/delete/persistence all depend on.
+    const stampNew = (d: Omit<Drawing, "id" | "chartInstanceId" | "createdAt" | "updatedAt"> & { id?: string }): Drawing => {
+      const now = Date.now();
+      return {
+        ...d,
+        id: newId(),
+        chartInstanceId: stateRef.current.chartInstanceId,
+        locked: false,
+        hidden: false,
+        createdAt: now,
+        updatedAt: now,
+      };
+    };
+
+    // Closest drawing to a screen point (used by select + erase). Every tool
+    // shape gets a real hit region (an anchor handle, or a body/line/area
+    // test) so selecting never requires an exact pixel click.
     const hitTest = (mx: number, my: number) => {
       const chart = chartRef.current;
       const price = priceSeriesRef.current;
       if (!chart || !price) return null;
-      let hit: { d: Drawing; anchor: "p1" | "p2" | "body" } | null = null;
+      const bars = stateRef.current.bars;
+      const toPx = (p: MarketPoint) => chart.timeScale().logicalToCoordinate(timeToLogicalExtrapolated(bars, p.time));
+      const toPy = (p: MarketPoint) => price.priceToCoordinate(p.price);
+      let hit: { d: Drawing; anchor: AnchorKind } | null = null;
       let best = 14;
       for (const d of stateRef.current.drawings) {
         if (d.hidden) continue;
-        const x1 = chart.timeScale().logicalToCoordinate(d.p1.logical);
-        const y1 = price.priceToCoordinate(d.p1.price);
-        const x2 = chart.timeScale().logicalToCoordinate(d.p2.logical);
-        const y2 = price.priceToCoordinate(d.p2.price);
+        const x1 = toPx(d.p1);
+        const y1 = toPy(d.p1);
+        const x2 = toPx(d.p2);
+        const y2 = toPy(d.p2);
+        const p3 = d.points?.[0];
+        const x3 = p3 ? toPx(p3) : null;
+        const y3 = p3 ? toPy(p3) : null;
+
         if (x1 != null && y1 != null) {
-          const dist = Math.hypot(x1 - mx, y1 - my);
+          const dist = pixelDist(x1, y1, mx, my);
           if (dist < best) {
             best = dist;
             hit = { d, anchor: "p1" };
           }
         }
-        if (x2 != null && y2 != null) {
-          const dist = Math.hypot(x2 - mx, y2 - my);
+        if (x2 != null && y2 != null && !NO_ANCHOR_2_TOOLS.has(d.tool)) {
+          const dist = pixelDist(x2, y2, mx, my);
           if (dist < best) {
             best = dist;
             hit = { d, anchor: "p2" };
+          }
+        }
+        if (x3 != null && y3 != null && (d.tool === "channel" || d.tool === "triangle")) {
+          const dist = pixelDist(x3, y3, mx, my);
+          if (dist < best) {
+            best = dist;
+            hit = { d, anchor: "p3" };
+          }
+        }
+        if ((d.tool === "long" || d.tool === "short") && d.stop != null && x1 != null && x2 != null) {
+          const stopY = price.priceToCoordinate(d.stop);
+          if (stopY != null) {
+            const left = Math.min(x1, x2);
+            const right = Math.max(x1, x2, left + 140);
+            const dist = pixelDist((left + right) / 2, stopY, mx, my);
+            if (dist < best) {
+              best = dist;
+              hit = { d, anchor: "stop" };
+            }
           }
         }
         if (d.tool === "hline" && y1 != null && Math.abs(y1 - my) < best) {
@@ -1737,17 +2095,68 @@ export function StudioChart({
           best = Math.abs(x1 - mx);
           hit = { d, anchor: "body" };
         }
+        if (d.tool === "hray" && x1 != null && y1 != null && mx >= x1 - 4 && Math.abs(y1 - my) < best) {
+          best = Math.abs(y1 - my);
+          hit = { d, anchor: "body" };
+        }
         if (
-          (d.tool === "rect" || d.tool === "long" || d.tool === "short") &&
-          x1 != null &&
-          x2 != null &&
-          y1 != null &&
-          y2 != null &&
-          mx >= Math.min(x1, x2) &&
-          mx <= Math.max(x1, x2) &&
-          my >= Math.min(y1, y2) &&
-          my <= Math.max(y1, y2) &&
+          (d.tool === "trend" || d.tool === "ray" || d.tool === "arrow" || d.tool === "measure" || d.tool === "price-range" || d.tool === "date-range") &&
+          x1 != null && y1 != null && x2 != null && y2 != null
+        ) {
+          const dist = distToSegment(mx, my, x1, y1, x2, y2);
+          if (dist < best) {
+            best = dist;
+            hit = { d, anchor: "body" };
+          }
+        }
+        if (d.tool === "channel" && x1 != null && y1 != null && x2 != null && y2 != null) {
+          const dist = distToSegment(mx, my, x1, y1, x2, y2);
+          if (dist < best) {
+            best = dist;
+            hit = { d, anchor: "body" };
+          }
+        }
+        if ((d.tool === "brush" || d.tool === "highlighter") && d.points && d.points.length > 1) {
+          const pxPts = d.points.map((p) => [toPx(p), toPy(p)] as const);
+          for (let i = 0; i < pxPts.length - 1; i++) {
+            const [ax, ay] = pxPts[i];
+            const [bx, by] = pxPts[i + 1];
+            if (ax == null || ay == null || bx == null || by == null) continue;
+            const dist = distToSegment(mx, my, ax, ay, bx, by);
+            if (dist < best) {
+              best = dist;
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
+        if (d.tool === "vwap") {
+          const series = anchoredVwap(bars, d.p1.time);
+          for (let i = 0; i < series.length - 1; i += 3) {
+            const ax = chart.timeScale().logicalToCoordinate(timeToLogicalExtrapolated(bars, series[i].time));
+            const ay = price.priceToCoordinate(series[i].value);
+            const j = Math.min(i + 3, series.length - 1);
+            const bx = chart.timeScale().logicalToCoordinate(timeToLogicalExtrapolated(bars, series[j].time));
+            const by = price.priceToCoordinate(series[j].value);
+            if (ax == null || ay == null || bx == null || by == null) continue;
+            const dist = distToSegment(mx, my, ax, ay, bx, by);
+            if (dist < best) {
+              best = dist;
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
+        if (
+          (d.tool === "rect" || d.tool === "circle" || d.tool === "long" || d.tool === "short") &&
+          x1 != null && x2 != null && y1 != null && y2 != null &&
+          mx >= Math.min(x1, x2) && mx <= Math.max(x1, x2) &&
+          my >= Math.min(y1, y2) && my <= Math.max(y1, y2) &&
           !hit
+        ) {
+          hit = { d, anchor: "body" };
+        }
+        if (
+          d.tool === "triangle" && x1 != null && y1 != null && x2 != null && y2 != null && x3 != null && y3 != null &&
+          pointInTriangle(mx, my, x1, y1, x2, y2, x3, y3) && !hit
         ) {
           hit = { d, anchor: "body" };
         }
@@ -1756,11 +2165,12 @@ export function StudioChart({
     };
 
     const onDown = (e: PointerEvent) => {
-      const pt = toPoint(e);
-      if (!pt) return;
+      const raw = rawPoint(e);
+      if (!raw) return;
       const rect = canvas.getBoundingClientRect();
       const mx = e.clientX - rect.left;
       const my = e.clientY - rect.top;
+      const pt = snapPoint(stateRef.current.bars, raw, stateRef.current.magnet);
 
       if (tool === "erase") {
         const hit = hitTest(mx, my);
@@ -1777,51 +2187,102 @@ export function StudioChart({
         return;
       }
 
-      canvas.setPointerCapture(e.pointerId);
-      const id = `d${Date.now()}${Math.round(Math.random() * 1e4)}`;
-      if (tool === "hline" || tool === "vline") {
-        onAddDrawing({ id, tool, p1: pt, p2: pt });
+      if (tool === "triangle") {
+        const pend = pendingRef.current;
+        if (!pend || pend.tool !== "triangle") {
+          pendingRef.current = { tool: "triangle", anchors: [pt] };
+        } else {
+          const anchors = [...pend.anchors, pt];
+          if (anchors.length >= 3) {
+            onAddDrawing(stampNew({ tool: "triangle", p1: anchors[0], p2: anchors[1], points: [anchors[2]] }));
+            pendingRef.current = null;
+            previewPointRef.current = null;
+            onSelectDrawing?.(null);
+          } else {
+            pendingRef.current = { tool: "triangle", anchors };
+          }
+        }
+        return;
+      }
+
+      if (tool === "channel") {
+        const pend = pendingRef.current;
+        if (pend && pend.tool === "channel" && pend.anchors.length === 2) {
+          onAddDrawing(stampNew({ tool: "channel", p1: pend.anchors[0], p2: pend.anchors[1], points: [pt] }));
+          pendingRef.current = null;
+          previewPointRef.current = null;
+          return;
+        }
+        canvas.setPointerCapture(e.pointerId);
+        draftRef.current = { id: "__draft__", tool: "channel", p1: pt, p2: pt };
+        return;
+      }
+
+      if (tool === "hline" || tool === "vline" || tool === "hray") {
+        onAddDrawing(stampNew({ tool, p1: pt, p2: pt }));
         return;
       }
       if (tool === "text" || tool === "marker") {
-        const text = window.prompt(
-          tool === "text" ? "Label text" : "Marker note (optional)",
-        );
+        const text = window.prompt(tool === "text" ? "Label text" : "Note text (optional)");
         if (tool === "text" && !text) return;
-        onAddDrawing({ id, tool, p1: pt, p2: pt, ...(text ? { text } : {}) });
+        onAddDrawing(stampNew({ tool, p1: pt, p2: pt, ...(text ? { text } : {}) }));
         return;
       }
-      draftRef.current = { id, tool, p1: pt, p2: pt };
+      if (tool === "vwap") {
+        onAddDrawing(stampNew({ tool: "vwap", p1: pt, p2: pt }));
+        return;
+      }
+
+      canvas.setPointerCapture(e.pointerId);
+      if (tool === "brush" || tool === "highlighter") {
+        draftRef.current = { id: "__draft__", tool, p1: pt, p2: pt, points: [pt] };
+        return;
+      }
+      draftRef.current = { id: "__draft__", tool, p1: pt, p2: pt };
     };
 
     const onMove = (e: PointerEvent) => {
       const edit = editRef.current;
       if (edit && onUpdateDrawing) {
-        const pt = toPoint(e);
-        if (!pt) return;
+        const raw = rawPoint(e);
+        if (!raw) return;
+        const pt = snapPoint(stateRef.current.bars, raw, stateRef.current.magnet);
         if (edit.anchor === "body") {
-          const dl = pt.logical - edit.start.logical;
+          const dt = pt.time - edit.start.time;
           const dp = pt.price - edit.start.price;
           onUpdateDrawing({
             ...edit.drawing,
-            p1: {
-              logical: edit.drawing.p1.logical + dl,
-              price: edit.drawing.p1.price + dp,
-            },
-            p2: {
-              logical: edit.drawing.p2.logical + dl,
-              price: edit.drawing.p2.price + dp,
-            },
+            p1: { time: edit.drawing.p1.time + dt, price: edit.drawing.p1.price + dp },
+            p2: { time: edit.drawing.p2.time + dt, price: edit.drawing.p2.price + dp },
+            points: edit.drawing.points?.map((p) => ({ time: p.time + dt, price: p.price + dp })),
             ...(edit.drawing.stop != null ? { stop: edit.drawing.stop + dp } : {}),
+            updatedAt: Date.now(),
           });
+        } else if (edit.anchor === "stop") {
+          onUpdateDrawing({ ...edit.drawing, stop: pt.price, updatedAt: Date.now() });
+        } else if (edit.anchor === "p3") {
+          onUpdateDrawing({ ...edit.drawing, points: [pt], updatedAt: Date.now() });
         } else {
-          onUpdateDrawing({ ...edit.drawing, [edit.anchor]: pt } as Drawing);
+          onUpdateDrawing({ ...edit.drawing, [edit.anchor]: pt, updatedAt: Date.now() } as Drawing);
         }
         return;
       }
+
+      if (pendingRef.current) {
+        const raw = rawPoint(e);
+        if (raw) previewPointRef.current = snapPoint(stateRef.current.bars, raw, stateRef.current.magnet);
+        return;
+      }
+
       if (!draftRef.current) return;
-      const pt = toPoint(e);
-      if (!pt) return;
+      const raw = rawPoint(e);
+      if (!raw) return;
+      const pt = snapPoint(stateRef.current.bars, raw, stateRef.current.magnet);
+      if (draftRef.current.tool === "brush" || draftRef.current.tool === "highlighter") {
+        const pts = draftRef.current.points ?? [];
+        draftRef.current = { ...draftRef.current, p2: pt, points: [...pts, pt].slice(-4000) };
+        return;
+      }
       draftRef.current = { ...draftRef.current, p2: pt };
     };
 
@@ -1830,19 +2291,30 @@ export function StudioChart({
       const draft = draftRef.current;
       draftRef.current = null;
       if (!draft) return;
-      if (
-        Math.abs(draft.p2.logical - draft.p1.logical) < 0.5 &&
-        draft.p1.price === draft.p2.price
-      )
+
+      const bars = stateRef.current.bars;
+      const dl = Math.abs(timeToLogicalExtrapolated(bars, draft.p2.time) - timeToLogicalExtrapolated(bars, draft.p1.time));
+      const negligible = dl < 0.5 && draft.p1.price === draft.p2.price;
+
+      if (draft.tool === "channel") {
+        if (negligible) return;
+        pendingRef.current = { tool: "channel", anchors: [draft.p1, draft.p2] };
         return;
+      }
+      if (draft.tool === "brush" || draft.tool === "highlighter") {
+        if (!draft.points || draft.points.length < 2) return;
+        onAddDrawing(stampNew(draft));
+        return;
+      }
+      if (negligible) return;
       if (draft.tool === "long" || draft.tool === "short") {
         // Default plan: 2R — stop at half the drawn reward distance.
         const entry = draft.p1.price;
         const target = draft.p2.price;
-        onAddDrawing({ ...draft, stop: entry - (target - entry) * 0.5 });
+        onAddDrawing(stampNew({ ...draft, stop: entry - (target - entry) * 0.5 }));
         return;
       }
-      onAddDrawing(draft);
+      onAddDrawing(stampNew(draft));
     };
 
     canvas.addEventListener("pointerdown", onDown);
@@ -1854,6 +2326,43 @@ export function StudioChart({
       canvas.removeEventListener("pointerup", onUp);
     };
   }, [tool, onAddDrawing, onRemoveDrawing, onUpdateDrawing, onSelectDrawing]);
+
+  // ---- keyboard: Escape cancels an unfinished drawing / clears selection,
+  // Delete/Backspace removes the selected drawing (unless locked). Not
+  // gated by `tool` — a selection persists across tool switches, and Escape
+  // must be able to cancel a channel/triangle in progress no matter which
+  // element currently has focus, as long as it isn't a text input. ---------
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const typing =
+        target &&
+        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+      if (typing) return;
+
+      if (e.key === "Escape") {
+        if (pendingRef.current || draftRef.current) {
+          pendingRef.current = null;
+          draftRef.current = null;
+          previewPointRef.current = null;
+          e.preventDefault();
+        } else if (selectedIdRef.current) {
+          onSelectDrawing?.(null);
+        }
+        return;
+      }
+      if (e.key === "Delete" || e.key === "Backspace") {
+        const id = selectedIdRef.current;
+        if (!id) return;
+        const d = stateRef.current.drawings.find((x) => x.id === id);
+        if (!d || d.locked) return;
+        e.preventDefault();
+        onRemoveDrawing(id);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onRemoveDrawing, onSelectDrawing]);
 
 
   // ---- right-click anywhere on the chart -> price under the cursor ---------
