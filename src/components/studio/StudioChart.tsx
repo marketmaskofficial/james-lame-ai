@@ -9,6 +9,8 @@ import {
   snapPoint,
   distToSegment,
   pixelDist,
+  projectLineForward,
+  projectLineBackward,
 } from "@/lib/drawing/geometry";
 import {
   DEFAULT_FIB_LEVELS,
@@ -17,6 +19,7 @@ import {
   computePositionMetrics,
   type FibLevel,
 } from "@/lib/drawing/calc";
+import { getToolStyleDefaults } from "@/lib/drawing/styleDefaults";
 
 /** Magnet strength for drawing-anchor snapping (distinct from the chart's own
  * `crosshairMagnet` display setting, which only affects the crosshair, not
@@ -62,24 +65,50 @@ export type DrawTool =
   | "hray"
   | "channel"
   | "arrow"
-  // Fibonacci / Advanced
+  // Fibonacci Tools — one shared Fib engine (src/lib/drawing/calc.ts) backs
+  // every variant below; only "fib" is implemented this phase, the rest are
+  // registry/architecture placeholders (see registry.ts's `implemented`
+  // flag) never creatable via the pointer-interaction effect below.
   | "fib"
   | "fib-ext"
   | "fib-channel"
   | "fib-time"
+  | "fib-speed-fan"
+  | "fib-time-trend"
+  | "fib-circles"
+  | "fib-spiral"
+  | "fib-speed-arcs"
+  | "fib-wedge"
   | "pitchfan"
-  // Pattern Tools (menu/registry only — see registry.ts, deferred per spec)
+  // Gann Tools (registry/architecture placeholders only — see registry.ts)
+  | "gann-box"
+  | "gann-square-fixed"
+  | "gann-square"
+  | "gann-fan"
+  // Pattern Tools (menu/registry only — see registry.ts, deferred per spec —
+  // manual anchor placement, deliberately NOT automatic pattern detection)
   | "xabcd"
   | "cypher"
   | "head-shoulders"
   | "abcd"
   | "triangle-pattern"
   | "three-drives"
-  | "elliott"
+  // Elliott Waves (registry/architecture placeholders only — see registry.ts)
+  | "elliott-impulse"
+  | "elliott-correction"
+  | "elliott-triangle"
+  | "elliott-double-combo"
+  | "elliott-triple-combo"
+  // Cycles (registry/architecture placeholders only — see registry.ts)
+  | "cyclic-lines"
+  | "time-cycles"
+  | "sine-line"
   // Position / Forecast
   | "long"
   | "short"
   | "forecast"
+  | "bars-pattern"
+  | "ghost-feed"
   // Volume-based
   | "vwap"
   | "vp-fixed"
@@ -87,17 +116,41 @@ export type DrawTool =
   // Brushes / Freehand
   | "brush"
   | "highlighter"
+  // Arrows
+  | "arrow-up"
+  | "arrow-down"
+  | "arrow-marker"
   // Shapes
   | "rect"
   | "circle"
   | "triangle"
+  | "rotated-rect"
+  | "ellipse"
+  | "polyline"
+  | "path"
+  | "arc"
+  | "curve"
+  | "double-curve"
   // Text / Notes
   | "text"
   | "marker"
+  | "price-note"
+  | "pin"
+  | "table"
+  | "callout"
+  | "comment"
+  | "price-label"
+  | "signpost"
+  | "flag-mark"
   // Measurement
   | "price-range"
   | "date-range"
   | "measure"
+  | "ruler"
+  // Content (architecture-ready only, lowest priority — see registry.ts)
+  | "image"
+  | "content-icon"
+  | "emoji"
   // legacy point-eraser tool, superseded by Delete/Backspace on a selection
   // but kept functional rather than ripped out mid-phase
   | "erase";
@@ -487,6 +540,38 @@ function fmt(n: number) {
   return n.toFixed(abs >= 1000 ? 1 : abs >= 1 ? 2 : 6);
 }
 
+/**
+ * Shared renderer for Text/Note's `capabilities.text` settings (content,
+ * color, size, bold, italic, alignment, background, border) — replaces two
+ * near-identical inline "draw the text" blocks that used to live in
+ * drawOverlay (a Text drawing's p1 always equals p2, so BOTH the
+ * x2/y2-known and x2/y2-unknown render branches used to duplicate this).
+ */
+function drawTextLabel(ctx: CanvasRenderingContext2D, d: Drawing, x: number, y: number, col: string, alpha: number): void {
+  const settings = d.settings ?? {};
+  const bold = Boolean(settings.bold);
+  const italic = Boolean(settings.italic);
+  const fontPx = LABEL_FONT_PX[(settings.fontSize as string) ?? "normal"] ?? 11;
+  const align = (settings.align as CanvasTextAlign | undefined) ?? "left";
+  const text = d.text ?? "";
+  ctx.font = `${italic ? "italic " : ""}${bold ? "700" : "400"} ${fontPx}px ui-sans-serif, system-ui`;
+  ctx.textAlign = align;
+  const textW = ctx.measureText(text).width;
+  const boxLeft = align === "left" ? x - 3 : align === "right" ? x - textW - 3 : x - textW / 2 - 3;
+  if (settings.background) {
+    ctx.fillStyle = withAlpha((settings.backgroundColor as string | undefined) ?? "#0b0d12", (settings.backgroundOpacity as number | undefined) ?? 0.85);
+    ctx.fillRect(boxLeft, y - fontPx - 2, textW + 6, fontPx + 6);
+  }
+  if (settings.border) {
+    ctx.strokeStyle = withAlpha((settings.borderColor as string | undefined) ?? col, 1);
+    ctx.lineWidth = 1;
+    ctx.setLineDash([]);
+    ctx.strokeRect(boxLeft, y - fontPx - 2, textW + 6, fontPx + 6);
+  }
+  ctx.fillStyle = withAlpha(col, alpha);
+  ctx.fillText(text, x, y);
+}
+
 export function StudioChart({
   bars,
   indicators,
@@ -509,6 +594,7 @@ export function StudioChart({
   onReady,
   selectedId = null,
   onSelectDrawing,
+  onOpenDrawingSettings,
   /**
    * Fired every drawOverlay() frame with what actually happened to every
    * indicator-drawn primitive this frame — received/drawn/offscreen/
@@ -551,6 +637,12 @@ export function StudioChart({
   /** Currently selected drawing (select tool). */
   selectedId?: string | null;
   onSelectDrawing?: (id: string | null) => void;
+  /** Fired when the user double-clicks a completed drawing (Select/Cursor
+   * mode only — see the dblclick effect below for why other tools don't
+   * trigger this). `screen` is VIEWPORT coordinates (clientX/clientY), not
+   * chart-relative, so the caller can position a `position: fixed` popover
+   * without needing to know this canvas's own offset. */
+  onOpenDrawingSettings?: (id: string, screen: { x: number; y: number }) => void;
   onRenderStats?: (statsByIndicatorKey: Record<string, RenderStats>) => void;
   chartInstanceId?: string;
   magnet?: MagnetMode;
@@ -1659,7 +1751,7 @@ export function StudioChart({
 
       if (d.id === selected) {
         handles.push({ x: x1, y: y1 });
-        if (x2 != null && y2 != null && d.tool !== "hline" && d.tool !== "vline" && d.tool !== "hray")
+        if (x2 != null && y2 != null && d.tool !== "hline" && d.tool !== "vline" && d.tool !== "hray" && d.tool !== "arrow-up" && d.tool !== "arrow-down")
           handles.push({ x: x2, y: y2 });
         const p3 = d.points?.[0];
         if (p3 && (d.tool === "channel" || d.tool === "triangle")) {
@@ -1705,6 +1797,23 @@ export function StudioChart({
         ctx.restore();
         continue;
       }
+      if (d.tool === "arrow-up" || d.tool === "arrow-down") {
+        // Single-anchor directional glyph — width doubles as the glyph's
+        // size (matching how Highlighter already overloads width as its own
+        // stroke thickness, rather than adding a second "size" field).
+        const size = 6 + lw * 2;
+        const dir = d.tool === "arrow-up" ? -1 : 1;
+        ctx.setLineDash([]);
+        ctx.fillStyle = withAlpha(col, alpha);
+        ctx.beginPath();
+        ctx.moveTo(x1, y1 - dir * size);
+        ctx.lineTo(x1 - size * 0.6, y1 + dir * size * 0.4);
+        ctx.lineTo(x1 + size * 0.6, y1 + dir * size * 0.4);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+        continue;
+      }
       if (d.tool === "vwap") {
         const inst = stateRef.current.instrument;
         void inst;
@@ -1722,11 +1831,16 @@ export function StudioChart({
           } else ctx.lineTo(sx, sy);
         }
         if (started) ctx.stroke();
-        ctx.fillStyle = withAlpha(col, alpha);
-        ctx.beginPath();
-        ctx.arc(x1, y1, 4, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillText("VWAP anchor", x1 + 8, y1 - 6);
+        // Anchor marker + label are toggleable (settings capability
+        // `anchorLabel`) — default on, matching the always-on behavior this
+        // tool shipped with in Phase 1.
+        if (d.settings?.showAnchorLabel !== false) {
+          ctx.fillStyle = withAlpha(col, alpha);
+          ctx.beginPath();
+          ctx.arc(x1, y1, 4, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillText("VWAP anchor", x1 + 8, y1 - 6);
+        }
         ctx.restore();
         continue;
       }
@@ -1758,20 +1872,24 @@ export function StudioChart({
         ctx.fillStyle = withAlpha(col, alpha);
         ctx.fillText(fmt(d.p1.price), Math.max(6, fromX + 4), y1 - 4);
       } else if (x2 != null && y2 != null) {
-        if (d.tool === "trend" || d.tool === "ray" || d.tool === "measure" || d.tool === "price-range" || d.tool === "date-range") {
+        if (d.tool === "trend" || d.tool === "ray" || d.tool === "extended" || d.tool === "measure" || d.tool === "price-range" || d.tool === "date-range") {
+          let sx = x1;
+          let sy = y1;
           let ex = x2;
           let ey = y2;
           if (d.tool === "ray") {
-            const dx = x2 - x1;
-            const dy = y2 - y1;
-            const scale = dx === 0 ? 1 : (host.clientWidth - x1) / dx;
-            if (scale > 1) {
-              ex = x1 + dx * scale;
-              ey = y1 + dy * scale;
-            }
+            ({ x: ex, y: ey } = projectLineForward(x1, y1, x2, y2, host.clientWidth));
+          } else if (d.tool === "extended") {
+            // Extends BOTH directions (past p1 and past p2) — the one
+            // difference from Ray, which only ever extends forward. Reuses
+            // the same pure projection helpers Ray's own extension uses
+            // (src/lib/drawing/geometry.ts) instead of a second copy of the
+            // scale math.
+            ({ x: sx, y: sy } = projectLineBackward(x1, y1, x2, y2));
+            ({ x: ex, y: ey } = projectLineForward(x1, y1, x2, y2, host.clientWidth));
           }
           ctx.beginPath();
-          ctx.moveTo(x1, y1);
+          ctx.moveTo(sx, sy);
           ctx.lineTo(ex, ey);
           ctx.stroke();
           if (d.tool === "measure" || d.tool === "price-range" || d.tool === "date-range") {
@@ -1849,6 +1967,11 @@ export function StudioChart({
           const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? DEFAULT_FIB_LEVELS;
           const computed = computeFibLevels(d.p1.price, d.p2.price, levels.filter((l) => l.enabled !== false));
           const extendRight = Boolean(d.settings?.extendRight);
+          // Label/price text visibility — two independent toggles (settings
+          // capability `levels`), both default on to match Phase 1's always-
+          // shown text exactly.
+          const showLabel = d.settings?.fibShowLabel !== false;
+          const showPrice = d.settings?.fibShowPrice !== false;
           const leftX = Math.min(x1, x2);
           const rightX = extendRight ? host.clientWidth : Math.max(x1, x2);
           for (const lvl of computed) {
@@ -1859,8 +1982,11 @@ export function StudioChart({
             ctx.moveTo(leftX, levelY);
             ctx.lineTo(rightX, levelY);
             ctx.stroke();
-            ctx.fillStyle = withAlpha(lvl.color ?? col, 0.9);
-            ctx.fillText(`${(lvl.value * 100).toFixed(1)}%  ${fmt(lvl.price)}`, rightX + 4, levelY - 2);
+            if (showLabel || showPrice) {
+              const parts = [showLabel ? `${(lvl.value * 100).toFixed(1)}%` : null, showPrice ? fmt(lvl.price) : null].filter(Boolean);
+              ctx.fillStyle = withAlpha(lvl.color ?? col, 0.9);
+              ctx.fillText(parts.join("  "), rightX + 4, levelY - 2);
+            }
           }
         } else if (d.tool === "long" || d.tool === "short") {
           const entry = d.p1.price;
@@ -1876,11 +2002,22 @@ export function StudioChart({
           const left = Math.min(x1, x2);
           const right = Math.max(x1, x2, left + 140);
           const w = right - left;
+          // Fill/line colors are individually overridable via settings
+          // (independent of the drawing's own stroke `color`) — default to
+          // exactly Phase 1's hardcoded values so an un-restyled position
+          // tool looks identical to before.
+          const targetColor = (d.settings?.targetColor as string | undefined) ?? "#22c55e";
+          const entryColor = (d.settings?.entryColor as string | undefined) ?? "#e6b800";
+          const stopColor = (d.settings?.stopColor as string | undefined) ?? "#ef4444";
+          const rewardFill = (d.settings?.rewardFillColor as string | undefined) ?? targetColor;
+          const riskFill = (d.settings?.riskFillColor as string | undefined) ?? stopColor;
+          const showLabels = d.settings?.showLabels !== false;
+          const showRR = d.settings?.showRR !== false;
           // reward zone
-          ctx.fillStyle = "rgba(34,197,94,0.13)";
+          ctx.fillStyle = withAlpha(rewardFill, 0.13);
           ctx.fillRect(left, Math.min(yEntry, yTarget), w, Math.abs(yTarget - yEntry));
           // risk zone
-          ctx.fillStyle = "rgba(239,68,68,0.13)";
+          ctx.fillStyle = withAlpha(riskFill, 0.13);
           ctx.fillRect(left, Math.min(yEntry, yStop), w, Math.abs(yStop - yEntry));
 
           const inst = stateRef.current.instrument;
@@ -1895,30 +2032,29 @@ export function StudioChart({
             ctx.moveTo(left, rowY);
             ctx.lineTo(right, rowY);
             ctx.stroke();
+            if (!showLabels) return;
             ctx.fillStyle = color;
             ctx.font = "10px ui-sans-serif, system-ui";
             ctx.fillText(text, left + 6, rowY - 4);
           };
-          row(yTarget, "#22c55e", `TARGET ${fmt(target)} · +${metrics.rewardTicks} ticks · ${money(metrics.rewardValue)}`);
-          row(yEntry, "#e6b800", `${d.tool === "long" ? "LONG" : "SHORT"} ENTRY ${fmt(entry)}`);
-          row(yStop, "#ef4444", `STOP ${fmt(stop)} · ${metrics.riskTicks} ticks · ${money(metrics.riskValue)}`);
+          row(yTarget, targetColor, `TARGET ${fmt(target)} · +${metrics.rewardTicks} ticks · ${money(metrics.rewardValue)}`);
+          row(yEntry, entryColor, `${d.tool === "long" ? "LONG" : "SHORT"} ENTRY ${fmt(entry)}`);
+          row(yStop, stopColor, `STOP ${fmt(stop)} · ${metrics.riskTicks} ticks · ${money(metrics.riskValue)}`);
 
-          ctx.fillStyle = "rgba(232,234,240,0.9)";
-          ctx.font = "11px ui-sans-serif, system-ui";
-          ctx.fillText(`R:R ${metrics.riskRewardRatio.toFixed(2)}`, right + 8, yEntry - 4);
+          if (showRR) {
+            ctx.fillStyle = "rgba(232,234,240,0.9)";
+            ctx.font = "11px ui-sans-serif, system-ui";
+            ctx.fillText(`R:R ${metrics.riskRewardRatio.toFixed(2)}`, right + 8, yEntry - 4);
+          }
           planBoxes.push({ id: d.id, x: right + 8, y: yEntry + 6 });
 
           if (d.id === selected) handles.push({ x: (left + right) / 2, y: yStop });
         } else if (d.tool === "text") {
-          ctx.font = `${LABEL_FONT_PX[(d.settings?.fontSize as string) ?? "normal"] ?? 11}px ui-sans-serif, system-ui`;
-          ctx.fillStyle = withAlpha(col, alpha);
-          ctx.fillText(d.text ?? "", x1, y1);
+          drawTextLabel(ctx, d, x1, y1, col, alpha);
         }
 
       } else if (d.tool === "text") {
-        ctx.font = `${LABEL_FONT_PX[(d.settings?.fontSize as string) ?? "normal"] ?? 11}px ui-sans-serif, system-ui`;
-        ctx.fillStyle = withAlpha(col, alpha);
-        ctx.fillText(d.text ?? "", x1, y1);
+        drawTextLabel(ctx, d, x1, y1, col, alpha);
       }
       ctx.restore();
     }
@@ -1983,68 +2119,29 @@ export function StudioChart({
   // Read by drawOverlay() to render the in-progress preview.
   const previewPointRef = useRef<MarketPoint | null>(null);
 
-  const NO_ANCHOR_2_TOOLS = new Set<DrawTool>(["hline", "vline", "hray", "text", "marker", "vwap"]);
+  const NO_ANCHOR_2_TOOLS = new Set<DrawTool>(["hline", "vline", "hray", "text", "marker", "vwap", "arrow-up", "arrow-down"]);
 
-  // ---- pointer interaction for drawing tools ------------------------------
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    if (tool === "cursor") return;
-    // Switching tools mid-flight abandons any unfinished multi-click drawing
-    // — same as Escape (see the keyboard effect below).
-    pendingRef.current = null;
-    previewPointRef.current = null;
-
-    const rawPoint = (e: PointerEvent): MarketPoint | null => {
-      const rect = canvas.getBoundingClientRect();
-      const chart = chartRef.current;
-      const price = priceSeriesRef.current;
-      if (!chart || !price) return null;
-      const logical = chart.timeScale().coordinateToLogical(e.clientX - rect.left);
-      const p = price.coordinateToPrice(e.clientY - rect.top);
-      if (logical == null || p == null) return null;
-      return { time: logicalToTime(stateRef.current.bars, logical), price: p };
-    };
-    const toPoint = (e: PointerEvent): MarketPoint | null => {
-      const raw = rawPoint(e);
-      if (!raw) return null;
-      return snapPoint(stateRef.current.bars, raw, stateRef.current.magnet);
-    };
-
-    const newId = () => `d${Date.now()}${Math.round(Math.random() * 1e4)}`;
-    // Always mints a FRESH id here, regardless of whatever placeholder the
-    // caller's draft object was carrying (draftRef entries use the constant
-    // "__draft__" while a shape is still being dragged/multi-clicked, purely
-    // so the in-progress object has some id shape — see draftRef assignments
-    // below). Committing every drawing's real id in exactly one place is
-    // what guarantees two drawings can never collide on id, which id-keyed
-    // selection/update/delete/persistence all depend on.
-    const stampNew = (d: Omit<Drawing, "id" | "chartInstanceId" | "createdAt" | "updatedAt"> & { id?: string }): Drawing => {
-      const now = Date.now();
-      return {
-        ...d,
-        id: newId(),
-        chartInstanceId: stateRef.current.chartInstanceId,
-        locked: false,
-        hidden: false,
-        createdAt: now,
-        updatedAt: now,
-      };
-    };
-
-    // Closest drawing to a screen point (used by select + erase). Every tool
-    // shape gets a real hit region (an anchor handle, or a body/line/area
-    // test) so selecting never requires an exact pixel click.
-    const hitTest = (mx: number, my: number) => {
-      const chart = chartRef.current;
-      const price = priceSeriesRef.current;
-      if (!chart || !price) return null;
-      const bars = stateRef.current.bars;
-      const toPx = (p: MarketPoint) => chart.timeScale().logicalToCoordinate(timeToLogicalExtrapolated(bars, p.time));
-      const toPy = (p: MarketPoint) => price.priceToCoordinate(p.price);
-      let hit: { d: Drawing; anchor: AnchorKind } | null = null;
-      let best = 14;
-      for (const d of stateRef.current.drawings) {
+  // Closest drawing to a screen point — used by Select/erase (inside the
+  // pointer-interaction effect below) AND by the double-click-for-settings
+  // effect further down, which needs to work no matter which tool is active
+  // (see that effect's doc comment) and therefore can't reuse a hitTest
+  // defined inside the pointer effect, which returns early whenever
+  // `tool === "cursor"`. Hoisted to component scope so both share ONE
+  // implementation instead of forking a second copy — it only reads from
+  // refs (chartRef/priceSeriesRef/stateRef), so it needs no dependency array
+  // and is cheap to redefine every render. Every tool shape gets a real hit
+  // region (an anchor handle, or a body/line/area test) so selecting never
+  // requires an exact pixel click.
+  const hitTest = (mx: number, my: number) => {
+    const chart = chartRef.current;
+    const price = priceSeriesRef.current;
+    if (!chart || !price) return null;
+    const bars = stateRef.current.bars;
+    const toPx = (p: MarketPoint) => chart.timeScale().logicalToCoordinate(timeToLogicalExtrapolated(bars, p.time));
+    const toPy = (p: MarketPoint) => price.priceToCoordinate(p.price);
+    let hit: { d: Drawing; anchor: AnchorKind } | null = null;
+    let best = 14;
+    for (const d of stateRef.current.drawings) {
         if (d.hidden) continue;
         const x1 = toPx(d.p1);
         const y1 = toPy(d.p1);
@@ -2109,11 +2206,43 @@ export function StudioChart({
             hit = { d, anchor: "body" };
           }
         }
+        if (d.tool === "extended" && x1 != null && y1 != null && x2 != null && y2 != null) {
+          // Hit-tests the full VISIBLE extended segment (both directions),
+          // matching what's actually drawn — not just the original two
+          // anchors, which would leave most of the rendered line unclickable.
+          const canvasWidth = canvasRef.current?.clientWidth ?? 2000;
+          const { x: sx, y: sy } = projectLineBackward(x1, y1, x2, y2);
+          const { x: ex, y: ey } = projectLineForward(x1, y1, x2, y2, canvasWidth);
+          const dist = distToSegment(mx, my, sx, sy, ex, ey);
+          if (dist < best) {
+            best = dist;
+            hit = { d, anchor: "body" };
+          }
+        }
         if (d.tool === "channel" && x1 != null && y1 != null && x2 != null && y2 != null) {
           const dist = distToSegment(mx, my, x1, y1, x2, y2);
           if (dist < best) {
             best = dist;
             hit = { d, anchor: "body" };
+          }
+        }
+        if (d.tool === "fib" && x1 != null && x2 != null) {
+          // Hit-tests each rendered LEVEL line, not just the (usually
+          // invisible-in-practice) diagonal between the two anchors — a Fib
+          // Retracement is visually its horizontal levels, so that's what a
+          // user actually clicks on to select it.
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? DEFAULT_FIB_LEVELS;
+          const computed = computeFibLevels(d.p1.price, d.p2.price, levels.filter((l) => l.enabled !== false));
+          const extendRight = Boolean(d.settings?.extendRight);
+          const leftX = Math.min(x1, x2);
+          const rightX = extendRight ? (canvasRef.current?.clientWidth ?? 2000) : Math.max(x1, x2);
+          for (const lvl of computed) {
+            const ly = price.priceToCoordinate(lvl.price);
+            if (ly == null) continue;
+            if (mx >= leftX - 4 && mx <= rightX + 4 && Math.abs(ly - my) < best) {
+              best = Math.abs(ly - my);
+              hit = { d, anchor: "body" };
+            }
           }
         }
         if ((d.tool === "brush" || d.tool === "highlighter") && d.points && d.points.length > 1) {
@@ -2162,6 +2291,63 @@ export function StudioChart({
         }
       }
       return hit;
+    };
+
+  // ---- pointer interaction for drawing tools ------------------------------
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    if (tool === "cursor") return;
+    // Switching tools mid-flight abandons any unfinished multi-click drawing
+    // — same as Escape (see the keyboard effect below).
+    pendingRef.current = null;
+    previewPointRef.current = null;
+
+    const rawPoint = (e: PointerEvent): MarketPoint | null => {
+      const rect = canvas.getBoundingClientRect();
+      const chart = chartRef.current;
+      const price = priceSeriesRef.current;
+      if (!chart || !price) return null;
+      const logical = chart.timeScale().coordinateToLogical(e.clientX - rect.left);
+      const p = price.coordinateToPrice(e.clientY - rect.top);
+      if (logical == null || p == null) return null;
+      return { time: logicalToTime(stateRef.current.bars, logical), price: p };
+    };
+    const toPoint = (e: PointerEvent): MarketPoint | null => {
+      const raw = rawPoint(e);
+      if (!raw) return null;
+      return snapPoint(stateRef.current.bars, raw, stateRef.current.magnet);
+    };
+
+    const newId = () => `d${Date.now()}${Math.round(Math.random() * 1e4)}`;
+    // Always mints a FRESH id here, regardless of whatever placeholder the
+    // caller's draft object was carrying (draftRef entries use the constant
+    // "__draft__" while a shape is still being dragged/multi-clicked, purely
+    // so the in-progress object has some id shape — see draftRef assignments
+    // below). Committing every drawing's real id in exactly one place is
+    // what guarantees two drawings can never collide on id, which id-keyed
+    // selection/update/delete/persistence all depend on.
+    const stampNew = (d: Omit<Drawing, "id" | "chartInstanceId" | "createdAt" | "updatedAt"> & { id?: string }): Drawing => {
+      const now = Date.now();
+      // Per-tool "last used style" — a Trend Line restyled to yellow/2px/
+      // dashed makes future Trend Lines start that way; scoped strictly per
+      // DrawTool id so it can never bleed into an unrelated tool's defaults
+      // (see src/lib/drawing/styleDefaults.ts). Applied as a BASE, under
+      // whatever the draft itself already carries — no creation path above
+      // sets color/width/style/settings on the draft directly, so this never
+      // actually collides with real drawn geometry (p1/p2/points/stop/tool).
+      const remembered = getToolStyleDefaults(d.tool);
+      return {
+        ...remembered,
+        ...d,
+        ...(remembered?.settings || d.settings ? { settings: { ...remembered?.settings, ...d.settings } } : {}),
+        id: newId(),
+        chartInstanceId: stateRef.current.chartInstanceId,
+        locked: false,
+        hidden: false,
+        createdAt: now,
+        updatedAt: now,
+      };
     };
 
     const onDown = (e: PointerEvent) => {
@@ -2230,6 +2416,10 @@ export function StudioChart({
       }
       if (tool === "vwap") {
         onAddDrawing(stampNew({ tool: "vwap", p1: pt, p2: pt }));
+        return;
+      }
+      if (tool === "arrow-up" || tool === "arrow-down") {
+        onAddDrawing(stampNew({ tool, p1: pt, p2: pt }));
         return;
       }
 
@@ -2326,6 +2516,34 @@ export function StudioChart({
       canvas.removeEventListener("pointerup", onUp);
     };
   }, [tool, onAddDrawing, onRemoveDrawing, onUpdateDrawing, onSelectDrawing]);
+
+  // ---- double-click a completed drawing -> open its settings ---------------
+  // Deliberately its OWN effect, not folded into the pointer-interaction one
+  // above: that effect returns early whenever `tool === "cursor"` (no
+  // drawing interaction at all in that mode), but double-click-to-settings
+  // must work in Cursor too — a user revisiting an old drawing is normally
+  // back in Cursor/idle, not still holding whatever tool created it. Scoped
+  // to Cursor/Select only (not an active creation tool like Rectangle),
+  // so double-clicking an existing object while a DIFFERENT drawing tool is
+  // selected finishes that tool's own multi-click placement instead of being
+  // hijacked into opening settings for the shape underneath it.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const onDblClick = (e: MouseEvent) => {
+      const current = stateRef.current.tool;
+      if (current !== "cursor" && current !== "select") return;
+      const rect = canvas.getBoundingClientRect();
+      const hit = hitTest(e.clientX - rect.left, e.clientY - rect.top);
+      if (!hit) return;
+      e.preventDefault();
+      onSelectDrawing?.(hit.d.id);
+      onOpenDrawingSettings?.(hit.d.id, { x: e.clientX, y: e.clientY });
+    };
+    canvas.addEventListener("dblclick", onDblClick);
+    return () => canvas.removeEventListener("dblclick", onDblClick);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onSelectDrawing, onOpenDrawingSettings]);
 
   // ---- keyboard: Escape cancels an unfinished drawing / clears selection,
   // Delete/Backspace removes the selected drawing (unless locked). Not

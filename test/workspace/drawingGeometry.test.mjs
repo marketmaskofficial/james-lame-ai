@@ -18,6 +18,8 @@ import {
   nearestBarIndex,
   snapPoint,
   distToSegment,
+  projectLineForward,
+  projectLineBackward,
 } from "../../src/lib/drawing/geometry.ts";
 
 let pass = 0;
@@ -109,6 +111,43 @@ ok("nearestBarIndex: picks the closer of two bars", nearestBarIndex(bars, 1145) 
 close("distToSegment: point on the segment", distToSegment(5, 0, 0, 0, 10, 0), 0);
 close("distToSegment: point off the segment (perpendicular)", distToSegment(5, 3, 0, 0, 10, 0), 3);
 close("distToSegment: point beyond the segment's end", distToSegment(15, 0, 0, 0, 10, 0), 5);
+
+// ---- projectLineForward / projectLineBackward (Extended Line's Phase 2 --
+// bidirectional extension, sharing Ray's existing forward-extension math) --
+
+{
+  // A line rising left-to-right (x1<x2, y1>y2 in screen space i.e. going up):
+  // forward projection should reach the canvas's right edge (width=100).
+  const fwd = projectLineForward(10, 80, 30, 60, 100);
+  close("projectLineForward: reaches the right edge's x", fwd.x, 100);
+  // Slope preserved: dy/dx from (10,80)->(30,60) is -1; at x=100, y = 80 + (-1)*(100-10) = -10.
+  close("projectLineForward: preserves the line's slope", fwd.y, -10);
+
+  const back = projectLineBackward(10, 80, 30, 60);
+  close("projectLineBackward: reaches the left edge's x (0)", back.x, 0);
+  // y = 80 + (-1)*(0-10) = 90.
+  close("projectLineBackward: preserves the line's slope", back.y, 90);
+}
+
+{
+  // Ray only ever extends FORWARD — projectLineForward must return the
+  // ORIGINAL p2 (no extension) when the edge sits behind p1 in that
+  // direction, exactly like the pre-existing inline Ray math did.
+  const noExtend = projectLineForward(80, 50, 60, 40, 100); // trending toward x=0, not x=100
+  ok("projectLineForward: no extension when p2 is already past the edge in that direction", noExtend.x === 60 && noExtend.y === 40);
+
+  const noExtendBack = projectLineBackward(50, 50, 30, 40); // dx<0: going backward moves AWAY from x=0, never reaches it
+  ok("projectLineBackward: no extension when going backward moves away from the left edge", noExtendBack.x === 50 && noExtendBack.y === 50);
+}
+
+{
+  // Vertical segment (dx=0): forward/backward projection can't extend
+  // horizontally — must return the original point, never divide by zero.
+  const fwd = projectLineForward(50, 80, 50, 20, 100);
+  ok("projectLineForward: vertical segment (dx=0) returns p2 unchanged, no NaN", fwd.x === 50 && fwd.y === 20);
+  const back = projectLineBackward(50, 80, 50, 20);
+  ok("projectLineBackward: vertical segment (dx=0) returns p1 unchanged, no NaN", back.x === 50 && back.y === 80);
+}
 
 // ---- summary ----------------------------------------------------------------
 

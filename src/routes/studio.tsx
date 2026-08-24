@@ -864,8 +864,13 @@ function StudioWorkspace() {
   // which only affects the crosshair display, not where a new anchor lands).
   // One studio-wide value, not per-chart — same rationale as `tool` itself.
   const [magnet, setMagnet] = useState<MagnetMode>("off");
-  // Which drawing (by id) has its DrawingSettingsPopover open, if any.
+  // Which drawing (by id) has its DrawingSettingsPopover open, if any, and
+  // where (VIEWPORT coordinates) it should anchor near — set precisely from
+  // the double-click position when opened that way (StudioChart's
+  // onOpenDrawingSettings), or a sensible fixed near-the-chart default when
+  // opened from the Objects panel's gear icon instead.
   const [drawingSettingsFor, setDrawingSettingsFor] = useState<string | null>(null);
+  const [drawingSettingsAnchor, setDrawingSettingsAnchor] = useState<{ x: number; y: number }>({ x: 320, y: 110 });
 
   // UI-4c: live, mutable workspace layout tree — source of truth for which
   // widgets are open in the sidebar/dock and in what order.
@@ -3525,6 +3530,10 @@ function StudioWorkspace() {
             onUpdateDrawing={updateDrawing}
             selectedId={selectedDrawing}
             onSelectDrawing={setSelectedDrawing}
+            onOpenDrawingSettings={(id, screen) => {
+              setDrawingSettingsFor(id);
+              setDrawingSettingsAnchor(screen);
+            }}
             hasOscPane={hasOscPane}
             extraMarkers={backtestMarkers}
             tradeLines={tradeLines}
@@ -3568,7 +3577,10 @@ function StudioWorkspace() {
           onUpdate={updateDrawing}
           onRemove={removeDrawing}
           onDuplicate={duplicateDrawing}
-          onOpenSettings={(d) => setDrawingSettingsFor(d.id)}
+          onOpenSettings={(d) => {
+            setDrawingSettingsFor(d.id);
+            setDrawingSettingsAnchor({ x: 320, y: 110 });
+          }}
           onClose={() => setObjectsOpen(false)}
         />
       )}
@@ -3576,8 +3588,8 @@ function StudioWorkspace() {
       {drawingSettingsFor && activeChartInstance.drawings.find((d) => d.id === drawingSettingsFor) && (
         <DrawingSettingsPopover
           drawing={activeChartInstance.drawings.find((d) => d.id === drawingSettingsFor)!}
-          label={TOOL_BY_ID[activeChartInstance.drawings.find((d) => d.id === drawingSettingsFor)!.tool]?.label ?? "Drawing"}
-          anchor={{ x: 300, y: 60 }}
+          label={TOOL_BY_ID[activeChartInstance.drawings.find((d) => d.id === drawingSettingsFor)!.tool]?.name ?? "Drawing"}
+          anchor={drawingSettingsAnchor}
           onChange={updateDrawing}
           onDuplicate={() => {
             const d = activeChartInstance.drawings.find((x) => x.id === drawingSettingsFor);

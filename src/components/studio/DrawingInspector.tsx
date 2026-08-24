@@ -8,30 +8,15 @@ import {
   Unlock,
 } from "lucide-react";
 import type { Drawing } from "./StudioChart";
+import { TOOL_BY_ID } from "@/lib/drawing/registry";
 
-const TOOL_LABEL: Record<string, string> = {
-  trend: "Trend line",
-  ray: "Ray",
-  hray: "Horizontal ray",
-  channel: "Parallel channel",
-  hline: "Horizontal line",
-  vline: "Vertical line",
-  rect: "Rectangle",
-  circle: "Circle",
-  triangle: "Triangle",
-  fib: "Fib retracement",
-  text: "Text",
-  arrow: "Arrow",
-  marker: "Note",
-  brush: "Brush",
-  highlighter: "Highlighter",
-  measure: "Date + price range",
-  "price-range": "Price range",
-  "date-range": "Date range",
-  vwap: "Anchored VWAP",
-  long: "Long position",
-  short: "Short position",
-};
+/** Human label for a drawing's tool — sourced from the SAME registry the
+ * toolbar and settings popover read, not a second hardcoded map that could
+ * drift out of sync with it. Falls back to the raw tool id only for a
+ * pathological case (a tool id that somehow isn't in the registry at all). */
+function toolLabel(d: Drawing): string {
+  return TOOL_BY_ID[d.tool]?.name ?? d.tool;
+}
 
 /**
  * Object tree + style controls for chart drawings. Everything edits the same
@@ -96,7 +81,7 @@ export function DrawingInspector({
               onClick={() => onSelect(d.id)}
               className="flex-1 truncate text-left"
             >
-              {d.text ? d.text : (TOOL_LABEL[d.tool] ?? d.tool)}
+              {d.text ? d.text : toolLabel(d)}
             </button>
             <button
               title={d.hidden ? "Show" : "Hide"}

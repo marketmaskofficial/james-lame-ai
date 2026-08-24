@@ -173,3 +173,44 @@ export function distToSegment(px: number, py: number, x1: number, y1: number, x2
   t = Math.max(0, Math.min(1, t));
   return pixelDist(px, py, x1 + t * dx, y1 + t * dy);
 }
+
+/**
+ * Projects the line through (x1,y1)->(x2,y2) forward past p2, out to the
+ * canvas's right edge (`width`) — the Ray tool's existing extension math,
+ * pulled out into a pure/testable helper so Extended Line (which needs the
+ * SAME forward projection plus a backward one) doesn't fork a second copy of
+ * it. Only extends when the edge is actually further from p1 than p2 is in
+ * that same direction (`scale > 1`) — a line trending away from the edge
+ * stays at its own p2, exactly like Ray already behaves.
+ */
+export function projectLineForward(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  width: number,
+): { x: number; y: number } {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const scale = dx === 0 ? 1 : (width - x1) / dx;
+  if (scale > 1) return { x: x1 + dx * scale, y: y1 + dy * scale };
+  return { x: x2, y: y2 };
+}
+
+/**
+ * Mirror of `projectLineForward` for the backward direction (past p1, out to
+ * the canvas's left edge, x=0) — Extended Line's other half. Never used by
+ * Ray (which only ever extends forward/"into the future").
+ */
+export function projectLineBackward(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+): { x: number; y: number } {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const scale = dx === 0 ? 0 : (0 - x1) / dx;
+  if (scale < 0) return { x: x1 + dx * scale, y: y1 + dy * scale };
+  return { x: x1, y: y1 };
+}
