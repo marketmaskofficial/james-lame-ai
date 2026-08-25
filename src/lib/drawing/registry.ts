@@ -161,6 +161,14 @@ export type ToolCapabilities = {
    * Anchored Volume Profile) — rows, Value Area %, profile width/placement,
    * histogram/POC/VAH/VAL visibility + colors, level-line style, labels. */
   volumeProfile?: boolean;
+  /** Whether the settings popover's "Reverse anchors" button (under
+   * `levels`) applies to this tool. Defaults to true whenever `levels` is
+   * set — swapping p1/p2 is meaningful for Retracement/Extension/Channel
+   * (it flips which end the level set measures from). Explicitly false for
+   * Fib Wedge: p1 there is the shared radial PIVOT, not a symmetric
+   * endpoint — swapping it with p2 would relocate the pivot itself, not
+   * "reverse" anything. */
+  reverseAnchors?: boolean;
 };
 
 export type ToolDefaultStyle = {
@@ -217,15 +225,26 @@ export const TOOL_DEFS: ToolDef[] = [
   // backs every Fib tool — variants below differ only in anchor count/shape,
   // never in a second parallel level-math implementation.
   { id: "fib", name: "Fibonacci Retracement", category: "fib", icon: Ruler, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true, levels: true, extendRight: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: true },
-  { id: "fib-ext", name: "Trend-Based Fib Extension", category: "fib", icon: Ruler, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, levels: true, extendRight: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: false, note: "3-anchor extension math (A-B-C projection) not yet built on the shared Fib engine." },
-  { id: "fib-channel", name: "Fib Channel", category: "fib", icon: Ruler, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, fill: true, levels: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: false, note: "Channel geometry + fib level math combo not yet built." },
+  // Trend-Based Fib Extension (Phase 3C): A->B measures the move, C is the
+  // projection anchor — see src/lib/drawing/calc.ts's computeFibExtensionLevels.
+  // 3 anchors via the same p1/p2/points[0] shape Channel/Triangle already use.
+  { id: "fib-ext", name: "Trend-Based Fib Extension", category: "fib", icon: Ruler, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, levels: true, extendRight: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: true },
+  // Fib Channel (Phase 3C): the pre-existing Parallel Channel's exact
+  // trend + width-anchor geometry, with Fibonacci-ratio-spaced parallel
+  // rails instead of one single offset — see geometry.ts's fibChannelLevelOffset.
+  { id: "fib-channel", name: "Fib Channel", category: "fib", icon: Ruler, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, fill: true, levels: true }, defaultStyle: { color: "#e6b800", width: 1, fillOpacity: 0.08 }, implemented: true },
   { id: "fib-time", name: "Fib Time Zone", category: "fib", icon: Ruler, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: false, note: "Vertical time-interval fan not yet built." },
   { id: "fib-speed-fan", name: "Fib Speed Resistance Fan", category: "fib", icon: Fan, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: false },
   { id: "fib-time-trend", name: "Trend-Based Fib Time", category: "fib", icon: Ruler, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: false },
   { id: "fib-circles", name: "Fib Circles", category: "fib", icon: Circle, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: false },
   { id: "fib-spiral", name: "Fib Spiral", category: "fib", icon: RotateCw, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: false },
   { id: "fib-speed-arcs", name: "Fib Speed Resistance Arcs", category: "fib", icon: Compass, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: false },
-  { id: "fib-wedge", name: "Fib Wedge", category: "fib", icon: Triangle, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, fill: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: false },
+  // Fib Wedge (Phase 3C): a real radial ray fan from a shared pivot (A),
+  // Pitchfan-style — each ray passes through a Fibonacci-ratio point along
+  // the B->C segment (see calc.ts's lerpMarketPoint). NOT parallel horizontal
+  // lines. `reverseAnchors: false` because p1 here is the pivot, not a
+  // symmetric endpoint (see ToolCapabilities.reverseAnchors's doc comment).
+  { id: "fib-wedge", name: "Fib Wedge", category: "fib", icon: Triangle, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, fill: true, levels: true, reverseAnchors: false }, defaultStyle: { color: "#e6b800", width: 1, fillOpacity: 0.08 }, implemented: true },
   { id: "pitchfan", name: "Pitchfan", category: "fib", icon: Fan, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: false },
 
   // ---- Gann Tools -------------------------------------------------------

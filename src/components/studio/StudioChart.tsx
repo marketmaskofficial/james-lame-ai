@@ -13,10 +13,14 @@ import {
   projectLineBackward,
   pointInEllipse,
   pointInPolygon,
+  fibChannelLevelOffset,
 } from "@/lib/drawing/geometry";
 import {
   DEFAULT_FIB_LEVELS,
   computeFibLevels,
+  computeFibExtensionLevels,
+  defaultFibLevelsForTool,
+  lerpMarketPoint,
   anchoredVwap,
   computePositionMetrics,
   type FibLevel,
@@ -1789,6 +1793,180 @@ export function StudioChart({
     const px = (p: MarketPoint) => (geometryReady ? logicalToPixel(ts, toLogicalD(p.time), host.clientWidth) : null);
     const py = (p: MarketPoint) => y(p.price);
 
+    // ---- Shared Fibonacci projection paint helpers (Trend-Based Extension /
+    // Channel / Wedge) --------------------------------------------------------
+    // Used both for a COMMITTED drawing (from the main `all` loop below) and
+    // for the live in-progress preview while the user is still placing
+    // anchors (the pending-preview block further down) — one paint routine
+    // per tool, called from both places, so "what you see while
+    // constructing" and "what actually renders once committed" can never
+    // drift into two hand-synced copies of the same geometry.
+    const levelLabelText = (ratio: number, showLabel: boolean, showPrice: boolean, priceValue: number | null): string => {
+      const parts = [showLabel ? `${(ratio * 100).toFixed(1)}%` : null, showPrice && priceValue != null ? fmt(priceValue) : null].filter(
+        (p): p is string => p != null,
+      );
+      return parts.join("  ");
+    };
+
+    /** Trend-Based Fib Extension: horizontal level lines projected from C by
+     * the A->B move (see calc.ts's computeFibExtensionLevels) — visually the
+     * same "horizontal rules at each level price" convention Fib Retracement
+     * already uses, just anchored at C instead of between two anchors. */
+    const paintFibExtension = (
+      a: MarketPoint,
+      b: MarketPoint,
+      c: MarketPoint,
+      levels: FibLevel[],
+      extendRight: boolean,
+      showLabel: boolean,
+      showPrice: boolean,
+      col: string,
+    ) => {
+      const cx = px(c);
+      if (cx == null) return;
+      const computed = computeFibExtensionLevels(a.price, b.price, c.price, levels.filter((l) => l.enabled !== false));
+      const ax = px(a);
+      const bx = px(b);
+      const legWidth = ax != null && bx != null ? Math.abs(bx - ax) : 80;
+      const rightX = extendRight ? host.clientWidth : cx + Math.max(60, legWidth);
+      ctx.save();
+      ctx.setLineDash([]);
+      for (const lvl of computed) {
+        const ly = y(lvl.price);
+        if (ly == null) continue;
+        ctx.strokeStyle = withAlpha(lvl.color ?? col, 0.6);
+        ctx.beginPath();
+        ctx.moveTo(cx, ly);
+        ctx.lineTo(rightX, ly);
+        ctx.stroke();
+        const label = levelLabelText(lvl.value, showLabel, showPrice, lvl.price);
+        if (label) {
+          ctx.fillStyle = withAlpha(lvl.color ?? col, 0.9);
+          ctx.fillText(label, rightX + 4, ly - 2);
+        }
+      }
+      ctx.restore();
+    };
+
+    /** Fib Channel: the pre-existing Parallel Channel's exact trend + width-
+     * anchor geometry, with Fibonacci-ratio-spaced parallel rails (see
+     * geometry.ts's fibChannelLevelOffset) instead of one single offset. The
+     * trend line is extended both directions across the visible canvas first
+     * (`projectLineBackward`/`projectLineForward` — the "proper extension
+     * along the trend direction" requirement), then every rail is that SAME
+     * extended segment translated by its own pixel offset, so every rail
+     * stays exactly parallel no matter how far it extends. */
+    const paintFibChannel = (
+      p1: MarketPoint,
+      p2: MarketPoint,
+      p3: MarketPoint,
+      levels: FibLevel[],
+      fillOpacity: number,
+      showLabel: boolean,
+      showPrice: boolean,
+      col: string,
+    ) => {
+      const x1 = px(p1);
+      const y1 = py(p1);
+      const x2 = px(p2);
+      const y2 = py(p2);
+      const x3 = px(p3);
+      const y3 = py(p3);
+      if (x1 == null || y1 == null || x2 == null || y2 == null || x3 == null || y3 == null) return;
+      const { x: sx, y: sy } = projectLineBackward(x1, y1, x2, y2);
+      const { x: ex, y: ey } = projectLineForward(x1, y1, x2, y2, host.clientWidth);
+      const enabled = levels.filter((l) => l.enabled !== false);
+      if (enabled.length === 0) return;
+      ctx.save();
+      ctx.setLineDash([]);
+      const ratios = enabled.map((l) => l.value);
+      const minRatio = Math.min(...ratios, 0);
+      const maxRatio = Math.max(...ratios, 0);
+      const lo = fibChannelLevelOffset(x1, y1, x2, y2, x3, y3, minRatio);
+      const hi = fibChannelLevelOffset(x1, y1, x2, y2, x3, y3, maxRatio);
+      ctx.beginPath();
+      ctx.moveTo(sx + lo.dx, sy + lo.dy);
+      ctx.lineTo(ex + lo.dx, ey + lo.dy);
+      ctx.lineTo(ex + hi.dx, ey + hi.dy);
+      ctx.lineTo(sx + hi.dx, sy + hi.dy);
+      ctx.closePath();
+      ctx.fillStyle = withAlpha(col, fillOpacity);
+      ctx.fill();
+      for (const lvl of enabled) {
+        const { dx, dy } = fibChannelLevelOffset(x1, y1, x2, y2, x3, y3, lvl.value);
+        ctx.strokeStyle = withAlpha(lvl.color ?? col, 0.75);
+        ctx.beginPath();
+        ctx.moveTo(sx + dx, sy + dy);
+        ctx.lineTo(ex + dx, ey + dy);
+        ctx.stroke();
+        const priceHere = price.coordinateToPrice(y2 + dy);
+        const label = levelLabelText(lvl.value, showLabel, showPrice, priceHere);
+        if (label) {
+          ctx.fillStyle = withAlpha(lvl.color ?? col, 0.9);
+          ctx.fillText(label, ex + dx + 4, ey + dy - 2);
+        }
+      }
+      ctx.restore();
+    };
+
+    /** Fib Wedge: a genuine radial ray fan from a shared pivot (A),
+     * Pitchfan-style — NOT parallel horizontal lines. Each enabled ratio's
+     * ray passes through `lerpMarketPoint(B, C, ratio)`, computed in MARKET
+     * coordinates (independent time/price interpolation) so the fan's
+     * geometry is correct even when price and time don't share a pixel
+     * scale; only the already-interpolated point gets converted to a pixel
+     * position (via px/py) and then extended in pixel space with the same
+     * `projectLineForward` Ray/Extended Line already use. */
+    const paintFibWedge = (
+      pivot: MarketPoint,
+      b: MarketPoint,
+      c: MarketPoint,
+      levels: FibLevel[],
+      fillOpacity: number,
+      showLabel: boolean,
+      showPrice: boolean,
+      col: string,
+    ) => {
+      const ax = px(pivot);
+      const ay = py(pivot);
+      if (ax == null || ay == null) return;
+      const enabled = [...levels.filter((l) => l.enabled !== false)].sort((l1, l2) => l1.value - l2.value);
+      if (enabled.length === 0) return;
+      ctx.save();
+      ctx.setLineDash([]);
+      const rayEnds: { x: number; y: number }[] = [];
+      for (const lvl of enabled) {
+        const target = lerpMarketPoint(b, c, lvl.value);
+        const tx = px(target);
+        const ty = py(target);
+        if (tx == null || ty == null) continue;
+        const { x: ex, y: ey } = projectLineForward(ax, ay, tx, ty, host.clientWidth);
+        rayEnds.push({ x: ex, y: ey });
+        ctx.strokeStyle = withAlpha(lvl.color ?? col, 0.75);
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(ex, ey);
+        ctx.stroke();
+        const label = levelLabelText(lvl.value, showLabel, showPrice, target.price);
+        if (label) {
+          ctx.fillStyle = withAlpha(lvl.color ?? col, 0.9);
+          ctx.fillText(label, ex + 4, ey - 2);
+        }
+      }
+      if (rayEnds.length >= 2) {
+        const first = rayEnds[0];
+        const last = rayEnds[rayEnds.length - 1];
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(first.x, first.y);
+        ctx.lineTo(last.x, last.y);
+        ctx.closePath();
+        ctx.fillStyle = withAlpha(col, fillOpacity);
+        ctx.fill();
+      }
+      ctx.restore();
+    };
+
     const all = draftRef.current ? [...draws, draftRef.current] : draws;
     const pending = pendingRef.current;
     const selected = stateRef.current.selectedId;
@@ -1831,7 +2009,7 @@ export function StudioChart({
           if (x2 != null && y2 != null && d.tool !== "hline" && d.tool !== "vline" && d.tool !== "hray" && d.tool !== "arrow-up" && d.tool !== "arrow-down")
             handles.push({ x: x2, y: y2 });
           const p3 = d.points?.[0];
-          if (p3 && (d.tool === "channel" || d.tool === "triangle")) {
+          if (p3 && (d.tool === "channel" || d.tool === "triangle" || d.tool === "fib-ext" || d.tool === "fib-channel" || d.tool === "fib-wedge")) {
             const hx = px(p3);
             const hy = py(p3);
             if (hx != null && hy != null) handles.push({ x: hx, y: hy });
@@ -2275,6 +2453,51 @@ export function StudioChart({
               ctx.fillText(parts.join("  "), rightX + 4, levelY - 2);
             }
           }
+        } else if (d.tool === "fib-ext") {
+          const p3 = d.points?.[0];
+          if (p3) {
+            const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+            paintFibExtension(
+              d.p1,
+              d.p2,
+              p3,
+              levels,
+              Boolean(d.settings?.extendRight),
+              d.settings?.fibShowLabel !== false,
+              d.settings?.fibShowPrice !== false,
+              col,
+            );
+          }
+        } else if (d.tool === "fib-channel") {
+          const p3 = d.points?.[0];
+          if (p3) {
+            const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+            paintFibChannel(
+              d.p1,
+              d.p2,
+              p3,
+              levels,
+              (d.settings?.fillOpacity as number | undefined) ?? 0.08,
+              d.settings?.fibShowLabel !== false,
+              d.settings?.fibShowPrice !== false,
+              col,
+            );
+          }
+        } else if (d.tool === "fib-wedge") {
+          const p3 = d.points?.[0];
+          if (p3) {
+            const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+            paintFibWedge(
+              d.p1,
+              d.p2,
+              p3,
+              levels,
+              (d.settings?.fillOpacity as number | undefined) ?? 0.08,
+              d.settings?.fibShowLabel !== false,
+              d.settings?.fibShowPrice !== false,
+              col,
+            );
+          }
         } else if (d.tool === "long" || d.tool === "short") {
           const entry = d.p1.price;
           const target = d.p2.price;
@@ -2382,6 +2605,27 @@ export function StudioChart({
         }
         ctx.restore();
       }
+
+      // Real live geometry (not just the dashed anchor skeleton above) once
+      // enough anchors exist to compute it — "live preview updates
+      // throughout" per the phase brief. For all three tools the geometry
+      // only becomes meaningful once the FIRST TWO anchors are committed and
+      // the cursor is standing in for the third (A-B-C's C, the trend-plus-
+      // width-anchor's width, or the pivot-plus-B's C) — before that, the
+      // dashed skeleton above is all there is to show. Reuses the EXACT same
+      // paint helpers a committed drawing renders through, so the preview
+      // can never drift from what actually gets committed on the next click.
+      if (pending.anchors.length === 2 && cursorPt) {
+        const [first, second] = pending.anchors;
+        const previewColor = getToolStyleDefaults(pending.tool)?.color ?? DEFAULT_DRAW_COLOR;
+        if (pending.tool === "fib-ext") {
+          paintFibExtension(first, second, cursorPt, defaultFibLevelsForTool("fib-ext"), false, true, true, previewColor);
+        } else if (pending.tool === "fib-channel") {
+          paintFibChannel(first, second, cursorPt, defaultFibLevelsForTool("fib-channel"), 0.08, true, true, previewColor);
+        } else if (pending.tool === "fib-wedge") {
+          paintFibWedge(first, second, cursorPt, defaultFibLevelsForTool("fib-wedge"), 0.08, true, true, previewColor);
+        }
+      }
     }
 
     // Selection handles for the selected drawing.
@@ -2474,7 +2718,7 @@ export function StudioChart({
             hit = { d, anchor: "p2" };
           }
         }
-        if (x3 != null && y3 != null && (d.tool === "channel" || d.tool === "triangle")) {
+        if (x3 != null && y3 != null && (d.tool === "channel" || d.tool === "triangle" || d.tool === "fib-ext" || d.tool === "fib-channel" || d.tool === "fib-wedge")) {
           const dist = pixelDist(x3, y3, mx, my);
           if (dist < best) {
             best = dist;
@@ -2562,6 +2806,62 @@ export function StudioChart({
             if (ly == null) continue;
             if (mx >= leftX - 4 && mx <= rightX + 4 && Math.abs(ly - my) < best) {
               best = Math.abs(ly - my);
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
+        if (d.tool === "fib-ext" && x3 != null && p3) {
+          // Same "hit-test the rendered level lines, not a diagonal" pattern
+          // as Retracement above, projected from C instead of between the
+          // two anchors — matches paintFibExtension's own geometry exactly.
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+          const computed = computeFibExtensionLevels(d.p1.price, d.p2.price, p3.price, levels.filter((l) => l.enabled !== false));
+          const extendRight = Boolean(d.settings?.extendRight);
+          const legWidth = x1 != null && x2 != null ? Math.abs(x2 - x1) : 80;
+          const rightX = extendRight ? (canvasRef.current?.clientWidth ?? 2000) : x3 + Math.max(60, legWidth);
+          for (const lvl of computed) {
+            const ly = price.priceToCoordinate(lvl.price);
+            if (ly == null) continue;
+            if (mx >= x3 - 4 && mx <= rightX + 4 && Math.abs(ly - my) < best) {
+              best = Math.abs(ly - my);
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
+        if (d.tool === "fib-channel" && x1 != null && y1 != null && x2 != null && y2 != null && x3 != null && y3 != null && p3) {
+          // Hit-tests the extended trend line AND every parallel rail —
+          // exactly the segments paintFibChannel actually draws.
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+          const enabled = levels.filter((l) => l.enabled !== false);
+          const canvasWidth = canvasRef.current?.clientWidth ?? 2000;
+          const { x: sx, y: sy } = projectLineBackward(x1, y1, x2, y2);
+          const { x: ex, y: ey } = projectLineForward(x1, y1, x2, y2, canvasWidth);
+          const ratiosToTest = enabled.length > 0 ? enabled.map((l) => l.value) : [0];
+          for (const ratio of ratiosToTest) {
+            const { dx, dy } = fibChannelLevelOffset(x1, y1, x2, y2, x3, y3, ratio);
+            const dist = distToSegment(mx, my, sx + dx, sy + dy, ex + dx, ey + dy);
+            if (dist < best) {
+              best = dist;
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
+        if (d.tool === "fib-wedge" && x1 != null && y1 != null && x3 != null && p3) {
+          // Hit-tests each drawn RAY (pivot -> extended Fibonacci point),
+          // never a bounding box — same segment-distance convention as every
+          // other line-based tool's hit-test.
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+          const enabled = levels.filter((l) => l.enabled !== false);
+          const canvasWidth = canvasRef.current?.clientWidth ?? 2000;
+          for (const lvl of enabled) {
+            const target = lerpMarketPoint(d.p2, p3, lvl.value);
+            const tx = toPx(target);
+            const ty = toPy(target);
+            if (tx == null || ty == null) continue;
+            const { x: ex, y: ey } = projectLineForward(x1, y1, tx, ty, canvasWidth);
+            const dist = distToSegment(mx, my, x1, y1, ex, ey);
+            if (dist < best) {
+              best = dist;
               hit = { d, anchor: "body" };
             }
           }
@@ -2792,6 +3092,49 @@ export function StudioChart({
         return;
       }
 
+      if (tool === "fib-ext" || tool === "fib-wedge") {
+        // Trend-Based Fib Extension (A->B->C) and Fib Wedge (pivot->B->C)
+        // both use Triangle's exact 3-plain-click pattern (unlike Fib
+        // Channel just below, which drags its first two anchors): the third
+        // click's live cursor position is what a user is actually watching
+        // update in real time (the extension's projected levels / the
+        // wedge's ray fan — see the pending-preview block further down),
+        // which reads far more naturally as three discrete placements than a
+        // drag-then-click.
+        const pend = pendingRef.current;
+        if (!pend || pend.tool !== tool) {
+          pendingRef.current = { tool, anchors: [pt] };
+        } else {
+          const anchors = [...pend.anchors, pt];
+          if (anchors.length >= 3) {
+            onAddDrawing(stampNew({ tool, p1: anchors[0], p2: anchors[1], points: [anchors[2]] }));
+            pendingRef.current = null;
+            previewPointRef.current = null;
+            onSelectDrawing?.(null);
+          } else {
+            pendingRef.current = { tool, anchors };
+          }
+        }
+        return;
+      }
+
+      if (tool === "fib-channel") {
+        // Same drag-the-trend-baseline-then-click-for-width pattern as the
+        // pre-existing Parallel Channel tool above — Fib Channel IS that
+        // same geometry, just with Fibonacci-ratio-spaced rails instead of
+        // one single offset (see paintFibChannel).
+        const pend = pendingRef.current;
+        if (pend && pend.tool === "fib-channel" && pend.anchors.length === 2) {
+          onAddDrawing(stampNew({ tool: "fib-channel", p1: pend.anchors[0], p2: pend.anchors[1], points: [pt] }));
+          pendingRef.current = null;
+          previewPointRef.current = null;
+          return;
+        }
+        canvas.setPointerCapture(e.pointerId);
+        draftRef.current = { id: "__draft__", tool: "fib-channel", p1: pt, p2: pt };
+        return;
+      }
+
       if (tool === "polyline" || tool === "path") {
         // Unlimited multi-click chain: first click starts it, every
         // subsequent click appends one more vertex (unlike Triangle's fixed
@@ -2917,9 +3260,9 @@ export function StudioChart({
       const dl = Math.abs(timeToLogicalExtrapolated(bars, draft.p2.time) - timeToLogicalExtrapolated(bars, draft.p1.time));
       const negligible = dl < 0.5 && draft.p1.price === draft.p2.price;
 
-      if (draft.tool === "channel") {
+      if (draft.tool === "channel" || draft.tool === "fib-channel") {
         if (negligible) return;
-        pendingRef.current = { tool: "channel", anchors: [draft.p1, draft.p2] };
+        pendingRef.current = { tool: draft.tool, anchors: [draft.p1, draft.p2] };
         return;
       }
       if (draft.tool === "brush" || draft.tool === "highlighter") {

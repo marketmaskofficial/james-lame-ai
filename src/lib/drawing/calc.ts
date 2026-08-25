@@ -64,6 +64,89 @@ export function removeFibLevel(levels: FibLevel[], value: number): FibLevel[] {
   return levels.filter((l) => l.value !== value);
 }
 
+// ---- Fibonacci: Trend-Based Extension / Channel / Wedge (Phase 3C) ------
+//
+// These three tools reuse the SAME `FibLevel`/`FibComputedLevel` model above
+// (enable/disable, color, custom ratios via addFibLevel/removeFibLevel) —
+// they only need their own conventional default RATIO sets (extension/
+// channel/wedge ratios aren't the same as Retracement's 0..1 band) and their
+// own PRICE projection math (an extension/channel/wedge level isn't "a point
+// between two anchors" the way a retracement level is).
+
+/** Trend-Based Fib Extension's conventional defaults: 0 marks the projection
+ * anchor (C) itself; everything else is >0 and mostly >1 — an extension's
+ * whole point is levels OUTSIDE the measured A->B move, unlike Retracement's
+ * inside-the-move 0..1 band. */
+export const FIB_EXTENSION_DEFAULT_LEVELS: FibLevel[] = [0, 0.382, 0.618, 1, 1.272, 1.618, 2.618].map((value) => ({
+  value,
+  enabled: true,
+}));
+
+/** Fib Channel's conventional defaults: ratios of the base A->B->width
+ * offset, rendered as rails parallel to the A->B trend line (0 = the trend
+ * line itself, 1 = exactly the width anchor's own rail). */
+export const FIB_CHANNEL_DEFAULT_LEVELS: FibLevel[] = [0, 0.382, 0.618, 1, 1.618, 2.618].map((value) => ({
+  value,
+  enabled: true,
+}));
+
+/** Fib Wedge's conventional defaults (Pitchfan-style ray fan): fractions
+ * along the B->C segment that each ray from the shared pivot (A) passes
+ * through. */
+export const FIB_WEDGE_DEFAULT_LEVELS: FibLevel[] = [0, 0.382, 0.5, 0.618, 1, 1.618, 2.618].map((value) => ({
+  value,
+  enabled: true,
+}));
+
+/** The one place that knows which conventional default ratio set belongs to
+ * which Fib tool — every render/hit-test/settings call site asks THIS
+ * instead of carrying its own `?? SOME_DEFAULT` per tool id, so adding a
+ * future Fib tool's own default set never means hunting down every place
+ * that needs to know about it. */
+export function defaultFibLevelsForTool(tool: string): FibLevel[] {
+  if (tool === "fib-ext") return FIB_EXTENSION_DEFAULT_LEVELS;
+  if (tool === "fib-channel") return FIB_CHANNEL_DEFAULT_LEVELS;
+  if (tool === "fib-wedge") return FIB_WEDGE_DEFAULT_LEVELS;
+  return DEFAULT_FIB_LEVELS;
+}
+
+/**
+ * Trend-Based Fib Extension: measures the A->B move, then projects each
+ * level FROM C (`price = C + (B - A) * ratio`). Deliberately not
+ * `computeFibLevels` re-anchored at C — a Retracement's band sits BETWEEN
+ * its two anchors, while an Extension's levels sit outside C, scaled by a
+ * move measured somewhere else entirely (A->B). Recomputes fresh from the
+ * three raw anchor prices every call (no cached/derived state to go stale),
+ * so it's always correct immediately after A, B, or C moves, and cheap
+ * enough to call every render frame without memoizing.
+ */
+export function computeFibExtensionLevels(
+  aPrice: number,
+  bPrice: number,
+  cPrice: number,
+  levels: FibLevel[] = FIB_EXTENSION_DEFAULT_LEVELS,
+): FibComputedLevel[] {
+  const move = bPrice - aPrice;
+  return levels.map((lvl) => ({ ...lvl, price: cPrice + move * lvl.value }));
+}
+
+/** A point a fraction `t` of the way from `from` to `to` (t outside [0,1]
+ * extrapolates past either end) — computed independently per axis (time,
+ * price) in MARKET coordinates, never screen pixels. This is the one
+ * primitive Fib Wedge's ray fan needs: each ray passes through
+ * `lerpMarketPoint(B, C, ratio)` for one Fibonacci ratio. Interpolating time
+ * and price as two independent linear axes (rather than, say, a single
+ * "distance along the segment") is what keeps this meaningful when time and
+ * price don't share a pixel scale — see this module's and geometry.ts's
+ * module docs. */
+export function lerpMarketPoint(
+  from: { time: number; price: number },
+  to: { time: number; price: number },
+  t: number,
+): { time: number; price: number } {
+  return { time: from.time + (to.time - from.time) * t, price: from.price + (to.price - from.price) * t };
+}
+
 // ---- Anchored VWAP ------------------------------------------------------
 
 export type VwapPoint = { time: number; value: number };

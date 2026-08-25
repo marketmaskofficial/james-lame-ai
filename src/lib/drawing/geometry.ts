@@ -216,6 +216,39 @@ export function projectLineBackward(
 }
 
 /**
+ * Fib Channel's per-level parallel offset, in PIXEL space, for one level
+ * ratio — the exact same perpendicular-to-the-trend-line offset the
+ * pre-existing Parallel Channel tool already computes for its single width
+ * anchor (`p3`), generalized to scale by `ratio` instead of always using the
+ * full 1.0 offset (ratio=0 is the trend line itself; ratio=1 is exactly the
+ * width anchor's own rail; ratio=1.618/2.618/etc extend past it). Kept in
+ * PIXEL space deliberately, matching how the pre-existing Channel tool
+ * already renders its one rail: once price and time don't share a pixel
+ * scale, "perpendicular" between a price axis and a time axis isn't a
+ * meaningful market-coordinate concept — it's inherently a rendering-space
+ * one. The CANONICAL state is still the three anchors' market coordinates
+ * (p1/p2/p3); this is purely a render/hit-test-time derivation from their
+ * already-converted pixel positions, never persisted.
+ */
+export function fibChannelLevelOffset(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  x3: number,
+  y3: number,
+  ratio: number,
+): { dx: number; dy: number } {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len = Math.hypot(dx, dy) || 1;
+  const nx = -dy / len;
+  const ny = dx / len;
+  const offset = (x3 - x1) * nx + (y3 - y1) * ny;
+  return { dx: nx * offset * ratio, dy: ny * offset * ratio };
+}
+
+/**
  * True if (px,py) lies inside (or exactly on) the axis-aligned ellipse
  * centered at (cx,cy) with radii (rx,ry) — Phase 3A's Ellipse hit-test
  * region. Deliberately a real interior test (same "click anywhere inside a

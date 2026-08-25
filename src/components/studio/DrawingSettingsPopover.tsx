@@ -15,7 +15,7 @@ import {
   AlignRight,
 } from "lucide-react";
 import type { Drawing, DrawStyle } from "./StudioChart";
-import { DEFAULT_FIB_LEVELS, addFibLevel, removeFibLevel, type FibLevel } from "@/lib/drawing/calc";
+import { defaultFibLevelsForTool, addFibLevel, removeFibLevel, type FibLevel } from "@/lib/drawing/calc";
 import { TOOL_BY_ID } from "@/lib/drawing/registry";
 import { setToolStyleDefaults } from "@/lib/drawing/styleDefaults";
 
@@ -88,7 +88,7 @@ export function DrawingSettingsPopover({
     setToolStyleDefaults(drawing.tool, { settings: { [key]: value } });
   };
 
-  const fibLevels = (drawing.settings?.fibLevels as FibLevel[] | undefined) ?? DEFAULT_FIB_LEVELS;
+  const fibLevels = (drawing.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(drawing.tool);
 
   // Clamp so the popover (fixed width, roughly-bounded height) never renders
   // partly off-screen — "must stay inside viewport" per the phase brief.
@@ -523,12 +523,14 @@ export function DrawingSettingsPopover({
                   <Plus className="h-3 w-3" />
                 </button>
               </div>
-              <button
-                onClick={() => set({ p1: drawing.p2, p2: drawing.p1 })}
-                className="w-full rounded border border-border py-1 text-[10.5px] hover:bg-accent"
-              >
-                Reverse anchors
-              </button>
+              {caps.reverseAnchors !== false && (
+                <button
+                  onClick={() => set({ p1: drawing.p2, p2: drawing.p1 })}
+                  className="w-full rounded border border-border py-1 text-[10.5px] hover:bg-accent"
+                >
+                  Reverse anchors
+                </button>
+              )}
             </div>
           )}
 

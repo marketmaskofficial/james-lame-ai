@@ -325,6 +325,112 @@ function d(id) {
   ok("chart B only sees its Anchored profile, not chart A's Fixed Range profile", b.length === 1 && b[0].tool === "vp-anchored");
 }
 
+// ---- Phase 3C: Trend-Based Fib Extension / Channel / Wedge round-trip -----
+// The regression this specifically guards against: a 3-anchor Fib tool's
+// THIRD anchor (C for Extension, the width anchor for Channel, B/C for
+// Wedge) silently getting dropped or collapsed into a generic 2-anchor
+// p1/p2 shape somewhere in the save/load path — exactly the same class of
+// regression Phase 3A's Polyline/Path tests guard against for `points`, and
+// Phase 1/2's Channel/Triangle already rely on `points[0]` surviving intact.
+
+{
+  fakeStorage.clear();
+
+  const fibExt = {
+    id: "fx1",
+    tool: "fib-ext",
+    chartInstanceId: "chart-1",
+    p1: { time: 100, price: 10 }, // A
+    p2: { time: 200, price: 20 }, // B
+    points: [{ time: 300, price: 15 }], // C
+    color: "#e6b800",
+    width: 1,
+    settings: {
+      extendRight: true,
+      fibShowLabel: true,
+      fibShowPrice: false,
+      fibLevels: [
+        { value: 0, enabled: true },
+        { value: 1, enabled: true, color: "#22c55e" },
+        { value: 1.618, enabled: false },
+      ],
+    },
+  };
+
+  const fibChannel = {
+    id: "fc1",
+    tool: "fib-channel",
+    chartInstanceId: "chart-1",
+    p1: { time: 100, price: 10 },
+    p2: { time: 200, price: 20 },
+    points: [{ time: 150, price: 25 }], // width anchor
+    color: "#e6b800",
+    settings: { fillOpacity: 0.12, fibLevels: [{ value: 0, enabled: true }, { value: 1.618, enabled: true }] },
+  };
+
+  const fibWedge = {
+    id: "fw1",
+    tool: "fib-wedge",
+    chartInstanceId: "chart-1",
+    p1: { time: 50, price: 5 }, // pivot
+    p2: { time: 100, price: 10 }, // B
+    points: [{ time: 150, price: 8 }], // C
+    color: "#e6b800",
+    settings: { fillOpacity: 0.1 },
+  };
+
+  saveDrawingsFor("chart-1", "BTCUSDT", "5m", [fibExt, fibChannel, fibWedge]);
+  const loaded = loadDrawingsFor("chart-1", "BTCUSDT", "5m");
+
+  ok("Phase 3C round trip: all three new Fib drawings come back", loaded.length === 3);
+
+  const loadedExt = loaded.find((x) => x.id === "fx1");
+  ok("Fib Extension: A/B (p1/p2) survive intact", loadedExt.p1.price === 10 && loadedExt.p2.price === 20);
+  ok(
+    "Fib Extension: the THIRD anchor (C) survives in `points`, not collapsed away",
+    Array.isArray(loadedExt.points) && loadedExt.points.length === 1 && loadedExt.points[0].price === 15,
+  );
+  ok(
+    "Fib Extension: level set (enable/disable/custom color) survives intact",
+    loadedExt.settings.fibLevels.length === 3 &&
+      loadedExt.settings.fibLevels.find((l) => l.value === 1).color === "#22c55e" &&
+      loadedExt.settings.fibLevels.find((l) => l.value === 1.618).enabled === false,
+  );
+  ok("Fib Extension: extendRight/label/price settings survive intact", loadedExt.settings.extendRight === true && loadedExt.settings.fibShowPrice === false);
+
+  const loadedChannel = loaded.find((x) => x.id === "fc1");
+  ok("Fib Channel: trend anchors (p1/p2) survive intact", loadedChannel.p1.time === 100 && loadedChannel.p2.time === 200);
+  ok(
+    "Fib Channel: the width anchor (3rd point) survives in `points`, not collapsed away",
+    Array.isArray(loadedChannel.points) && loadedChannel.points[0].price === 25,
+  );
+  ok("Fib Channel: fill opacity + level set survive intact", loadedChannel.settings.fillOpacity === 0.12 && loadedChannel.settings.fibLevels.length === 2);
+
+  const loadedWedge = loaded.find((x) => x.id === "fw1");
+  ok("Fib Wedge: pivot (p1) survives intact", loadedWedge.p1.price === 5);
+  ok("Fib Wedge: B (p2) survives intact", loadedWedge.p2.price === 10);
+  ok(
+    "Fib Wedge: C (3rd point) survives in `points`, not collapsed to a 2-anchor shape",
+    Array.isArray(loadedWedge.points) && loadedWedge.points[0].price === 8,
+  );
+}
+
+// ---- Phase 3C: chartInstanceId isolation for the three new tools -----------
+
+{
+  fakeStorage.clear();
+  const chartAExt = { id: "a-fx", tool: "fib-ext", chartInstanceId: "chart-A", p1: { time: 1, price: 1 }, p2: { time: 2, price: 2 }, points: [{ time: 3, price: 3 }] };
+  const chartBWedge = { id: "b-fw", tool: "fib-wedge", chartInstanceId: "chart-B", p1: { time: 1, price: 1 }, p2: { time: 2, price: 2 }, points: [{ time: 3, price: 1.5 }] };
+
+  saveDrawingsFor("chart-A", "SOLUSDT", "1h", [chartAExt]);
+  saveDrawingsFor("chart-B", "SOLUSDT", "1h", [chartBWedge]);
+
+  const a = loadDrawingsFor("chart-A", "SOLUSDT", "1h");
+  const b = loadDrawingsFor("chart-B", "SOLUSDT", "1h");
+  ok("Fib Extension/Channel/Wedge respect chartInstanceId isolation: chart A only sees its extension", a.length === 1 && a[0].tool === "fib-ext");
+  ok("chart B only sees its wedge, not chart A's extension", b.length === 1 && b[0].tool === "fib-wedge" && b[0].points[0].price === 1.5);
+}
+
 // ---- summary ----------------------------------------------------------------
 
 console.log(`\n${pass}/${pass + fail} passed`);
