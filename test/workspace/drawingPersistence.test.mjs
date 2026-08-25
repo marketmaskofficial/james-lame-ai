@@ -223,6 +223,108 @@ function d(id) {
   ok("chart B only sees its path, not chart A's polyline", b.length === 1 && b[0].tool === "path" && b[0].points.length === 2);
 }
 
+// ---- Phase 3B: Fixed Range / Anchored Volume Profile serialization round-trip
+// The regression this specifically guards against: unlike every other tool's
+// geometry, a Volume Profile's calculation settings (rows/Value Area %) and
+// visual settings live entirely in the same loose `settings` bag every other
+// tool already uses — there's no dedicated schema for them. This locks in
+// that nothing about that bag (or the start/end/anchor times themselves) gets
+// dropped or collapsed on the way through this plain-JSON store, so a reload
+// reconstructs and recalculates the identical profile rather than silently
+// falling back to defaults.
+
+{
+  fakeStorage.clear();
+
+  const vpFixed = {
+    id: "vpf1",
+    tool: "vp-fixed",
+    chartInstanceId: "chart-1",
+    p1: { time: 100, price: 9 },
+    p2: { time: 500, price: 12 },
+    color: "#4da3ff",
+    settings: {
+      vpRows: 32,
+      vpValueAreaPct: 0.8,
+      vpWidthPct: 70,
+      vpPlacement: "left",
+      vpShowHistogram: true,
+      vpShowPoc: true,
+      vpShowVah: false,
+      vpShowVal: true,
+      vpPocColor: "#ffcc00",
+      vpVahColor: "#22c55e",
+      vpValColor: "#ef4444",
+      vpLevelLineStyle: "solid",
+      fillOpacity: 0.6,
+    },
+  };
+
+  const vpAnchored = {
+    id: "vpa1",
+    tool: "vp-anchored",
+    chartInstanceId: "chart-1",
+    p1: { time: 300, price: 11 },
+    p2: { time: 300, price: 11 },
+    color: "#4da3ff",
+    settings: { vpRows: 48, vpValueAreaPct: 0.68 },
+  };
+
+  saveDrawingsFor("chart-1", "BTCUSDT", "5m", [vpFixed, vpAnchored]);
+  const loaded = loadDrawingsFor("chart-1", "BTCUSDT", "5m");
+
+  ok("Phase 3B round trip: both Volume Profile drawings come back", loaded.length === 2);
+
+  const loadedFixed = loaded.find((x) => x.id === "vpf1");
+  ok(
+    "Fixed Range: start/end times (its actual range — never just screen coordinates) survive intact",
+    loadedFixed.p1.time === 100 && loadedFixed.p2.time === 500,
+  );
+  ok(
+    "Fixed Range: every calculation setting (rows/Value Area %) survives intact",
+    loadedFixed.settings.vpRows === 32 && loadedFixed.settings.vpValueAreaPct === 0.8,
+  );
+  ok(
+    "Fixed Range: every visual setting (placement/POC-VAH-VAL visibility+colors/line style/opacity) survives intact",
+    loadedFixed.settings.vpPlacement === "left" &&
+      loadedFixed.settings.vpShowVah === false &&
+      loadedFixed.settings.vpPocColor === "#ffcc00" &&
+      loadedFixed.settings.vpLevelLineStyle === "solid" &&
+      loadedFixed.settings.fillOpacity === 0.6,
+  );
+
+  const loadedAnchored = loaded.find((x) => x.id === "vpa1");
+  ok(
+    "Anchored: the anchor time (p1) survives intact — the ONE thing this tool's range is derived from",
+    loadedAnchored.p1.time === 300 && loadedAnchored.p2.time === 300,
+  );
+  ok(
+    "Anchored: its own calculation settings survive intact and independently of Fixed Range's",
+    loadedAnchored.settings.vpRows === 48 && loadedAnchored.settings.vpValueAreaPct === 0.68,
+  );
+}
+
+// ---- Phase 3B: chartInstanceId isolation for the two new tools -------------
+// Volume Profile depends on chart-specific BAR data, not just anchor
+// coordinates, so a caching/isolation bug here would be a correctness bug
+// (chart 2 silently computing off chart 1's data), not just a visual one —
+// checked here at the persistence layer the same way every other tool's
+// isolation already is.
+
+{
+  fakeStorage.clear();
+  const chartAFixed = { id: "a-vpf", tool: "vp-fixed", chartInstanceId: "chart-A", p1: { time: 100, price: 9 }, p2: { time: 500, price: 12 } };
+  const chartBAnchored = { id: "b-vpa", tool: "vp-anchored", chartInstanceId: "chart-B", p1: { time: 300, price: 11 }, p2: { time: 300, price: 11 } };
+
+  saveDrawingsFor("chart-A", "SOLUSDT", "1h", [chartAFixed]);
+  saveDrawingsFor("chart-B", "SOLUSDT", "1h", [chartBAnchored]);
+
+  const a = loadDrawingsFor("chart-A", "SOLUSDT", "1h");
+  const b = loadDrawingsFor("chart-B", "SOLUSDT", "1h");
+  ok("Fixed Range/Anchored Volume Profile respect chartInstanceId isolation: chart A only sees its Fixed Range profile", a.length === 1 && a[0].tool === "vp-fixed");
+  ok("chart B only sees its Anchored profile, not chart A's Fixed Range profile", b.length === 1 && b[0].tool === "vp-anchored");
+}
+
 // ---- summary ----------------------------------------------------------------
 
 console.log(`\n${pass}/${pass + fail} passed`);

@@ -206,16 +206,158 @@ export function DrawingSettingsPopover({
             <div className="mt-3 space-y-2">
               <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Fill</p>
               <label className="flex items-center justify-between gap-2">
-                <span className="text-muted-foreground">Fill opacity</span>
+                <span className="text-muted-foreground">{caps.volumeProfile ? "Histogram opacity" : "Fill opacity"}</span>
                 <input
                   type="range"
                   min={0}
-                  max={60}
-                  value={Math.round(((drawing.settings?.fillOpacity as number | undefined) ?? 0.14) * 100)}
+                  max={caps.volumeProfile ? 100 : 60}
+                  // Volume Profile's histogram bars ARE the content of the
+                  // drawing (unlike a background fill behind a shape's own
+                  // stroked outline) — the shared 0.14 default every other
+                  // fill-capable tool uses would render them almost
+                  // invisible, so this seeds a much more visible 50% default
+                  // for exactly this capability, matching the same fallback
+                  // StudioChart's own renderer uses when no setting exists
+                  // yet (see StudioChart.tsx's `fillOpacityVp`).
+                  value={Math.round(((drawing.settings?.fillOpacity as number | undefined) ?? (caps.volumeProfile ? 0.5 : 0.14)) * 100)}
                   onChange={(e) => setSetting("fillOpacity", Number(e.target.value) / 100)}
                   className="w-24 accent-[var(--brand,#e6b800)]"
                 />
               </label>
+            </div>
+          )}
+
+          {caps.volumeProfile && (
+            <div className="mt-3 space-y-2">
+              <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Volume Profile</p>
+              <label className="flex items-center justify-between gap-2">
+                <span className="text-muted-foreground">Rows</span>
+                <select
+                  value={(drawing.settings?.vpRows as number | undefined) ?? 24}
+                  onChange={(e) => setSetting("vpRows", Number(e.target.value))}
+                  className="rounded border border-border bg-card px-2 py-1 text-[11px] outline-none focus:border-brand"
+                >
+                  {[10, 16, 24, 32, 48, 64, 100].map((n) => (
+                    <option key={n} value={n}>{n}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex items-center justify-between gap-2">
+                <span className="text-muted-foreground">Value area</span>
+                <select
+                  value={(drawing.settings?.vpValueAreaPct as number | undefined) ?? 0.7}
+                  onChange={(e) => setSetting("vpValueAreaPct", Number(e.target.value))}
+                  className="rounded border border-border bg-card px-2 py-1 text-[11px] outline-none focus:border-brand"
+                >
+                  {[0.6, 0.68, 0.7, 0.8, 0.9].map((p) => (
+                    <option key={p} value={p}>{Math.round(p * 100)}%</option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex items-center justify-between gap-2">
+                <span className="text-muted-foreground">Width</span>
+                <input
+                  type="range"
+                  min={10}
+                  max={100}
+                  value={(drawing.settings?.vpWidthPct as number | undefined) ?? 60}
+                  onChange={(e) => setSetting("vpWidthPct", Number(e.target.value))}
+                  className="w-24 accent-[var(--brand,#e6b800)]"
+                />
+              </label>
+              <div className="flex items-center gap-1">
+                {(["left", "right"] as const).map((p) => (
+                  <button
+                    key={p}
+                    onClick={() => setSetting("vpPlacement", p)}
+                    className={`flex-1 rounded border px-1 py-0.5 capitalize ${
+                      ((drawing.settings?.vpPlacement as string | undefined) ?? "right") === p
+                        ? "border-brand text-brand"
+                        : "border-border text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {p}
+                  </button>
+                ))}
+              </div>
+              <label className="flex items-center justify-between gap-2">
+                <span className="text-muted-foreground">Histogram color</span>
+                <input
+                  type="color"
+                  value={drawing.color ?? "#4da3ff"}
+                  onChange={(e) => set({ color: e.target.value })}
+                  className="h-6 w-10 rounded border border-border bg-card p-0"
+                />
+              </label>
+              <label className="flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={drawing.settings?.vpShowHistogram !== false}
+                  onChange={(e) => setSetting("vpShowHistogram", e.target.checked)}
+                />
+                Show histogram
+              </label>
+              <label className="flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={drawing.settings?.vpShowLabels !== false}
+                  onChange={(e) => setSetting("vpShowLabels", e.target.checked)}
+                />
+                Show price labels
+              </label>
+              <div className="flex items-center gap-1">
+                {(["dashed", "solid"] as const).map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => setSetting("vpLevelLineStyle", s)}
+                    className={`flex-1 rounded border px-1 py-0.5 capitalize ${
+                      ((drawing.settings?.vpLevelLineStyle as string | undefined) ?? "dashed") === s
+                        ? "border-brand text-brand"
+                        : "border-border text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {s} lines
+                  </button>
+                ))}
+              </div>
+              <div className="grid grid-cols-3 gap-1.5">
+                <label className="flex flex-col items-center gap-1 text-[10px] text-muted-foreground">
+                  <span className="flex items-center gap-1">
+                    <input type="checkbox" checked={drawing.settings?.vpShowPoc !== false} onChange={(e) => setSetting("vpShowPoc", e.target.checked)} />
+                    POC
+                  </span>
+                  <input
+                    type="color"
+                    value={(drawing.settings?.vpPocColor as string | undefined) ?? "#e6b800"}
+                    onChange={(e) => setSetting("vpPocColor", e.target.value)}
+                    className="h-6 w-10 rounded border border-border bg-card p-0"
+                  />
+                </label>
+                <label className="flex flex-col items-center gap-1 text-[10px] text-muted-foreground">
+                  <span className="flex items-center gap-1">
+                    <input type="checkbox" checked={drawing.settings?.vpShowVah !== false} onChange={(e) => setSetting("vpShowVah", e.target.checked)} />
+                    VAH
+                  </span>
+                  <input
+                    type="color"
+                    value={(drawing.settings?.vpVahColor as string | undefined) ?? "#22c55e"}
+                    onChange={(e) => setSetting("vpVahColor", e.target.value)}
+                    className="h-6 w-10 rounded border border-border bg-card p-0"
+                  />
+                </label>
+                <label className="flex flex-col items-center gap-1 text-[10px] text-muted-foreground">
+                  <span className="flex items-center gap-1">
+                    <input type="checkbox" checked={drawing.settings?.vpShowVal !== false} onChange={(e) => setSetting("vpShowVal", e.target.checked)} />
+                    VAL
+                  </span>
+                  <input
+                    type="color"
+                    value={(drawing.settings?.vpValColor as string | undefined) ?? "#ef4444"}
+                    onChange={(e) => setSetting("vpValColor", e.target.value)}
+                    className="h-6 w-10 rounded border border-border bg-card p-0"
+                  />
+                </label>
+              </div>
             </div>
           )}
 

@@ -135,11 +135,37 @@ for (const t of TOOL_DEFS) {
 }
 
 // ---- deferred families stay hidden (implemented:false) — never a fake tool ---
+// vp-fixed/vp-anchored were the DEFERRED_SAMPLE entries here through Phase
+// 3A — Phase 3B is the phase that implements exactly those two (and ONLY
+// those two — no other still-unimplemented tool may be flipped on alongside
+// them), so they move out of this list and into their own dedicated block
+// below, mirroring exactly how Ellipse/Polyline/Path graduated out of this
+// same list in Phase 3A.
 
 {
-  const DEFERRED_SAMPLE = ["gann-box", "gann-fan", "xabcd", "elliott-impulse", "cyclic-lines", "vp-fixed", "rotated-rect", "ruler", "image"];
+  const DEFERRED_SAMPLE = ["gann-box", "gann-fan", "xabcd", "elliott-impulse", "cyclic-lines", "rotated-rect", "ruler", "image"];
   const wronglyImplemented = DEFERRED_SAMPLE.filter((id) => TOOL_BY_ID[id]?.implemented);
   ok(`deferred tools stay implemented:false (wrongly true: ${wronglyImplemented.join(",") || "none"})`, wronglyImplemented.length === 0);
+}
+
+// ---- Phase 3B additions this phase claims as "fully implemented" ----------
+// Fixed Range Volume Profile / Anchored Volume Profile ONLY — no other
+// Volume-Based (or any other family's) still-unimplemented tool may be
+// flipped on alongside them (checked above via DEFERRED_SAMPLE).
+
+{
+  const PHASE3B_NEW_TOOLS = ["vp-fixed", "vp-anchored"];
+  const missing = PHASE3B_NEW_TOOLS.filter((id) => !TOOL_BY_ID[id]?.implemented);
+  ok(`every Phase 3B new tool is implemented:true (missing: ${missing.join(",") || "none"})`, missing.length === 0);
+  for (const id of PHASE3B_NEW_TOOLS) {
+    ok(`${id} is in IMPLEMENTED_TOOLS`, IMPLEMENTED_TOOLS.some((t) => t.id === id));
+    ok(`${id} resolves to the "volume" category`, TOOL_BY_ID[id]?.category === "volume");
+    ok(`${id} declares fill capability (histogram opacity)`, TOOL_BY_ID[id]?.capabilities.fill === true);
+    ok(`${id} declares volumeProfile capability (rows/Value Area %/POC-VAH-VAL/etc)`, TOOL_BY_ID[id]?.capabilities.volumeProfile === true);
+  }
+  ok("Fixed Range Volume Profile is a 2-anchor drag tool", TOOL_BY_ID["vp-fixed"]?.interactionType === "drag" && TOOL_BY_ID["vp-fixed"]?.anchorCount === 2);
+  ok("Anchored Volume Profile is a single-click point tool (anchor -> most recent bar)", TOOL_BY_ID["vp-anchored"]?.interactionType === "point" && TOOL_BY_ID["vp-anchored"]?.anchorCount === 1);
+  ok("Fixed Range and Anchored Volume Profile are distinct tool ids", TOOL_BY_ID["vp-fixed"]?.id !== TOOL_BY_ID["vp-anchored"]?.id);
 }
 
 // ---- capability-gated settings sections have a real reason to exist -------

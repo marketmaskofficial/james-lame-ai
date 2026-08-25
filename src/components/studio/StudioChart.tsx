@@ -22,6 +22,11 @@ import {
   type FibLevel,
 } from "@/lib/drawing/calc";
 import { getToolStyleDefaults } from "@/lib/drawing/styleDefaults";
+import {
+  computeFixedRangeVolumeProfile,
+  computeAnchoredVolumeProfile,
+  type DrawingVolumeProfileResult,
+} from "@/lib/drawing/volumeProfile";
 
 /** Magnet strength for drawing-anchor snapping (distinct from the chart's own
  * `crosshairMagnet` display setting, which only affects the crosshair, not
@@ -722,6 +727,40 @@ export function StudioChart({
    * Parallel Channel: a drag for p1/p2 followed by one more click for the
    * width point). Cleared on commit, Escape, or a tool change. */
   const pendingRef = useRef<{ tool: DrawTool; anchors: MarketPoint[] } | null>(null);
+
+  // ---- Volume Profile (Phase 3B) calculation cache --------------------------
+  // Binning + Value Area math (see src/lib/drawing/volumeProfile.ts) is real
+  // work over however many bars fall in a profile's range — cheap for one
+  // call, but `drawOverlay()` below runs on EVERY animation frame (60fps,
+  // continuously, not just on interaction), so calling it unmemoized would
+  // redo that binning 60 times a second per Volume Profile drawing even while
+  // completely idle. Keyed by drawing id, with the cache entry itself carrying
+  // a composite key of every actual INPUT to the calculation (bar-array
+  // identity via length + first/last bar time, the resolved start/end time,
+  // rows, Value Area %) — a symbol/timeframe switch changes the bars key
+  // component automatically (new array, different length/edges), so a stale
+  // profile from a previous symbol can never leak through un-recomputed, with
+  // no special-case invalidation code needed. A plain component-scoped ref
+  // (not React state) so reading/writing it never triggers a re-render; one
+  // cache per StudioChart instance keeps it naturally isolated per chart pane
+  // in a multi-chart grid, same as every other per-instance ref here.
+  const vpCacheRef = useRef(new Map<string, { key: string; result: DrawingVolumeProfileResult }>());
+  const getVolumeProfileResult = (d: Drawing, bars: Bar[]): DrawingVolumeProfileResult => {
+    const rows = Math.max(2, Math.min(200, Math.round(Number(d.settings?.vpRows) || 24)));
+    const valueAreaPct = Math.min(1, Math.max(0.05, Number(d.settings?.vpValueAreaPct) || 0.7));
+    const lastBarTime = bars.length ? bars[bars.length - 1].time : 0;
+    const firstBarTime = bars.length ? bars[0].time : 0;
+    const endTime = d.tool === "vp-anchored" ? lastBarTime : d.p2.time;
+    const key = `${bars.length}:${firstBarTime}:${lastBarTime}:${d.p1.time}:${endTime}:${rows}:${valueAreaPct}`;
+    const cached = vpCacheRef.current.get(d.id);
+    if (cached && cached.key === key) return cached.result;
+    const result =
+      d.tool === "vp-anchored"
+        ? computeAnchoredVolumeProfile(bars, d.p1.time, rows, valueAreaPct)
+        : computeFixedRangeVolumeProfile(bars, d.p1.time, endTime, rows, valueAreaPct);
+    vpCacheRef.current.set(d.id, { key, result });
+    return result;
+  };
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
 
@@ -1397,6 +1436,17 @@ export function StudioChart({
     };
 
     const { indicators: inds, drawings: draws } = stateRef.current;
+    // Drop cached Volume Profile results for any drawing that no longer
+    // exists (deleted, or undone off the end of history) — keeps the cache
+    // from growing unbounded over a long session. Cheap: only ever iterates
+    // once per frame over however many profiles have EVER existed this
+    // session, not the whole drawings list.
+    if (vpCacheRef.current.size > 0) {
+      const liveIds = new Set(draws.map((d) => d.id));
+      for (const id of vpCacheRef.current.keys()) {
+        if (!liveIds.has(id) && id !== "__draft__") vpCacheRef.current.delete(id);
+      }
+    }
     const planBoxes: Array<{ id: string; x: number; y: number }> = [];
 
     // Telemetry for this frame, per indicator (not a global aggregate — with
@@ -1872,6 +1922,143 @@ export function StudioChart({
         ctx.restore();
         continue;
       }
+
+      if (d.tool === "vp-fixed" || d.tool === "vp-anchored") {
+        // Fixed Range / Anchored Volume Profile (Phase 3B): a horizontal
+        // volume histogram + POC/VAH/VAL over the REAL loaded bars in the
+        // drawing's range — see src/lib/drawing/volumeProfile.ts, which
+        // reuses stdlib.ts's `volumeProfile()` bucket math and
+        // volumeProfileMath.ts's `computeValueArea`, the exact same engines
+        // the existing Volume Profile widget already uses. Memoized (see
+        // getVolumeProfileResult above) so this never re-bins on every one
+        // of drawOverlay's 60fps frames — only when the range/anchor, bars,
+        // rows, or Value Area % actually change.
+        const bars = stateRef.current.bars;
+        const result = getVolumeProfileResult(d, bars);
+        const lastBarTime = bars.length ? bars[bars.length - 1].time : d.p1.time;
+        const rightTime = d.tool === "vp-anchored" ? lastBarTime : d.p2.time;
+        const leftTime = d.p1.time;
+        const xa = geometryReady ? logicalToPixel(ts, toLogicalD(leftTime), host.clientWidth) : null;
+        const xb = geometryReady ? logicalToPixel(ts, toLogicalD(rightTime), host.clientWidth) : null;
+        ctx.setLineDash([]);
+
+        if (xa == null || xb == null || result.bins.length === 0) {
+          // Safe empty/loading state — NEVER fabricate a result. Either bars
+          // haven't loaded yet, or genuinely no bar falls inside the
+          // selected range/anchor (e.g. dragged past the loaded edge, or an
+          // anchor placed after the last loaded bar).
+          if (xa != null && xb != null) {
+            const top = Math.max(d.p1.price, d.p2.price);
+            const bottom = Math.min(d.p1.price, d.p2.price);
+            const yTop = y(top);
+            const yBottom = y(bottom);
+            if (yTop != null && yBottom != null) {
+              const boxLeft = Math.min(xa, xb);
+              const boxTop = Math.min(yTop, yBottom);
+              ctx.save();
+              ctx.strokeStyle = withAlpha(col, Math.min(alpha, 0.4));
+              ctx.setLineDash([4, 3]);
+              ctx.lineWidth = 1;
+              ctx.strokeRect(boxLeft, boxTop, Math.max(1, Math.abs(xb - xa)), Math.max(1, Math.abs(yBottom - yTop)));
+              ctx.setLineDash([]);
+              ctx.fillStyle = withAlpha(col, Math.min(alpha, 0.8));
+              ctx.font = "10px ui-sans-serif, system-ui";
+              ctx.fillText(bars.length === 0 ? "Loading bars…" : "No bars in range", boxLeft + 4, boxTop + 12);
+              ctx.restore();
+            }
+          }
+          ctx.restore();
+          continue;
+        }
+
+        const showHistogram = d.settings?.vpShowHistogram !== false;
+        const showPoc = d.settings?.vpShowPoc !== false;
+        const showVah = d.settings?.vpShowVah !== false;
+        const showVal = d.settings?.vpShowVal !== false;
+        const showLabels = d.settings?.vpShowLabels !== false;
+        const widthPct = Math.min(100, Math.max(5, Number(d.settings?.vpWidthPct) || 60)) / 100;
+        const placement = d.settings?.vpPlacement === "left" ? "left" : "right";
+        const levelDashed = d.settings?.vpLevelLineStyle !== "solid";
+        const pocColor = (d.settings?.vpPocColor as string | undefined) ?? "#e6b800";
+        const vahColor = (d.settings?.vpVahColor as string | undefined) ?? "#22c55e";
+        const valColor = (d.settings?.vpValColor as string | undefined) ?? "#ef4444";
+        // Histogram density — a plain 0.14 "background fill" default (every
+        // other `fill`-capable shape's default) would make the actual
+        // content of this tool nearly invisible, so the settings popover
+        // seeds a higher default (0.5) specifically for volume-profile
+        // tools; this fallback just mirrors that same default, in case a
+        // drawing somehow reaches here with no settings at all yet.
+        const fillOpacityVp = (d.settings?.fillOpacity as number | undefined) ?? 0.5;
+
+        const left = Math.min(xa, xb);
+        const right = Math.max(xa, xb);
+        const rangeWidth = Math.max(1, right - left);
+        const maxVolume = result.bins.reduce((m, b) => Math.max(m, b.volume), 0);
+
+        if (showHistogram && maxVolume > 0) {
+          ctx.save();
+          ctx.setLineDash([]);
+          for (let i = 0; i < result.bins.length; i++) {
+            const bin = result.bins[i];
+            const yTopPx = y(bin.top);
+            const yBottomPx = y(bin.bottom);
+            if (yTopPx == null || yBottomPx == null) continue;
+            const barLen = Math.max(1, (bin.volume / maxVolume) * rangeWidth * widthPct);
+            const isPoc = i === result.valueArea.pocIndex;
+            const withinVA = bin.bottom >= result.valueArea.val - 1e-9 && bin.top <= result.valueArea.vah + 1e-9;
+            const barColor = isPoc ? pocColor : col;
+            const barAlpha = (isPoc ? Math.min(1, fillOpacityVp + 0.35) : withinVA ? fillOpacityVp : fillOpacityVp * 0.5) * alpha;
+            ctx.fillStyle = withAlpha(barColor, barAlpha);
+            const barX = placement === "right" ? right - barLen : left;
+            const barTop = Math.min(yTopPx, yBottomPx);
+            const barH = Math.max(1, Math.abs(yBottomPx - yTopPx));
+            ctx.fillRect(barX, barTop, barLen, barH);
+          }
+          ctx.restore();
+        }
+
+        // Faint outline of the profile's actual computed range (the real
+        // low..high of the included bars, not the user's raw click prices) —
+        // shows exactly which bars fed the calculation, and doubles as the
+        // whole-object drag/select hit region (see hitTest's `vp-fixed` /
+        // `vp-anchored` body block above, which computes the identical box).
+        const outlineTop = y(result.bins[result.bins.length - 1].top);
+        const outlineBottom = y(result.bins[0].bottom);
+        if (outlineTop != null && outlineBottom != null) {
+          ctx.save();
+          ctx.strokeStyle = withAlpha(col, Math.min(alpha, 0.35));
+          ctx.setLineDash([3, 3]);
+          ctx.lineWidth = 1;
+          ctx.strokeRect(left, Math.min(outlineTop, outlineBottom), rangeWidth, Math.max(1, Math.abs(outlineBottom - outlineTop)));
+          ctx.restore();
+        }
+
+        const drawLevelLine = (levelPrice: number, color: string, label: string) => {
+          const ly = y(levelPrice);
+          if (ly == null) return;
+          ctx.save();
+          ctx.strokeStyle = withAlpha(color, alpha);
+          ctx.setLineDash(levelDashed ? [5, 3] : []);
+          ctx.lineWidth = 1.25;
+          ctx.beginPath();
+          ctx.moveTo(left, ly);
+          ctx.lineTo(right, ly);
+          ctx.stroke();
+          if (showLabels) {
+            ctx.setLineDash([]);
+            ctx.fillStyle = withAlpha(color, alpha);
+            ctx.font = "10px ui-sans-serif, system-ui";
+            ctx.fillText(`${label} ${fmt(levelPrice)}`, right + 4, ly - 3);
+          }
+          ctx.restore();
+        };
+        if (showPoc && result.valueArea.pocIndex >= 0) drawLevelLine(result.valueArea.poc, pocColor, "POC");
+        if (showVah) drawLevelLine(result.valueArea.vah, vahColor, "VAH");
+        if (showVal) drawLevelLine(result.valueArea.val, valColor, "VAL");
+
+        ctx.restore();
+        continue;
+      }
       if (d.tool === "brush" || d.tool === "highlighter") {
         const pts = d.points && d.points.length > 0 ? d.points : [d.p1, d.p2];
         ctx.setLineDash([]);
@@ -2198,7 +2385,7 @@ export function StudioChart({
   // Read by drawOverlay() to render the in-progress preview.
   const previewPointRef = useRef<MarketPoint | null>(null);
 
-  const NO_ANCHOR_2_TOOLS = new Set<DrawTool>(["hline", "vline", "hray", "text", "marker", "vwap", "arrow-up", "arrow-down"]);
+  const NO_ANCHOR_2_TOOLS = new Set<DrawTool>(["hline", "vline", "hray", "text", "marker", "vwap", "vp-anchored", "arrow-up", "arrow-down"]);
 
   // Closest drawing to a screen point — used by Select/erase (inside the
   // pointer-interaction effect below) AND by the double-click-for-settings
@@ -2429,6 +2616,32 @@ export function StudioChart({
         ) {
           hit = { d, anchor: "body" };
         }
+        if ((d.tool === "vp-fixed" || d.tool === "vp-anchored") && !hit) {
+          // Whole-profile move region: the box spanning the profile's actual
+          // TIME range (start->end for Fixed Range, anchor->most-recent bar
+          // for Anchored — never d.p2 directly for Anchored, since p2 is
+          // just p1's mirror) and its actual computed PRICE range (the real
+          // low..high of the included bars, matching what's rendered — not
+          // just wherever the user happened to click vertically). Clicking
+          // anywhere inside selects/moves the whole drawing, same "body"
+          // anchor kind (and same generic shift-both-anchors drag code) every
+          // other filled shape already uses.
+          const result = getVolumeProfileResult(d, bars);
+          const rightTime = d.tool === "vp-anchored" ? (bars.length ? bars[bars.length - 1].time : d.p1.time) : d.p2.time;
+          const xa = toPx({ time: d.p1.time, price: 0 });
+          const xb = toPx({ time: rightTime, price: 0 });
+          const top = result.bins.length > 0 ? result.bins[result.bins.length - 1].top : Math.max(d.p1.price, d.p2.price);
+          const bottom = result.bins.length > 0 ? result.bins[0].bottom : Math.min(d.p1.price, d.p2.price);
+          const ya = toPy({ time: 0, price: top });
+          const yb = toPy({ time: 0, price: bottom });
+          if (
+            xa != null && xb != null && ya != null && yb != null &&
+            mx >= Math.min(xa, xb) && mx <= Math.max(xa, xb) &&
+            my >= Math.min(ya, yb) && my <= Math.max(ya, yb)
+          ) {
+            hit = { d, anchor: "body" };
+          }
+        }
       }
       return hit;
     };
@@ -2572,6 +2785,15 @@ export function StudioChart({
       }
       if (tool === "vwap") {
         onAddDrawing(stampNew({ tool: "vwap", p1: pt, p2: pt }));
+        return;
+      }
+      if (tool === "vp-anchored") {
+        // Single click, exactly like Anchored VWAP just above: p1 is the
+        // real anchor (a market TIME, never a pixel/index), p2 mirrors it
+        // purely so generic tool-agnostic code that only knows p1/p2 still
+        // resolves a sane position. The actual profile range (anchor -> most
+        // recent loaded bar) is recomputed fresh every render, never stored.
+        onAddDrawing(stampNew({ tool: "vp-anchored", p1: pt, p2: pt }));
         return;
       }
       if (tool === "arrow-up" || tool === "arrow-down") {

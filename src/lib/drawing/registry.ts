@@ -157,6 +157,10 @@ export type ToolCapabilities = {
   positionMetrics?: boolean;
   /** Anchor marker/label visibility toggle (Anchored VWAP). */
   anchorLabel?: boolean;
+  /** Volume Profile calculation + histogram settings (Phase 3B: Fixed Range /
+   * Anchored Volume Profile) — rows, Value Area %, profile width/placement,
+   * histogram/POC/VAH/VAL visibility + colors, level-line style, labels. */
+  volumeProfile?: boolean;
 };
 
 export type ToolDefaultStyle = {
@@ -267,8 +271,24 @@ export const TOOL_DEFS: ToolDef[] = [
   // ---- Volume-Based Tools ---------------------------------------------------
   // Real loaded OHLCV only — never fabricates volume (see calc.ts anchoredVwap).
   { id: "vwap", name: "Anchored VWAP", category: "volume", icon: Waves, interactionType: "point", anchorCount: 1, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: { color: "#4da3ff", width: 1.5, style: "solid" }, implemented: true },
-  { id: "vp-fixed", name: "Fixed Range Volume Profile", category: "volume", icon: BarChart2, interactionType: "drag", anchorCount: 2, capabilities: { fill: true }, defaultStyle: { color: "#4da3ff" }, implemented: false, note: "Reuses volumeProfileMath.ts's bucket math — not yet wired to a drawing object." },
-  { id: "vp-anchored", name: "Anchored Volume Profile", category: "volume", icon: BarChart2, interactionType: "point", anchorCount: 1, capabilities: { fill: true }, defaultStyle: { color: "#4da3ff" }, implemented: false },
+  // Fixed Range Volume Profile (Phase 3B): click-drag-release like every
+  // other 2-anchor "drag" tool (Trend/Rect/Fib/...) — mousedown is the
+  // "first click" (range start), the live drag IS the "with a live preview
+  // while selecting" requirement (the in-progress draft renders through the
+  // exact same histogram/POC/VAH/VAL code path as a committed one, so the
+  // preview is a REAL live-updating profile, not a placeholder rubber-band
+  // box), mouseup is the "second click" (range end). Reuses stdlib.ts's
+  // `volumeProfile()` bucket math + volumeProfileMath.ts's `computeValueArea`
+  // end to end (see src/lib/drawing/volumeProfile.ts) — the same engines the
+  // existing Volume Profile widget already uses, not a second implementation.
+  { id: "vp-fixed", name: "Fixed Range Volume Profile", category: "volume", icon: BarChart2, interactionType: "drag", anchorCount: 2, capabilities: { fill: true, volumeProfile: true }, defaultStyle: { color: "#4da3ff" }, implemented: true },
+  // Anchored Volume Profile (Phase 3B): single click like Anchored VWAP —
+  // profile runs from the anchor bar to the most recent/rightmost loaded
+  // bar (the standard "anchored to now" convention), recomputed fresh as
+  // more bars load without the anchor itself ever moving. Same calculation
+  // engine as Fixed Range (src/lib/drawing/volumeProfile.ts), its own
+  // distinct tool id/geometry per the phase brief — never an alias for it.
+  { id: "vp-anchored", name: "Anchored Volume Profile", category: "volume", icon: BarChart2, interactionType: "point", anchorCount: 1, capabilities: { fill: true, volumeProfile: true }, defaultStyle: { color: "#4da3ff" }, implemented: true },
 
   // ---- Brush / Freehand -----------------------------------------------------
   { id: "brush", name: "Brush", category: "brushes", icon: Pencil, interactionType: "freehand", anchorCount: "unlimited", capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 2 }, implemented: true },
