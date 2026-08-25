@@ -11,6 +11,8 @@ import {
   pixelDist,
   projectLineForward,
   projectLineBackward,
+  pointInEllipse,
+  pointInPolygon,
 } from "@/lib/drawing/geometry";
 import {
   DEFAULT_FIB_LEVELS,
@@ -217,7 +219,14 @@ export type Drawing = {
  * array, for code (serialization, tests, "does this fit on screen at all")
  * that genuinely doesn't care about each tool's specific anchor roles. */
 export function anchorsOf(d: Pick<Drawing, "p1" | "p2" | "points" | "tool">): MarketPoint[] {
-  if (d.tool === "brush" || d.tool === "highlighter") return d.points?.length ? d.points : [d.p1, d.p2];
+  // Brush/Highlighter (freehand) AND Polyline/Path (Phase 3A's controlled
+  // multi-click chain) all store their COMPLETE ordered vertex list in
+  // `points` — p1/p2 are kept mirrored to points[0]/points[last] purely so
+  // generic (tool-agnostic) code that only knows about p1/p2 still resolves
+  // a sane position, never the authoritative geometry.
+  if (d.tool === "brush" || d.tool === "highlighter" || d.tool === "polyline" || d.tool === "path") {
+    return d.points?.length ? d.points : [d.p1, d.p2];
+  }
   return [d.p1, d.p2, ...(d.points ?? [])];
 }
 
@@ -697,7 +706,13 @@ export function StudioChart({
   onRenderStatsRef.current = onRenderStats;
 
   const draftRef = useRef<Drawing | null>(null);
-  type AnchorKind = "p1" | "p2" | "p3" | "stop" | "body";
+  // `point:${index}` is Polyline/Path's per-vertex anchor kind (Phase 3A) —
+  // distinct from "p1"/"p2" so dragging vertex 0 or the last vertex can
+  // never be mistaken for the generic p1/p2 anchor path, which (for these
+  // two tools) would move the drawing's `points[0]`/`points[last]` mirror
+  // WITHOUT touching the authoritative `points` array itself, desyncing the
+  // rendered geometry from the dragged handle. See hitTest/onMove below.
+  type AnchorKind = "p1" | "p2" | "p3" | "stop" | "body" | `point:${number}`;
   const editRef = useRef<{
     drawing: Drawing;
     anchor: AnchorKind;
@@ -1750,14 +1765,27 @@ export function StudioChart({
       ctx.font = "11px ui-sans-serif, system-ui";
 
       if (d.id === selected) {
-        handles.push({ x: x1, y: y1 });
-        if (x2 != null && y2 != null && d.tool !== "hline" && d.tool !== "vline" && d.tool !== "hray" && d.tool !== "arrow-up" && d.tool !== "arrow-down")
-          handles.push({ x: x2, y: y2 });
-        const p3 = d.points?.[0];
-        if (p3 && (d.tool === "channel" || d.tool === "triangle")) {
-          const hx = px(p3);
-          const hy = py(p3);
-          if (hx != null && hy != null) handles.push({ x: hx, y: hy });
+        if (d.tool === "polyline" || d.tool === "path") {
+          // Every vertex gets its own handle (not just p1/p2) — Phase 3A's
+          // "each vertex has an editable anchor" requirement. p1/p2 are
+          // points[0]/points[last], so this already covers the endpoints
+          // too; no separate p1/p2 push needed.
+          const allPts = d.points && d.points.length > 0 ? d.points : [d.p1, d.p2];
+          for (const pt of allPts) {
+            const hx = px(pt);
+            const hy = py(pt);
+            if (hx != null && hy != null) handles.push({ x: hx, y: hy });
+          }
+        } else {
+          handles.push({ x: x1, y: y1 });
+          if (x2 != null && y2 != null && d.tool !== "hline" && d.tool !== "vline" && d.tool !== "hray" && d.tool !== "arrow-up" && d.tool !== "arrow-down")
+            handles.push({ x: x2, y: y2 });
+          const p3 = d.points?.[0];
+          if (p3 && (d.tool === "channel" || d.tool === "triangle")) {
+            const hx = px(p3);
+            const hy = py(p3);
+            if (hx != null && hy != null) handles.push({ x: hx, y: hy });
+          }
         }
       }
 
@@ -1863,6 +1891,38 @@ export function StudioChart({
         continue;
       }
 
+      if (d.tool === "polyline" || d.tool === "path") {
+        // Polyline/Path (Phase 3A): both store their full ordered vertex
+        // chain in `points` (see anchorsOf() above) and are rendered as one
+        // continuous line through every vertex — Path's ONE difference is
+        // closing the loop and filling it (driven by its `fill` capability
+        // flag in registry.ts, not a second render engine). Kept as its own
+        // early `continue` branch (mirroring Brush/Highlighter just above)
+        // rather than folded into the `x2 != null` shape chain below, since
+        // that chain only ever looks at p1/p2, never the full `points` array.
+        const pts = d.points && d.points.length > 0 ? d.points : [d.p1, d.p2];
+        ctx.beginPath();
+        let started = false;
+        for (const pt of pts) {
+          const sx = px(pt);
+          const sy = py(pt);
+          if (sx == null || sy == null) continue;
+          if (!started) {
+            ctx.moveTo(sx, sy);
+            started = true;
+          } else ctx.lineTo(sx, sy);
+        }
+        if (started) {
+          if (d.tool === "path") {
+            ctx.closePath();
+            ctx.fill();
+          }
+          ctx.stroke();
+        }
+        ctx.restore();
+        continue;
+      }
+
       if (d.tool === "hline" || d.tool === "hray") {
         const fromX = d.tool === "hray" ? x1 : 0;
         ctx.beginPath();
@@ -1908,7 +1968,12 @@ export function StudioChart({
         } else if (d.tool === "rect") {
           ctx.fillRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
           ctx.strokeRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
-        } else if (d.tool === "circle") {
+        } else if (d.tool === "circle" || d.tool === "ellipse") {
+          // Ellipse (Phase 3A) is a DISTINCT tool id from Circle but reuses
+          // this exact free-drag geometry 1:1, per registry.ts's comment —
+          // both anchors define a bounding box, rx/ry are that box's
+          // half-width/half-height. Nothing here needs to branch on which
+          // of the two it is.
           const cx = (x1 + x2) / 2;
           const cy = (y1 + y2) / 2;
           const rx = Math.abs(x2 - x1) / 2;
@@ -2063,17 +2128,31 @@ export function StudioChart({
     // clicks; Parallel Channel: drag then one more click) — Escape cancels
     // this without ever touching the committed `drawings` array.
     if (pending && pending.anchors.length > 0) {
-      const pts = pending.anchors.map((p) => ({ x: px(p), y: py(p) })).filter((p): p is { x: number; y: number } => p.x != null && p.y != null);
-      if (pts.length > 0) {
+      const committedPts = pending.anchors.map((p) => ({ x: px(p), y: py(p) })).filter((p): p is { x: number; y: number } => p.x != null && p.y != null);
+      // "A preview line follows the cursor while constructing" (Polyline's
+      // requirement) — extended to every multi-click tool that reaches this
+      // one shared preview renderer (Triangle/Channel get it for free too,
+      // rather than forking a second preview path) by appending the live
+      // cursor position (tracked in previewPointRef by onMove, see above) as
+      // one more line-only point. Only the ACTUALLY-committed anchors below
+      // get a solid handle dot — the cursor position never does.
+      let linePts = committedPts;
+      const cursorPt = previewPointRef.current;
+      if (cursorPt) {
+        const cx = px(cursorPt);
+        const cy = py(cursorPt);
+        if (cx != null && cy != null) linePts = [...committedPts, { x: cx, y: cy }];
+      }
+      if (linePts.length > 0) {
         ctx.save();
         ctx.strokeStyle = "rgba(230,184,0,0.7)";
         ctx.setLineDash([4, 3]);
         ctx.lineWidth = 1.5;
         ctx.beginPath();
-        ctx.moveTo(pts[0].x, pts[0].y);
-        for (const p of pts.slice(1)) ctx.lineTo(p.x, p.y);
+        ctx.moveTo(linePts[0].x, linePts[0].y);
+        for (const p of linePts.slice(1)) ctx.lineTo(p.x, p.y);
         ctx.stroke();
-        for (const p of pts) {
+        for (const p of committedPts) {
           ctx.fillStyle = "#e6b800";
           ctx.beginPath();
           ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
@@ -2151,14 +2230,22 @@ export function StudioChart({
         const x3 = p3 ? toPx(p3) : null;
         const y3 = p3 ? toPy(p3) : null;
 
-        if (x1 != null && y1 != null) {
+        // Polyline/Path are excluded from the generic p1/p2 anchor tests
+        // below — their p1/p2 are just a MIRROR of points[0]/points[last]
+        // (see anchorsOf()'s doc comment), and the generic p1/p2 drag path
+        // further down writes directly to `d.p1`/`d.p2` without touching
+        // `points`, which would desync the mirror from the authoritative
+        // vertex array. They get their own per-vertex hit test instead (see
+        // the `point:${i}` block below), which correctly writes back into
+        // `points` (and re-derives the p1/p2 mirror from it).
+        if (x1 != null && y1 != null && d.tool !== "polyline" && d.tool !== "path") {
           const dist = pixelDist(x1, y1, mx, my);
           if (dist < best) {
             best = dist;
             hit = { d, anchor: "p1" };
           }
         }
-        if (x2 != null && y2 != null && !NO_ANCHOR_2_TOOLS.has(d.tool)) {
+        if (x2 != null && y2 != null && !NO_ANCHOR_2_TOOLS.has(d.tool) && d.tool !== "polyline" && d.tool !== "path") {
           const dist = pixelDist(x2, y2, mx, my);
           if (dist < best) {
             best = dist;
@@ -2170,6 +2257,18 @@ export function StudioChart({
           if (dist < best) {
             best = dist;
             hit = { d, anchor: "p3" };
+          }
+        }
+        if ((d.tool === "polyline" || d.tool === "path") && d.points && d.points.length > 0) {
+          for (let i = 0; i < d.points.length; i++) {
+            const vx = toPx(d.points[i]);
+            const vy = toPy(d.points[i]);
+            if (vx == null || vy == null) continue;
+            const dist = pixelDist(vx, vy, mx, my);
+            if (dist < best) {
+              best = dist;
+              hit = { d, anchor: `point:${i}` as AnchorKind };
+            }
           }
         }
         if ((d.tool === "long" || d.tool === "short") && d.stop != null && x1 != null && x2 != null) {
@@ -2258,6 +2357,32 @@ export function StudioChart({
             }
           }
         }
+        if ((d.tool === "polyline" || d.tool === "path") && d.points && d.points.length > 1) {
+          // Hit-tests the ACTUAL line segments between consecutive vertices
+          // (never a bounding box) — same convention as Brush/Highlighter
+          // just above. Path additionally gets a real filled-interior test
+          // (`pointInPolygon`), so clicking anywhere inside a closed/filled
+          // Path selects it too, not just within a few pixels of its outline.
+          const pxPts = d.points.map((p) => [toPx(p), toPy(p)] as const);
+          for (let i = 0; i < pxPts.length - 1; i++) {
+            const [ax, ay] = pxPts[i];
+            const [bx, by] = pxPts[i + 1];
+            if (ax == null || ay == null || bx == null || by == null) continue;
+            const dist = distToSegment(mx, my, ax, ay, bx, by);
+            if (dist < best) {
+              best = dist;
+              hit = { d, anchor: "body" };
+            }
+          }
+          if (d.tool === "path" && !hit) {
+            const poly = pxPts
+              .filter((p): p is readonly [number, number] => p[0] != null && p[1] != null)
+              .map(([x, y]) => ({ x, y }));
+            if (poly.length > 2 && pointInPolygon(mx, my, poly)) {
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
         if (d.tool === "vwap") {
           const series = anchoredVwap(bars, d.p1.time);
           for (let i = 0; i < series.length - 1; i += 3) {
@@ -2282,6 +2407,21 @@ export function StudioChart({
           !hit
         ) {
           hit = { d, anchor: "body" };
+        }
+        if (
+          d.tool === "ellipse" && x1 != null && x2 != null && y1 != null && y2 != null && !hit
+        ) {
+          // Real ellipse-interior test, deliberately NOT the rectangular
+          // bounding-box shortcut Circle/Rect share just above — an
+          // ellipse's corners are empty space, and the phase brief
+          // specifically calls out avoiding an oversized hit region there.
+          const cx = (x1 + x2) / 2;
+          const cy = (y1 + y2) / 2;
+          const rx = Math.abs(x2 - x1) / 2;
+          const ry = Math.abs(y2 - y1) / 2;
+          if (pointInEllipse(mx, my, cx, cy, rx, ry)) {
+            hit = { d, anchor: "body" };
+          }
         }
         if (
           d.tool === "triangle" && x1 != null && y1 != null && x2 != null && y2 != null && x3 != null && y3 != null &&
@@ -2404,6 +2544,22 @@ export function StudioChart({
         return;
       }
 
+      if (tool === "polyline" || tool === "path") {
+        // Unlimited multi-click chain: first click starts it, every
+        // subsequent click appends one more vertex (unlike Triangle's fixed
+        // 3-click commit). Escape (see the keyboard effect below) already
+        // clears `pendingRef` generically, so cancel-mid-construction needs
+        // no tool-specific code. Finished by a double-click — see the
+        // `onFinishMultiPoint` dblclick handler registered below.
+        const pend = pendingRef.current;
+        if (!pend || pend.tool !== tool) {
+          pendingRef.current = { tool, anchors: [pt] };
+        } else {
+          pendingRef.current = { tool, anchors: [...pend.anchors, pt] };
+        }
+        return;
+      }
+
       if (tool === "hline" || tool === "vline" || tool === "hray") {
         onAddDrawing(stampNew({ tool, p1: pt, p2: pt }));
         return;
@@ -2452,6 +2608,24 @@ export function StudioChart({
           onUpdateDrawing({ ...edit.drawing, stop: pt.price, updatedAt: Date.now() });
         } else if (edit.anchor === "p3") {
           onUpdateDrawing({ ...edit.drawing, points: [pt], updatedAt: Date.now() });
+        } else if (edit.anchor.startsWith("point:")) {
+          // Polyline/Path per-vertex drag: updates ONLY that index in
+          // `points`, then re-derives the p1/p2 mirror from the (possibly
+          // now-different) first/last vertex — never touches p1/p2 directly,
+          // which is exactly the desync this anchor kind exists to avoid
+          // (see the `AnchorKind` type's doc comment above).
+          const idx = Number(edit.anchor.slice("point:".length));
+          const pts = edit.drawing.points ? [...edit.drawing.points] : [];
+          if (idx >= 0 && idx < pts.length) {
+            pts[idx] = pt;
+            onUpdateDrawing({
+              ...edit.drawing,
+              points: pts,
+              p1: pts[0],
+              p2: pts[pts.length - 1],
+              updatedAt: Date.now(),
+            });
+          }
         } else {
           onUpdateDrawing({ ...edit.drawing, [edit.anchor]: pt, updatedAt: Date.now() } as Drawing);
         }
@@ -2507,13 +2681,46 @@ export function StudioChart({
       onAddDrawing(stampNew(draft));
     };
 
+    // Finishes a Polyline/Path multi-click chain — the "established
+    // multi-click finish gesture" for THIS tool family, distinct from
+    // Triangle (auto-commits at a fixed 3 anchors) and Channel (drag + one
+    // more click). A double-click's second click already ran through
+    // `onDown` just before this fires (browser event order: pointerdown ->
+    // pointerup -> click -> pointerdown -> pointerup -> click -> dblclick),
+    // appending one more anchor essentially on top of the one before it —
+    // dropped here so the shape doesn't end with a zero-length final
+    // segment. This listener is a no-op for every other tool (it bails
+    // immediately unless a polyline/path chain is actually pending), so it
+    // can't collide with the OTHER dblclick effect further down (which only
+    // ever runs in Cursor/Select).
+    const onFinishMultiPoint = (e: MouseEvent) => {
+      const pend = pendingRef.current;
+      if (!pend || (pend.tool !== "polyline" && pend.tool !== "path")) return;
+      e.preventDefault();
+      let anchors = pend.anchors;
+      if (anchors.length >= 2) {
+        const bars = stateRef.current.bars;
+        const a = anchors[anchors.length - 1];
+        const b = anchors[anchors.length - 2];
+        const dl = Math.abs(timeToLogicalExtrapolated(bars, a.time) - timeToLogicalExtrapolated(bars, b.time));
+        if (dl < 0.5 && a.price === b.price) anchors = anchors.slice(0, -1);
+      }
+      pendingRef.current = null;
+      previewPointRef.current = null;
+      if (anchors.length < 2) return;
+      onAddDrawing(stampNew({ tool: pend.tool, p1: anchors[0], p2: anchors[anchors.length - 1], points: anchors }));
+      onSelectDrawing?.(null);
+    };
+
     canvas.addEventListener("pointerdown", onDown);
     canvas.addEventListener("pointermove", onMove);
     canvas.addEventListener("pointerup", onUp);
+    canvas.addEventListener("dblclick", onFinishMultiPoint);
     return () => {
       canvas.removeEventListener("pointerdown", onDown);
       canvas.removeEventListener("pointermove", onMove);
       canvas.removeEventListener("pointerup", onUp);
+      canvas.removeEventListener("dblclick", onFinishMultiPoint);
     };
   }, [tool, onAddDrawing, onRemoveDrawing, onUpdateDrawing, onSelectDrawing]);
 

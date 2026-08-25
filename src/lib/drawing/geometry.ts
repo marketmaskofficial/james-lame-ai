@@ -214,3 +214,49 @@ export function projectLineBackward(
   if (scale < 0) return { x: x1 + dx * scale, y: y1 + dy * scale };
   return { x: x1, y: y1 };
 }
+
+/**
+ * True if (px,py) lies inside (or exactly on) the axis-aligned ellipse
+ * centered at (cx,cy) with radii (rx,ry) — Phase 3A's Ellipse hit-test
+ * region. Deliberately a real interior test (same "click anywhere inside a
+ * filled shape selects it" convention StudioChart's own `pointInTriangle`
+ * already uses), NOT the looser rectangular-bounding-box shortcut Circle/
+ * Rect share — an ellipse's corners are empty space, and a box hit-test over
+ * those corners would be an "oversized rectangular hit region" the phase
+ * brief explicitly calls out to avoid for Ellipse specifically.
+ */
+export function pointInEllipse(
+  px: number,
+  py: number,
+  cx: number,
+  cy: number,
+  rx: number,
+  ry: number,
+): boolean {
+  const safeRx = Math.max(1e-9, rx);
+  const safeRy = Math.max(1e-9, ry);
+  const nx = (px - cx) / safeRx;
+  const ny = (py - cy) / safeRy;
+  return nx * nx + ny * ny <= 1;
+}
+
+/**
+ * True if (px,py) lies inside the closed polygon defined by `pts` (standard
+ * even-odd ray-casting test). Path's fill-interior hit-test region — the
+ * same interior-click convention as `pointInEllipse`/`pointInTriangle`,
+ * generalized to an arbitrary vertex count instead of exactly three, so a
+ * closed/filled Path is selectable anywhere inside it, not just within a few
+ * pixels of its outline.
+ */
+export function pointInPolygon(px: number, py: number, pts: { x: number; y: number }[]): boolean {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const xi = pts[i].x;
+    const yi = pts[i].y;
+    const xj = pts[j].x;
+    const yj = pts[j].y;
+    const intersects = yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi;
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}

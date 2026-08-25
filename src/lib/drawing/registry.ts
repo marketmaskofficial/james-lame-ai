@@ -18,7 +18,7 @@
  * "hidden until real" is both the safer and the simpler rule.
  */
 
-import type { ComponentType } from "react";
+import { createElement, type ComponentType } from "react";
 import {
   MousePointer2,
   TrendingUp,
@@ -57,8 +57,40 @@ import {
   Smile,
   Table,
   Ghost,
+  PenTool,
 } from "lucide-react";
 import type { DrawTool, DrawStyle } from "@/components/studio/StudioChart";
+
+/**
+ * Ellipse's own tile icon — a real oval, not a reused `Circle` glyph. Circle
+ * and Ellipse render through the same underlying free-drag geometry (see
+ * this file's `ellipse` entry below) and must stay distinct TOOL IDS per the
+ * phase brief, but sharing the round `Circle` icon on top of that would make
+ * the two tiles visually indistinguishable in the toolbar grid — a small,
+ * self-contained inline SVG (matching lucide's own viewBox/stroke
+ * conventions so it sits at identical size/weight next to every other tile)
+ * is cheaper than pulling in a whole icon library just for one oval glyph.
+ *
+ * Built with `createElement` rather than JSX: this module is a plain `.ts`
+ * file (not `.tsx`) — every existing call site (including the test suite's
+ * explicit `"../../src/lib/drawing/registry.ts"` import path) depends on
+ * that extension, so renaming it wasn't worth the churn for one glyph.
+ */
+function EllipseGlyph({ className }: { className?: string }) {
+  return createElement(
+    "svg",
+    {
+      viewBox: "0 0 24 24",
+      fill: "none",
+      stroke: "currentColor",
+      strokeWidth: 2,
+      strokeLinecap: "round",
+      strokeLinejoin: "round",
+      className,
+    },
+    createElement("ellipse", { cx: 12, cy: 12, rx: 9, ry: 6 }),
+  );
+}
 
 export type ToolGroupId =
   | "lines"
@@ -253,9 +285,30 @@ export const TOOL_DEFS: ToolDef[] = [
   { id: "circle", name: "Circle", category: "shapes", icon: Circle, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true, fill: true }, defaultStyle: { ...LINE_DEFAULT, fillOpacity: 0.14 }, implemented: true },
   { id: "triangle", name: "Triangle", category: "shapes", icon: Triangle, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, fill: true }, defaultStyle: { ...LINE_DEFAULT, fillOpacity: 0.14 }, implemented: true },
   { id: "rotated-rect", name: "Rotated Rectangle", category: "shapes", icon: RectangleHorizontal, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, fill: true }, defaultStyle: { ...LINE_DEFAULT, fillOpacity: 0.14 }, implemented: false, note: "Needs a rotation handle beyond the existing 2/3-anchor hit-test model." },
-  { id: "ellipse", name: "Ellipse", category: "shapes", icon: Circle, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true, fill: true }, defaultStyle: { ...LINE_DEFAULT, fillOpacity: 0.14 }, implemented: false, note: "Circle's existing free-drag geometry already draws a general ellipse (independent rx/ry) — a separate tool id would be a same-pixel-output duplicate, not a new capability." },
-  { id: "polyline", name: "Polyline", category: "shapes", icon: Spline, interactionType: "multi-click", anchorCount: "unlimited", capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: false },
-  { id: "path", name: "Path", category: "shapes", icon: Spline, interactionType: "multi-click", anchorCount: "unlimited", capabilities: { stroke: true, fill: true }, defaultStyle: LINE_DEFAULT, implemented: false },
+  // Ellipse (Phase 3A): reuses Circle's existing free-drag renderer 1:1 —
+  // both anchors define a bounding box, rx/ry come from that box's half-
+  // width/half-height, so an ellipse was already reachable by dragging
+  // Circle at an uneven aspect ratio. Kept as its OWN tool id (never merged
+  // into "circle") per the phase brief, so favorites/Objects-panel labels/
+  // settings-popover titles/persisted `tool` values stay honest about what
+  // the user actually drew. Hit-testing is genuinely distinct from Circle's
+  // (a real ellipse-interior test, not Circle's bounding-box shortcut) — see
+  // StudioChart.tsx's hitTest and geometry.ts's `pointInEllipse`.
+  { id: "ellipse", name: "Ellipse", category: "shapes", icon: EllipseGlyph, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true, fill: true }, defaultStyle: { ...LINE_DEFAULT, fillOpacity: 0.14 }, implemented: true },
+  // Polyline (Phase 3A): open, stroke-only multi-click chain — no `fill`
+  // capability, matching "Polyline is open/stroke-only" from the phase
+  // brief. Anchors are the FULL ordered vertex list in `points` (not
+  // collapsed to 2), each independently draggable — see anchorsOf() and
+  // StudioChart.tsx's `point:${index}` anchor kind.
+  { id: "polyline", name: "Polyline", category: "shapes", icon: Spline, interactionType: "multi-click", anchorCount: "unlimited", capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  // Path (Phase 3A): same multi-click/full-vertex-array data model as
+  // Polyline (deliberately — see StudioChart.tsx's anchorsOf/render/hit-test,
+  // which treat both as one family), but declares `fill` so the settings
+  // popover's Fill section (and this tool's own closed/filled render path)
+  // turns on — the one behavioral difference the phase brief asks for
+  // between the two, expressed as a capability flag rather than a
+  // hidden/duplicated tool.
+  { id: "path", name: "Path", category: "shapes", icon: PenTool, interactionType: "multi-click", anchorCount: "unlimited", capabilities: { stroke: true, fill: true }, defaultStyle: { ...LINE_DEFAULT, fillOpacity: 0.14 }, implemented: true },
   { id: "arc", name: "Arc", category: "shapes", icon: Compass, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: false },
   { id: "curve", name: "Curve", category: "shapes", icon: Spline, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: false },
   { id: "double-curve", name: "Double Curve", category: "shapes", icon: Hexagon, interactionType: "multi-click", anchorCount: 4, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: false },

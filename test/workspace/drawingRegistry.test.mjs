@@ -90,6 +90,50 @@ for (const t of TOOL_DEFS) {
   ok(`every Phase 2 new tool is implemented:true (missing: ${missing.join(",") || "none"})`, missing.length === 0);
 }
 
+// ---- Phase 3A additions this phase claims as "fully implemented" ----------
+// Only Ellipse/Polyline/Path — no other Phase 3 tool family may be flipped
+// on alongside them (see the DEFERRED_SAMPLE check below, which asserts
+// several still stay hidden).
+
+{
+  const PHASE3A_NEW_TOOLS = ["ellipse", "polyline", "path"];
+  const missing = PHASE3A_NEW_TOOLS.filter((id) => !TOOL_BY_ID[id]?.implemented);
+  ok(`every Phase 3A new tool is implemented:true (missing: ${missing.join(",") || "none"})`, missing.length === 0);
+  for (const id of PHASE3A_NEW_TOOLS) {
+    ok(`${id} is in IMPLEMENTED_TOOLS`, IMPLEMENTED_TOOLS.some((t) => t.id === id));
+    ok(`${id} resolves to the "shapes" category`, TOOL_BY_ID[id]?.category === "shapes");
+  }
+}
+
+// ---- Ellipse stays a DISTINCT tool id from Circle, never merged ------------
+// (the phase brief explicitly forbids collapsing them into one id even
+// though they share the same render geometry).
+
+{
+  ok("ellipse and circle are different tool ids", TOOL_BY_ID["ellipse"]?.id !== TOOL_BY_ID["circle"]?.id);
+  ok("ellipse has its own icon component, distinct from Circle's (visually distinguishable tiles)", TOOL_BY_ID["ellipse"]?.icon !== TOOL_BY_ID["circle"]?.icon);
+  ok("ellipse declares stroke capability", TOOL_BY_ID["ellipse"]?.capabilities.stroke === true);
+  ok("ellipse declares fill capability", TOOL_BY_ID["ellipse"]?.capabilities.fill === true);
+  ok("ellipse is a 2-anchor drag tool (bounding box, like Circle)", TOOL_BY_ID["ellipse"]?.interactionType === "drag" && TOOL_BY_ID["ellipse"]?.anchorCount === 2);
+}
+
+// ---- Polyline: open/stroke-only, unlimited multi-click chain ---------------
+
+{
+  ok("polyline declares stroke capability", TOOL_BY_ID["polyline"]?.capabilities.stroke === true);
+  ok("polyline has NO fill capability (open/unfilled per the phase brief)", !TOOL_BY_ID["polyline"]?.capabilities.fill);
+  ok("polyline is a multi-click tool with unlimited anchors", TOOL_BY_ID["polyline"]?.interactionType === "multi-click" && TOOL_BY_ID["polyline"]?.anchorCount === "unlimited");
+}
+
+// ---- Path: same multi-click data model as Polyline, but fill turns on -----
+
+{
+  ok("path declares stroke capability", TOOL_BY_ID["path"]?.capabilities.stroke === true);
+  ok("path declares fill capability (its one behavioral difference from Polyline)", TOOL_BY_ID["path"]?.capabilities.fill === true);
+  ok("path is a multi-click tool with unlimited anchors, same data model as Polyline", TOOL_BY_ID["path"]?.interactionType === "multi-click" && TOOL_BY_ID["path"]?.anchorCount === "unlimited");
+  ok("path has its own icon, distinct from Polyline's", TOOL_BY_ID["path"]?.icon !== TOOL_BY_ID["polyline"]?.icon);
+}
+
 // ---- deferred families stay hidden (implemented:false) — never a fake tool ---
 
 {

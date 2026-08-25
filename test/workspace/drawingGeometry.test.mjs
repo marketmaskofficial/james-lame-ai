@@ -20,6 +20,8 @@ import {
   distToSegment,
   projectLineForward,
   projectLineBackward,
+  pointInEllipse,
+  pointInPolygon,
 } from "../../src/lib/drawing/geometry.ts";
 
 let pass = 0;
@@ -147,6 +149,52 @@ close("distToSegment: point beyond the segment's end", distToSegment(15, 0, 0, 0
   ok("projectLineForward: vertical segment (dx=0) returns p2 unchanged, no NaN", fwd.x === 50 && fwd.y === 20);
   const back = projectLineBackward(50, 80, 50, 20);
   ok("projectLineBackward: vertical segment (dx=0) returns p1 unchanged, no NaN", back.x === 50 && back.y === 80);
+}
+
+// ---- pointInEllipse (Phase 3A: Ellipse's hit-test region) ------------------
+// Deliberately a real interior test, not Circle/Rect's looser rectangular
+// bounding-box shortcut — a point in a bounding-box corner (outside the
+// ellipse itself) must NOT hit.
+
+ok("pointInEllipse: center is inside", pointInEllipse(50, 50, 50, 50, 20, 10));
+ok("pointInEllipse: on the rim along the x-axis (exactly at rx)", pointInEllipse(70, 50, 50, 50, 20, 10));
+ok("pointInEllipse: on the rim along the y-axis (exactly at ry)", pointInEllipse(50, 60, 50, 50, 20, 10));
+ok(
+  "pointInEllipse: bounding-box CORNER is outside the ellipse (the whole point of not using a rect hit-test)",
+  !pointInEllipse(70, 60, 50, 50, 20, 10),
+);
+ok("pointInEllipse: clearly outside", !pointInEllipse(100, 100, 50, 50, 20, 10));
+ok("pointInEllipse: degenerate zero radius never divides by zero / never throws", pointInEllipse(50, 50, 50, 50, 0, 0) === true);
+ok("pointInEllipse: degenerate zero radius excludes a point a hair off-center", !pointInEllipse(51, 50, 50, 50, 0, 0));
+
+// ---- pointInPolygon (Phase 3A: Path's filled-interior hit-test region) ----
+
+{
+  // A simple square, (0,0)-(10,0)-(10,10)-(0,10).
+  const square = [
+    { x: 0, y: 0 },
+    { x: 10, y: 0 },
+    { x: 10, y: 10 },
+    { x: 0, y: 10 },
+  ];
+  ok("pointInPolygon: center of a square is inside", pointInPolygon(5, 5, square));
+  ok("pointInPolygon: clearly outside the square", !pointInPolygon(20, 20, square));
+  ok("pointInPolygon: outside along one axis only", !pointInPolygon(5, 20, square));
+}
+
+{
+  // A non-convex (L-shaped) polygon — the even-odd ray-casting test must
+  // still correctly exclude the notch, not just approximate a convex hull.
+  const lShape = [
+    { x: 0, y: 0 },
+    { x: 10, y: 0 },
+    { x: 10, y: 5 },
+    { x: 5, y: 5 },
+    { x: 5, y: 10 },
+    { x: 0, y: 10 },
+  ];
+  ok("pointInPolygon: inside the L-shape's solid arm", pointInPolygon(2, 2, lShape));
+  ok("pointInPolygon: inside the notch (removed corner) is OUTSIDE", !pointInPolygon(8, 8, lShape));
 }
 
 // ---- summary ----------------------------------------------------------------
