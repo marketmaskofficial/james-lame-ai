@@ -1992,8 +1992,43 @@ export function StudioChart({
 
         const left = Math.min(xa, xb);
         const right = Math.max(xa, xb);
+        // `rangeWidth` is the box's true pixel width for the drawing's actual
+        // selected market-time range — kept exactly as before for the outline
+        // rectangle and hit-test region below (never touched by the width fix
+        // that follows).
         const rangeWidth = Math.max(1, right - left);
         const maxVolume = result.bins.reduce((m, b) => Math.max(m, b.volume), 0);
+
+        // Histogram VISUAL width (Phase 3B follow-up): TradingView's
+        // convention draws the histogram at an independently-controlled
+        // width, not stretched across however wide the selected time range
+        // happens to be on screen. Scaling bar length against `rangeWidth`
+        // (as this used to do) meant Width % was really "% of the range box",
+        // so a wide time selection produced a wide-looking profile and a
+        // narrow one a barely-visible sliver, regardless of the Width %
+        // value. Bar LENGTH now scales against this chart pane's own pixel
+        // width instead — a fixed visual reference that doesn't grow/shrink
+        // just because the user dragged a wider or narrower time window —
+        // while the calculation range, anchors, outline box, and hit-test
+        // region above all continue to use the real market-time range
+        // unchanged. `host` is this chart instance's own container, so this
+        // reference is naturally per-chart-pane (never the window or another
+        // chart's pane) in multi-chart grid layouts.
+        //
+        // This is a deliberate middle ground, not full TradingView parity:
+        // true parity would need the histogram's rendered footprint to be
+        // pixel-exact regardless of pan/zoom, which would require converting
+        // anchors (or at least a width value) into persisted pixel space —
+        // breaking this drawing framework's "anchors are always market
+        // coordinates, never pixels" invariant (see geometry.ts's module
+        // doc) and this tool's own persistence contract (market-time range +
+        // settings only, never raw screen coordinates). Anchoring the
+        // reference to the chart pane's CSS width sidesteps that: it's
+        // recomputed fresh from the live DOM on every frame, exactly like
+        // `host.clientWidth` is already used elsewhere in this same function
+        // for time->pixel conversion, so nothing new is persisted and pan/
+        // zoom/resize all naturally recompute it.
+        const widthRefPx = host.clientWidth * 0.5;
 
         if (showHistogram && maxVolume > 0) {
           ctx.save();
@@ -2003,7 +2038,7 @@ export function StudioChart({
             const yTopPx = y(bin.top);
             const yBottomPx = y(bin.bottom);
             if (yTopPx == null || yBottomPx == null) continue;
-            const barLen = Math.max(1, (bin.volume / maxVolume) * rangeWidth * widthPct);
+            const barLen = Math.max(1, (bin.volume / maxVolume) * widthRefPx * widthPct);
             const isPoc = i === result.valueArea.pocIndex;
             const withinVA = bin.bottom >= result.valueArea.val - 1e-9 && bin.top <= result.valueArea.vah + 1e-9;
             const barColor = isPoc ? pocColor : col;
