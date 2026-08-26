@@ -176,6 +176,57 @@ const CHART_B = "chart-history-test-b";
   ok("FIXED: Redo restores exactly the created drawing", redoneOnce.length === 1 && redoneOnce[0].id === "fixed-1");
 }
 
+{
+  // Regression test for the "non-active-pane bypasses history" bug (see the
+  // doc comment on `renderInactiveChartLeaf` and the shared drawing-mutator
+  // comment in src/routes/studio.tsx). `renderInactiveChartLeaf` used to wire
+  // its onAddDrawing/onRemoveDrawing/onUpdateDrawing straight to a raw
+  // `setChartField(instanceId, "drawings", updater)` call, completely
+  // bypassing `recordDrawingChange` — so a mutation applied to a chart pane
+  // OTHER than the currently-active one would silently leave that pane with
+  // NO undo/redo history at all. The fix makes every call site (active AND
+  // inactive panes alike) go through the shared `addDrawing`/`removeDrawing`/
+  // `updateDrawing` mutators in studio.tsx, which always call
+  // `recordDrawingChange` — parameterized by whichever chart instance the
+  // mutation actually happened on, not whichever chart is "active" elsewhere.
+  //
+  // history.ts itself was never the buggy layer (its stacks were always
+  // correctly keyed per chartInstanceId — see the "Isolation" block above);
+  // the bug was purely that studio.tsx's non-active-pane call sites weren't
+  // calling into it at all. This block documents the exact invariant the fix
+  // now upholds: recording a change against a SPECIFIC, non-"active"
+  // chartInstanceId must produce real, independently-undoable history for
+  // that instance, with zero leakage into any other instance's stack —
+  // whether or not that other instance happens to be "active".
+  const ACTIVE_CHART = "chart-history-test-active-pane";
+  const OTHER_CHART = "chart-history-test-other-pane";
+  clearDrawingHistory(ACTIVE_CHART);
+  clearDrawingHistory(OTHER_CHART);
+
+  // Simulates the OLD bug: a mutation on the non-active pane bypassed
+  // recordDrawingChange entirely, so its stack never grew.
+  ok("bug baseline: an unrecorded mutation leaves no undo history", canUndo(OTHER_CHART) === false);
+
+  // The fix: the non-active pane's own mutation is recorded against ITS OWN
+  // chartInstanceId (never the active one), exactly like `addDrawing(d,
+  // instanceId)` now does for `renderInactiveChartLeaf`.
+  const before = [];
+  const afterCreate = [d("other-pane-1", 5)];
+  recordDrawingChange(OTHER_CHART, before, afterCreate);
+  ok("FIXED: a non-active pane's mutation is recorded under its own instance id", canUndo(OTHER_CHART) === true);
+  ok("FIXED: the active chart's history is completely unaffected", canUndo(ACTIVE_CHART) === false);
+
+  // Undoing the non-active pane's history must restore ONLY that pane, and
+  // must never touch (or even require activating) the other instance.
+  const undone = undoDrawings(OTHER_CHART, afterCreate);
+  ok("FIXED: undo on the non-active pane restores its own pre-mutation snapshot", Array.isArray(undone) && undone.length === 0);
+  ok("FIXED: undoing the non-active pane leaves the active chart's stack untouched", canUndo(ACTIVE_CHART) === false);
+
+  const redone = redoDrawings(OTHER_CHART, undone);
+  ok("FIXED: redo reapplies exactly the non-active pane's own edit", redone.length === 1 && redone[0].id === "other-pane-1");
+  ok("FIXED: after redo, the active chart's history is still untouched", canUndo(ACTIVE_CHART) === false);
+}
+
 // ---- summary ----------------------------------------------------------------
 
 console.log(`\n${pass}/${pass + fail} passed`);

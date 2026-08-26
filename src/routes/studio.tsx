@@ -2246,9 +2246,16 @@ function StudioWorkspace() {
   // within 400ms into the single history entry for "the whole drag/edit",
   // exactly like create/delete/setting-change each already are.
   const dragCoalesceRef = useRef<{ id: string; lastTs: number } | null>(null);
+  // `chartId` defaults to whichever chart is active, so every existing call
+  // site below that omits it (the active chart's own onAddDrawing/
+  // onRemoveDrawing/onUpdateDrawing wiring) keeps behaving exactly as
+  // before. `renderInactiveChartLeaf` passes its own pane's instanceId
+  // explicitly instead, so a drawing mutation on a non-active pane records
+  // history scoped to THAT pane, not whichever chart happens to be active —
+  // see the doc comment on `renderInactiveChartLeaf` for why that pane's
+  // callbacks must never bypass these shared, history-recording mutators.
   const addDrawing = useCallback(
-    (d: Drawing) => {
-      const chartId = activeChartInstanceIdRef.current;
+    (d: Drawing, chartId: string = activeChartInstanceIdRef.current) => {
       const prev = chartStatesMapRef.current[chartId]?.drawings ?? DEFAULT_CHART_RUNTIME_STATE.drawings;
       const after = [...prev, d];
       recordDrawingChange(chartId, prev, after);
@@ -2256,8 +2263,7 @@ function StudioWorkspace() {
     },
     [setChartField],
   );
-  const removeDrawing = useCallback((id: string) => {
-    const chartId = activeChartInstanceIdRef.current;
+  const removeDrawing = useCallback((id: string, chartId: string = activeChartInstanceIdRef.current) => {
     const prev = chartStatesMapRef.current[chartId]?.drawings ?? DEFAULT_CHART_RUNTIME_STATE.drawings;
     const after = prev.filter((d) => d.id !== id);
     if (after.length !== prev.length) {
@@ -2268,8 +2274,7 @@ function StudioWorkspace() {
     setDrawingSettingsFor((cur) => (cur === id ? null : cur));
   }, [setChartField]);
   const updateDrawing = useCallback(
-    (next: Drawing) => {
-      const chartId = activeChartInstanceIdRef.current;
+    (next: Drawing, chartId: string = activeChartInstanceIdRef.current) => {
       const prev = chartStatesMapRef.current[chartId]?.drawings ?? DEFAULT_CHART_RUNTIME_STATE.drawings;
       const after = prev.map((d) => (d.id === next.id ? next : d));
       const now = Date.now();
@@ -3782,15 +3787,21 @@ function StudioWorkspace() {
               indicators={inst.indicators}
               tool="cursor"
               drawings={inst.drawings}
-              onAddDrawing={(d) => setChartField(instanceId, "drawings", (prev) => [...prev, d])}
-              onRemoveDrawing={(id) =>
-                setChartField(instanceId, "drawings", (prev) => prev.filter((d) => d.id !== id))
-              }
-              onUpdateDrawing={(updated) =>
-                setChartField(instanceId, "drawings", (prev) =>
-                  prev.map((d) => (d.id === updated.id ? updated : d)),
-                )
-              }
+              // Routed through the SAME history-recording mutators the active
+              // chart uses (see their doc comment above), explicitly scoped to
+              // THIS pane's own instanceId — never bypassed via a raw
+              // setChartField call, which would silently skip
+              // recordDrawingChange and leave this pane with no undo/redo for
+              // the mutation. In practice `tool="cursor"`/`selectedId={null}`/
+              // `onSelectDrawing={() => {}}` just below mean StudioChart never
+              // actually invokes these on an inactive pane today (creation,
+              // drag, and delete-key removal all require a non-cursor tool or
+              // a selection, neither of which this leaf ever has) — but wiring
+              // them correctly here removes the footgun for whenever that
+              // changes, and matches every other mutation path's contract.
+              onAddDrawing={(d) => addDrawing(d, instanceId)}
+              onRemoveDrawing={(id) => removeDrawing(id, instanceId)}
+              onUpdateDrawing={(updated) => updateDrawing(updated, instanceId)}
               selectedId={null}
               onSelectDrawing={() => {}}
               hasOscPane={inst.indicators.some((i) => i.result.plots.some((p) => p.pane === "osc"))}
