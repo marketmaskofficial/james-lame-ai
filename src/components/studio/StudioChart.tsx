@@ -2725,6 +2725,18 @@ export function StudioChart({
             hit = { d, anchor: "p3" };
           }
         }
+        // Fibonacci Retracement's 0%/100% level lines sit exactly on p1/p2 (a
+        // level line's price IS one of the two anchors' own price at those
+        // ratios), and the three Phase 3C Fib tools have the same overlap
+        // with their own anchors (see the longer comment just above the
+        // fib-ext/fib-channel/fib-wedge body checks below) — so a BODY
+        // hit-test built from line/segment distance can report a smaller
+        // distance than the anchor's own point distance for a click already
+        // within the anchor's 14px handle radius. Computed once per drawing,
+        // right after every anchor check above has had its chance to match,
+        // so every body hit-test below (not just the Fib family) can defer
+        // to an anchor this same drawing already matched.
+        const anchorAlreadyHitOnThisDrawing = hit !== null && hit.d === d && hit.anchor !== "body";
         if ((d.tool === "polyline" || d.tool === "path") && d.points && d.points.length > 0) {
           for (let i = 0; i < d.points.length; i++) {
             const vx = toPx(d.points[i]);
@@ -2791,7 +2803,7 @@ export function StudioChart({
             hit = { d, anchor: "body" };
           }
         }
-        if (d.tool === "fib" && x1 != null && x2 != null) {
+        if (d.tool === "fib" && x1 != null && x2 != null && !anchorAlreadyHitOnThisDrawing) {
           // Hit-tests each rendered LEVEL line, not just the (usually
           // invisible-in-practice) diagonal between the two anchors — a Fib
           // Retracement is visually its horizontal levels, so that's what a
@@ -2810,7 +2822,14 @@ export function StudioChart({
             }
           }
         }
-        if (d.tool === "fib-ext" && x3 != null && p3) {
+        // A Trend-Based Fib Extension's 0% level line sits exactly on C, a
+        // Fib Channel's ratio-0/ratio-1 rails sit exactly on p1/p2/the width
+        // anchor, and a Fib Wedge's rays all originate at the pivot — same
+        // "body hit-test can out-score the anchor's own point distance"
+        // overlap as Fib Retracement above, guarded by the same
+        // `anchorAlreadyHitOnThisDrawing` flag computed right after the
+        // anchor checks further up.
+        if (d.tool === "fib-ext" && x3 != null && p3 && !anchorAlreadyHitOnThisDrawing) {
           // Same "hit-test the rendered level lines, not a diagonal" pattern
           // as Retracement above, projected from C instead of between the
           // two anchors — matches paintFibExtension's own geometry exactly.
@@ -2828,7 +2847,7 @@ export function StudioChart({
             }
           }
         }
-        if (d.tool === "fib-channel" && x1 != null && y1 != null && x2 != null && y2 != null && x3 != null && y3 != null && p3) {
+        if (d.tool === "fib-channel" && x1 != null && y1 != null && x2 != null && y2 != null && x3 != null && y3 != null && p3 && !anchorAlreadyHitOnThisDrawing) {
           // Hit-tests the extended trend line AND every parallel rail —
           // exactly the segments paintFibChannel actually draws.
           const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
@@ -2846,7 +2865,7 @@ export function StudioChart({
             }
           }
         }
-        if (d.tool === "fib-wedge" && x1 != null && y1 != null && x3 != null && p3) {
+        if (d.tool === "fib-wedge" && x1 != null && y1 != null && x3 != null && p3 && !anchorAlreadyHitOnThisDrawing) {
           // Hit-tests each drawn RAY (pivot -> extended Fibonacci point),
           // never a bounding box — same segment-distance convention as every
           // other line-based tool's hit-test.
