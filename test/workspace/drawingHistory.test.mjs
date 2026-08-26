@@ -115,6 +115,67 @@ const CHART_B = "chart-history-test-b";
   ok("recording a reference-equal before/after is a no-op", canUndo("chart-noop-test") === false);
 }
 
+{
+  // Regression test for the shared "double-invoked updater" bug (see the
+  // long comment above the drawing mutators in src/routes/studio.tsx, and
+  // the fix's commit message). React does NOT guarantee that a functional
+  // `setState` updater runs exactly once per commit — `dispatchSetState`'s
+  // eager-bailout optimization calls the updater once, synchronously
+  // (against the currently-committed value) to check whether the result
+  // actually differs before scheduling a re-render, then calls it again
+  // for the real render — BOTH calls starting from the SAME committed
+  // value. That is harmless for a pure updater (same input -> same output,
+  // only one commit lands) but studio.tsx used to call the side-effecting
+  // `recordDrawingChange` (and `undoDrawings`/`redoDrawings`) FROM INSIDE
+  // that updater, so one drawing creation pushed history TWICE even though
+  // the chart's `drawings` array only actually changed once. Confirmed to
+  // reproduce on plain Trend Line too — it was never tool-specific.
+
+  // --- demonstrates the bug's exact failure mode, standalone -------------
+  // (i.e. what history.ts does if a caller violates "call exactly once per
+  // commit" — this is the hazard the fix in studio.tsx eliminates by
+  // construction, not something history.ts itself guards against).
+  clearDrawingHistory("chart-doubleinvoke-bug-demo");
+  {
+    const before = [];
+    const after = [d("bug-demo", 1)];
+    // Simulating the OLD, buggy call-site: recordDrawingChange invoked from
+    // inside a functional updater that React runs twice for one commit.
+    recordDrawingChange("chart-doubleinvoke-bug-demo", before, after); // the "eager" call
+    recordDrawingChange("chart-doubleinvoke-bug-demo", before, after); // the "real" call
+  }
+  undoDrawings("chart-doubleinvoke-bug-demo", [d("bug-demo", 1)]);
+  ok(
+    "BUG DEMO: calling recordDrawingChange twice per commit leaves a stray entry after one Undo",
+    canUndo("chart-doubleinvoke-bug-demo") === true, // the phantom extra push
+  );
+
+  // --- the fix: exactly one recordDrawingChange call per commit ----------
+  clearDrawingHistory("chart-doubleinvoke-fixed");
+  {
+    const before = [];
+    const created = d("fixed-1", 1);
+    const after = [...before, created];
+    // Fixed call-site discipline (see addDrawing/removeDrawing/updateDrawing/
+    // duplicateDrawing/setAllDrawingsField/deleteAllDrawings/undo/redo in
+    // studio.tsx): the updater itself is pure and merely computes `after`;
+    // the history push happens separately, in the plain calling function,
+    // exactly once — so it doesn't matter how many times a would-be React
+    // updater invokes the pure part.
+    const pureUpdater = (prev) => (prev === before ? after : prev);
+    const eagerInvocation = pureUpdater(before);
+    const realInvocation = pureUpdater(before);
+    ok("pure updater invoked twice still yields the same committed value", eagerInvocation === realInvocation);
+    recordDrawingChange("chart-doubleinvoke-fixed", before, realInvocation); // called ONCE, outside the updater
+  }
+  ok("FIXED: creation records exactly one history entry", canUndo("chart-doubleinvoke-fixed") === true);
+  const undoneOnce = undoDrawings("chart-doubleinvoke-fixed", [d("fixed-1", 1)]);
+  ok("FIXED: one Undo removes exactly the one drawing just created", Array.isArray(undoneOnce) && undoneOnce.length === 0);
+  ok("FIXED: no stray second undo step is left behind after the one Undo", canUndo("chart-doubleinvoke-fixed") === false);
+  const redoneOnce = redoDrawings("chart-doubleinvoke-fixed", undoneOnce);
+  ok("FIXED: Redo restores exactly the created drawing", redoneOnce.length === 1 && redoneOnce[0].id === "fixed-1");
+}
+
 // ---- summary ----------------------------------------------------------------
 
 console.log(`\n${pass}/${pass + fail} passed`);

@@ -707,6 +707,22 @@ function StudioWorkspace() {
   const [chartStatesMap, setChartStatesMap] = useState<Record<string, ChartRuntimeState>>({
     "chart-1": DEFAULT_CHART_RUNTIME_STATE,
   });
+  // Mirrors `chartStatesMap` for synchronous reads from plain event-handler
+  // functions (drawing create/edit/delete/undo/redo below) that must NOT
+  // read state via a `setState` functional updater — see the long comment
+  // above `addDrawing` for why. Kept in sync two ways: unconditionally every
+  // render (covers the common case), AND eagerly inside `setChartField`
+  // itself right when a new value is computed (covers back-to-back mutator
+  // calls within the same synchronous tick, before React has re-rendered).
+  // The eager write is safe to happen more than once for one call — like any
+  // functional `setState` updater, React may invoke this one more than once
+  // for a single commit (e.g. its eager-bailout check on an idle fiber), but
+  // both invocations start from the same `prev` and so compute the same
+  // `nextState`; assigning the same value to a ref twice is harmless. That
+  // is the key distinction from the bug this file fixes: assignment is
+  // idempotent, pushing a history entry is not.
+  const chartStatesMapRef = useRef(chartStatesMap);
+  chartStatesMapRef.current = chartStatesMap;
   const [activeChartInstanceId, setActiveChartInstanceId] = useState("chart-1");
   // Read inside the market-data effect's async .then() to confirm the fetch
   // is still for whichever chart is active NOW before touching the
@@ -726,7 +742,9 @@ function StudioWorkspace() {
         const cur = prev[instanceId] ?? DEFAULT_CHART_RUNTIME_STATE;
         const nextVal = typeof value === "function" ? (value as (p: ChartRuntimeState[K]) => ChartRuntimeState[K])(cur[field]) : value;
         if (nextVal === cur[field]) return prev;
-        return { ...prev, [instanceId]: { ...cur, [field]: nextVal } };
+        const nextState = { ...prev, [instanceId]: { ...cur, [field]: nextVal } };
+        chartStatesMapRef.current = nextState;
+        return nextState;
       });
     },
     [],
@@ -2200,54 +2218,78 @@ function StudioWorkspace() {
   // actually active at the moment it fires.
   //
   // History (src/lib/drawing/history.ts) is a full before/after array
-  // snapshot per committed change. `updateDrawing` also backs StudioChart's
-  // per-pointermove drag callback, which would otherwise record one history
-  // entry per animation frame — `dragCoalesceRef` collapses any burst of
-  // updates to the SAME drawing within 400ms into the single history entry
-  // for "the whole drag/edit", exactly like create/delete/setting-change
-  // each already are.
+  // snapshot per committed change. IMPORTANT: `recordDrawingChange` (and
+  // `undoDrawings`/`redoDrawings`, which pop/push those same stacks) are
+  // side-effecting — each call mutates history.ts's module-level stacks by
+  // one entry. They must therefore never be called from INSIDE a functional
+  // `setState` updater passed to `setChartField`/`setChartStatesMap`: React
+  // does not guarantee an updater runs exactly once per commit (e.g. its
+  // eager-bailout optimization calls it once synchronously to check whether
+  // the new state actually differs, then again for the real commit) — fine
+  // for a pure computation like `[...prev, d]` since both calls produce the
+  // same output, but for a side effect like "push a history entry" the
+  // second call is a real, extra mutation, and one Undo would then need two
+  // presses to fully undo one drawing (or leave a stray future entry). This
+  // was confirmed to reproduce on plain Trend Line too, i.e. it's this
+  // shared mechanism, not any one tool.
+  //
+  // The fix: read the pre-change value synchronously from `chartStatesMapRef`
+  // (kept fresh outside of React's render/commit cycle — see its own
+  // comment), compute `after` and call the history side effect exactly once
+  // in this plain function body, then commit with a PLAIN value (not a
+  // function) via `setChartField` — so there is no updater function left for
+  // React to invoke more than once.
+  //
+  // `updateDrawing` also backs StudioChart's per-pointermove drag callback,
+  // which would otherwise record one history entry per animation frame —
+  // `dragCoalesceRef` collapses any burst of updates to the SAME drawing
+  // within 400ms into the single history entry for "the whole drag/edit",
+  // exactly like create/delete/setting-change each already are.
   const dragCoalesceRef = useRef<{ id: string; lastTs: number } | null>(null);
   const addDrawing = useCallback(
-    (d: Drawing) =>
-      setChartField(activeChartInstanceIdRef.current, "drawings", (prev) => {
-        const after = [...prev, d];
-        recordDrawingChange(activeChartInstanceIdRef.current, prev, after);
-        return after;
-      }),
+    (d: Drawing) => {
+      const chartId = activeChartInstanceIdRef.current;
+      const prev = chartStatesMapRef.current[chartId]?.drawings ?? DEFAULT_CHART_RUNTIME_STATE.drawings;
+      const after = [...prev, d];
+      recordDrawingChange(chartId, prev, after);
+      setChartField(chartId, "drawings", after);
+    },
     [setChartField],
   );
   const removeDrawing = useCallback((id: string) => {
-    setChartField(activeChartInstanceIdRef.current, "drawings", (prev) => {
-      const after = prev.filter((d) => d.id !== id);
-      if (after.length === prev.length) return prev;
-      recordDrawingChange(activeChartInstanceIdRef.current, prev, after);
-      return after;
-    });
+    const chartId = activeChartInstanceIdRef.current;
+    const prev = chartStatesMapRef.current[chartId]?.drawings ?? DEFAULT_CHART_RUNTIME_STATE.drawings;
+    const after = prev.filter((d) => d.id !== id);
+    if (after.length !== prev.length) {
+      recordDrawingChange(chartId, prev, after);
+      setChartField(chartId, "drawings", after);
+    }
     setSelectedDrawing((cur) => (cur === id ? null : cur));
     setDrawingSettingsFor((cur) => (cur === id ? null : cur));
   }, [setChartField]);
   const updateDrawing = useCallback(
-    (next: Drawing) =>
-      setChartField(activeChartInstanceIdRef.current, "drawings", (prev) => {
-        const after = prev.map((d) => (d.id === next.id ? next : d));
-        const now = Date.now();
-        const active = dragCoalesceRef.current;
-        if (!active || active.id !== next.id || now - active.lastTs > 400) {
-          recordDrawingChange(activeChartInstanceIdRef.current, prev, after);
-        }
-        dragCoalesceRef.current = { id: next.id, lastTs: now };
-        return after;
-      }),
+    (next: Drawing) => {
+      const chartId = activeChartInstanceIdRef.current;
+      const prev = chartStatesMapRef.current[chartId]?.drawings ?? DEFAULT_CHART_RUNTIME_STATE.drawings;
+      const after = prev.map((d) => (d.id === next.id ? next : d));
+      const now = Date.now();
+      const active = dragCoalesceRef.current;
+      if (!active || active.id !== next.id || now - active.lastTs > 400) {
+        recordDrawingChange(chartId, prev, after);
+      }
+      dragCoalesceRef.current = { id: next.id, lastTs: now };
+      setChartField(chartId, "drawings", after);
+    },
     [setChartField],
   );
   const duplicateDrawing = useCallback((d: Drawing) => {
     const now = Date.now();
     const copy: Drawing = { ...d, id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, createdAt: now, updatedAt: now };
-    setChartField(activeChartInstanceIdRef.current, "drawings", (prev) => {
-      const after = [...prev, copy];
-      recordDrawingChange(activeChartInstanceIdRef.current, prev, after);
-      return after;
-    });
+    const chartId = activeChartInstanceIdRef.current;
+    const prev = chartStatesMapRef.current[chartId]?.drawings ?? DEFAULT_CHART_RUNTIME_STATE.drawings;
+    const after = [...prev, copy];
+    recordDrawingChange(chartId, prev, after);
+    setChartField(chartId, "drawings", after);
     setSelectedDrawing(copy.id);
   }, [setChartField]);
 
@@ -2255,30 +2297,36 @@ function StudioWorkspace() {
   // scoped to `activeChartInstanceIdRef.current` alone, never touching
   // indicators, chart data, or another chart instance's drawings.
   const setAllDrawingsField = useCallback(
-    (field: "locked" | "hidden", value: boolean) =>
-      setChartField(activeChartInstanceIdRef.current, "drawings", (prev) => {
-        const after = prev.map((d) => ({ ...d, [field]: value, updatedAt: Date.now() }));
-        recordDrawingChange(activeChartInstanceIdRef.current, prev, after);
-        return after;
-      }),
+    (field: "locked" | "hidden", value: boolean) => {
+      const chartId = activeChartInstanceIdRef.current;
+      const prev = chartStatesMapRef.current[chartId]?.drawings ?? DEFAULT_CHART_RUNTIME_STATE.drawings;
+      const after = prev.map((d) => ({ ...d, [field]: value, updatedAt: Date.now() }));
+      recordDrawingChange(chartId, prev, after);
+      setChartField(chartId, "drawings", after);
+    },
     [setChartField],
   );
   const deleteAllDrawings = useCallback(() => {
-    setChartField(activeChartInstanceIdRef.current, "drawings", (prev) => {
-      if (prev.length === 0) return prev;
-      recordDrawingChange(activeChartInstanceIdRef.current, prev, []);
-      return [];
-    });
+    const chartId = activeChartInstanceIdRef.current;
+    const prev = chartStatesMapRef.current[chartId]?.drawings ?? DEFAULT_CHART_RUNTIME_STATE.drawings;
+    if (prev.length > 0) {
+      recordDrawingChange(chartId, prev, []);
+      setChartField(chartId, "drawings", []);
+    }
     setSelectedDrawing(null);
     setDrawingSettingsFor(null);
   }, [setChartField]);
   const undoDrawingsForActive = useCallback(() => {
     const id = activeChartInstanceIdRef.current;
-    setChartField(id, "drawings", (prev) => undoDrawings(id, prev) ?? prev);
+    const current = chartStatesMapRef.current[id]?.drawings ?? DEFAULT_CHART_RUNTIME_STATE.drawings;
+    const prevSnapshot = undoDrawings(id, current);
+    if (prevSnapshot !== null) setChartField(id, "drawings", prevSnapshot);
   }, [setChartField]);
   const redoDrawingsForActive = useCallback(() => {
     const id = activeChartInstanceIdRef.current;
-    setChartField(id, "drawings", (prev) => redoDrawings(id, prev) ?? prev);
+    const current = chartStatesMapRef.current[id]?.drawings ?? DEFAULT_CHART_RUNTIME_STATE.drawings;
+    const nextSnapshot = redoDrawings(id, current);
+    if (nextSnapshot !== null) setChartField(id, "drawings", nextSnapshot);
   }, [setChartField]);
 
   // Ctrl/Cmd+Z / Ctrl/Cmd+Shift+Z: undo/redo the ACTIVE chart's drawings
