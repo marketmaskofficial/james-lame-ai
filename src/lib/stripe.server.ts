@@ -9,6 +9,20 @@ const getEnv = (key: string): string => {
 export type StripeEnv = "sandbox" | "live";
 
 /**
+ * Server-side counterpart of stripe.ts's client-side `paymentsEnabled()` —
+ * same intent (temporary beta-wide kill switch, not a dev-only bypass),
+ * read from real Node `process.env` since server functions execute
+ * per-request rather than being build-time-inlined like `import.meta.env.
+ * VITE_*`. Both flags must be set together to fully disable the flow (this
+ * one guards the server functions directly, as defense-in-depth in case
+ * anything ever calls them while the client-side flag says disabled).
+ * Defaults to enabled unless explicitly set to "false".
+ */
+export function paymentsEnabled(): boolean {
+  return process.env.PAYMENTS_ENABLED !== "false";
+}
+
+/**
  * The single paid beta plan's Stripe Price lookup_key. This is the ONE place
  * that names it — `getBetaPlan` reads the live price (amount, currency,
  * interval, product name) from Stripe by this key so the pricing page never

@@ -1,5 +1,5 @@
 import { supabase } from "@/integrations/supabase/client";
-import { getStripeEnvironment } from "@/lib/stripe";
+import { getStripeEnvironment, paymentsEnabled } from "@/lib/stripe";
 
 export interface SubscriptionRow {
   status: string;
@@ -109,6 +109,13 @@ export async function checkStudioAccess(): Promise<StudioAccessResult> {
   // whatever Stripe config it depends on) is ever skipped by this flag. See
   // `isStudioGateLocalPaidBypassed`'s docstring for the full guard contract.
   if (isStudioGateLocalPaidBypassed()) return "ok";
+
+  // Temporary payments-disabled beta mode (see stripe.ts's `paymentsEnabled`
+  // docstring) — while active, any authenticated user gets Studio access
+  // without a real subscription, consistent with what /pricing tells them.
+  // Unlike the two bypasses above, this is NOT dev-only: it's meant to work
+  // identically in any environment where the flag is set.
+  if (!paymentsEnabled()) return "ok";
 
   let env: "sandbox" | "live";
   try {

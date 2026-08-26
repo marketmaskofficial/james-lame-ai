@@ -6,7 +6,7 @@ import { useSubscription } from "@/hooks/useSubscription";
 import { StripeEmbeddedCheckout } from "@/components/StripeEmbeddedCheckout";
 import { PaymentTestModeBanner } from "@/components/PaymentTestModeBanner";
 import { createPortalSession, getBetaPlan, type BetaPlanResult } from "@/lib/payments.functions";
-import { getStripeEnvironment } from "@/lib/stripe";
+import { getStripeEnvironment, paymentsEnabled } from "@/lib/stripe";
 import { useServerFn } from "@tanstack/react-start";
 
 export const Route = createFileRoute("/pricing")({
@@ -54,6 +54,13 @@ function Pricing() {
   const [plan, setPlan] = useState<BetaPlanResult | { status: "loading" }>({ status: "loading" });
 
   useEffect(() => {
+    // Checked before anything else: while the beta runs with checkout
+    // disabled, /pricing never calls getBetaPlan(), never resolves a Stripe
+    // environment, and never touches the Lovable gateway or Stripe at all.
+    if (!paymentsEnabled()) {
+      setPlan({ status: "disabled" });
+      return;
+    }
     let cancelled = false;
     let environment: ReturnType<typeof getStripeEnvironment>;
     try {
@@ -90,6 +97,7 @@ function Pricing() {
 
   const planLoaded = "priceLookupKey" in plan;
   const planErrored = "error" in plan;
+  const planDisabled = "status" in plan && plan.status === "disabled";
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -118,7 +126,7 @@ function Pricing() {
           </p>
         </div>
 
-        {checkingOut ? (
+        {checkingOut && !planDisabled ? (
           <div className="mx-auto mt-10 max-w-2xl rounded-xl border border-border bg-card p-4">
             <button
               onClick={() => setCheckingOut(false)}
@@ -135,7 +143,9 @@ function Pricing() {
                 {planLoaded ? plan.productName : "Signal Goat AI Beta"}
               </div>
               <div className="mt-2 text-4xl font-black">
-                {planLoaded ? (
+                {planDisabled ? (
+                  <span className="text-lg font-semibold text-brand">Beta access — free for now</span>
+                ) : planLoaded ? (
                   formatPrice(plan)
                 ) : planErrored ? (
                   <span className="text-lg font-semibold text-muted-foreground">Pricing unavailable</span>
@@ -143,8 +153,12 @@ function Pricing() {
                   <span className="text-lg font-semibold text-muted-foreground">Loading price…</span>
                 )}
               </div>
-              {planErrored && (
-                <p className="mt-1 text-xs text-destructive">{plan.error}</p>
+              {planDisabled ? (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Checkout is temporarily disabled during the beta — sign up to get full access now.
+                </p>
+              ) : (
+                planErrored && <p className="mt-1 text-xs text-destructive">{plan.error}</p>
               )}
               <ul className="mt-5 space-y-3 text-sm">
                 {BETA_FEATURES.map((f) => (
@@ -171,6 +185,13 @@ function Pricing() {
                   className="mt-6 inline-flex w-full items-center justify-center rounded-md border border-border bg-background px-3 py-2 text-sm font-semibold hover:bg-accent disabled:opacity-60"
                 >
                   {portalLoading ? "Opening…" : "Manage subscription"}
+                </button>
+              ) : planDisabled ? (
+                <button
+                  onClick={() => navigate({ to: "/studio" })}
+                  className="mt-6 inline-flex w-full items-center justify-center rounded-md bg-brand px-3 py-2 text-sm font-semibold text-brand-foreground hover:opacity-90"
+                >
+                  Enter Chart Studio
                 </button>
               ) : (
                 <button

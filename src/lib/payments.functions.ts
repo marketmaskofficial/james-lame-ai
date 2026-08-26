@@ -5,6 +5,7 @@ import {
   BETA_PLAN_LOOKUP_KEY,
   createStripeClient,
   getStripeErrorMessage,
+  paymentsEnabled,
 } from "@/lib/stripe.server";
 
 type CheckoutSessionResult = { clientSecret: string } | { error: string };
@@ -18,7 +19,8 @@ export type BetaPlanResult =
       intervalCount: number | null;
       productName: string;
     }
-  | { error: string };
+  | { error: string }
+  | { status: "disabled" };
 
 async function resolveOrCreateCustomer(
   stripe: ReturnType<typeof createStripeClient>,
@@ -64,6 +66,10 @@ async function resolveOrCreateCustomer(
 export const getBetaPlan = createServerFn({ method: "GET" })
   .inputValidator((data: { environment: StripeEnv }) => data)
   .handler(async ({ data }): Promise<BetaPlanResult> => {
+    // Checked before touching Stripe/Lovable at all — this is what
+    // guarantees no Lovable gateway request (and therefore no
+    // LOVABLE_API_KEY requirement) while the beta runs with checkout off.
+    if (!paymentsEnabled()) return { status: "disabled" };
     try {
       const stripe = createStripeClient(data.environment);
       const prices = await stripe.prices.list({
@@ -98,6 +104,7 @@ export const createCheckoutSession = createServerFn({ method: "POST" })
     return data;
   })
   .handler(async ({ data, context }): Promise<CheckoutSessionResult> => {
+    if (!paymentsEnabled()) return { error: "Checkout is temporarily disabled during the beta." };
     try {
       const stripe = createStripeClient(data.environment);
       const prices = await stripe.prices.list({ lookup_keys: [data.priceId] });
