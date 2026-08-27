@@ -966,6 +966,92 @@ function d(id) {
   );
 }
 
+// ---- Phase 3D-3: Cycles tools' round trip ----------------------------------
+// All three are plain p1/p2 tools (no `points` array) — the regression this
+// guards against: canonical state must stay the two DEFINING anchors only
+// (never a persisted list of every generated repeat line/curve sample),
+// since StudioChart.tsx regenerates every repeat/sample fresh from p1/p2 on
+// every render (see cyclicLineTimes/timeCyclesTimes/sineLinePoints).
+
+{
+  fakeStorage.clear();
+
+  const cyclicLines = {
+    id: "cl1",
+    tool: "cyclic-lines",
+    chartInstanceId: "chart-1",
+    p1: { time: 1000, price: 50 },
+    p2: { time: 1200, price: 60 },
+    color: "#e6b800",
+  };
+
+  const timeCycles = {
+    id: "tcy1",
+    tool: "time-cycles",
+    chartInstanceId: "chart-1",
+    p1: { time: 2000, price: 30 },
+    p2: { time: 2300, price: 45 },
+    color: "#4da3ff",
+  };
+
+  const sineLine = {
+    id: "sl1",
+    tool: "sine-line",
+    chartInstanceId: "chart-1",
+    p1: { time: 0, price: 100 },
+    p2: { time: 500, price: 200 },
+    color: "#a855f7",
+  };
+
+  saveDrawingsFor("chart-1", "MATICUSDT", "5m", [cyclicLines, timeCycles, sineLine]);
+  const loaded = loadDrawingsFor("chart-1", "MATICUSDT", "5m");
+
+  ok("Phase 3D-3 round trip: all three Cycles drawings come back", loaded.length === 3);
+
+  const loadedCyclic = loaded.find((x) => x.id === "cl1");
+  ok(
+    "Cyclic Lines: p1/p2 (the only two defining anchors) survive intact — canonical state is the interval, not persisted repeat lines",
+    loadedCyclic.p1.time === 1000 && loadedCyclic.p2.time === 1200,
+  );
+  ok("Cyclic Lines: no stray `points` array of generated repeats was persisted", loadedCyclic.points === undefined);
+
+  const loadedTimeCycles = loaded.find((x) => x.id === "tcy1");
+  ok("Time Cycles: p1/p2 survive intact", loadedTimeCycles.p1.time === 2000 && loadedTimeCycles.p2.time === 2300);
+  ok("Time Cycles: no stray `points` array of generated repeats was persisted", loadedTimeCycles.points === undefined);
+
+  const loadedSine = loaded.find((x) => x.id === "sl1");
+  ok("Sine Line: p1 (trough)/p2 (peak) survive intact", loadedSine.p1.price === 100 && loadedSine.p2.price === 200);
+  ok("Sine Line: no stray sampled-curve `points` array was persisted", loadedSine.points === undefined);
+}
+
+// ---- Phase 3D-3: chartInstanceId isolation for the Cycles tools -----------
+
+{
+  fakeStorage.clear();
+  const chartATimeCycles = {
+    id: "a-tcy",
+    tool: "time-cycles",
+    chartInstanceId: "chart-A",
+    p1: { time: 0, price: 1 },
+    p2: { time: 300, price: 2 },
+  };
+  const chartBSine = {
+    id: "b-sl",
+    tool: "sine-line",
+    chartInstanceId: "chart-B",
+    p1: { time: 0, price: 1 },
+    p2: { time: 300, price: 5 },
+  };
+
+  saveDrawingsFor("chart-A", "LINKUSDT", "1h", [chartATimeCycles]);
+  saveDrawingsFor("chart-B", "LINKUSDT", "1h", [chartBSine]);
+
+  const a = loadDrawingsFor("chart-A", "LINKUSDT", "1h");
+  const b = loadDrawingsFor("chart-B", "LINKUSDT", "1h");
+  ok("Time Cycles/Sine Line respect chartInstanceId isolation: chart A only sees its time cycles", a.length === 1 && a[0].tool === "time-cycles");
+  ok("chart B only sees its sine line, not chart A's time cycles", b.length === 1 && b[0].tool === "sine-line" && b[0].p2.price === 5);
+}
+
 // ---- summary ----------------------------------------------------------------
 
 console.log(`\n${pass}/${pass + fail} passed`);

@@ -27,6 +27,9 @@ import {
   lerpMarketPoint,
   anchoredVwap,
   computePositionMetrics,
+  cyclicLineTimes,
+  timeCyclesTimes,
+  sineLinePoints,
   type FibLevel,
 } from "@/lib/drawing/calc";
 import { getToolStyleDefaults } from "@/lib/drawing/styleDefaults";
@@ -2263,6 +2266,89 @@ export function StudioChart({
       }
     };
 
+    /** The chart's currently visible TIME range, in market-coordinate
+     * seconds — computed from the two pixel edges (0, host.clientWidth) via
+     * the timeScale's own inverse-of-px conversion (same
+     * coordinateToLogical -> logicalToTime pair `rawPoint` already uses for
+     * pointer input, just applied to the viewport edges instead of a
+     * click). Cyclic Lines' "repeat across the whole visible chart" policy
+     * needs this; Time Cycles' fixed-count policy doesn't. Returns null if
+     * the chart isn't laid out yet (matches every other px()/py() null-guard
+     * in this file). */
+    const visibleTimeRange = (): [number, number] | null => {
+      const startLogical = ts.coordinateToLogical(0);
+      const endLogical = ts.coordinateToLogical(host.clientWidth);
+      if (startLogical == null || endLogical == null) return null;
+      const bars = stateRef.current.bars;
+      const a = logicalToTime(bars, startLogical);
+      const b = logicalToTime(bars, endLogical);
+      return a <= b ? [a, b] : [b, a];
+    };
+
+    /** Cyclic Lines (Phase 3D-3): repeating vertical lines at every
+     * calc.ts's cyclicLineTimes() result within the visible range — see
+     * that function's own doc comment for why this repeats indefinitely in
+     * BOTH directions (Cyclic Lines' actual identity), unlike Time Cycles
+     * just below. Canonical state is only ever p1/p2 (the defining anchors)
+     * — every repeated line is regenerated fresh here, never persisted. */
+    const paintCyclicLines = (p1: MarketPoint, p2: MarketPoint) => {
+      const range = visibleTimeRange();
+      if (!range) return;
+      const interval = Math.abs(p2.time - p1.time);
+      const times = cyclicLineTimes(p1.time, interval, range[0], range[1]);
+      ctx.beginPath();
+      for (const t of times) {
+        const x = px({ time: t, price: p1.price });
+        if (x == null) continue;
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, host.clientHeight);
+      }
+      ctx.stroke();
+    };
+
+    /** Time Cycles (Phase 3D-3): the SAME repeating-vertical-line rendering
+     * as Cyclic Lines above, reading the SAME interval math, but a fixed
+     * forward-only count (calc.ts's timeCyclesTimes) instead of "fill the
+     * visible range" — see that function's doc comment for why this is a
+     * real behavioral difference, not a style one. Anchored at
+     * Math.min(p1.time, p2.time) rather than p1.time directly so a
+     * reversed drag (p2 placed before p1 in time) still repeats forward
+     * from the EARLIER anchor and both original anchors land exactly on the
+     * generated grid (k=0 and k=1), instead of walking away from p2 entirely. */
+    const paintTimeCycles = (p1: MarketPoint, p2: MarketPoint) => {
+      const interval = Math.abs(p2.time - p1.time);
+      const anchorTime = Math.min(p1.time, p2.time);
+      const times = timeCyclesTimes(anchorTime, interval);
+      ctx.beginPath();
+      for (const t of times) {
+        const x = px({ time: t, price: p1.price });
+        if (x == null) continue;
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, host.clientHeight);
+      }
+      ctx.stroke();
+    };
+
+    /** Sine Line (Phase 3D-3): calc.ts's sineLinePoints already returns a
+     * deterministic MARKET-coordinate parametric curve — this just converts
+     * to pixels and strokes it, the exact same "map points then draw one
+     * continuous path" shape as Polyline/Fib Spiral's own renderers. */
+    const paintSineLine = (p1: MarketPoint, p2: MarketPoint) => {
+      const pts = sineLinePoints(p1, p2);
+      ctx.beginPath();
+      let started = false;
+      for (const p of pts) {
+        const x = px(p);
+        const y = py(p);
+        if (x == null || y == null) continue;
+        if (!started) {
+          ctx.moveTo(x, y);
+          started = true;
+        } else ctx.lineTo(x, y);
+      }
+      if (started) ctx.stroke();
+    };
+
     const all = draftRef.current ? [...draws, draftRef.current] : draws;
     const pending = pendingRef.current;
     const selected = stateRef.current.selectedId;
@@ -2628,6 +2714,20 @@ export function StudioChart({
         // aren't always a plain zigzag).
         const anchors = d.points && d.points.length > 0 ? d.points : [d.p1, d.p2];
         paintLabeledPattern(d.tool, anchors, d.settings?.showAnchorLabel !== false, col);
+        ctx.restore();
+        continue;
+      }
+
+      if (d.tool === "cyclic-lines" || d.tool === "time-cycles" || d.tool === "sine-line") {
+        // Phase 3D-3 Cycles: plain p1/p2 tools (no `points` array involved)
+        // rendered through their own shared repeating-interval / parametric
+        // helpers just above — kept as their own early `continue` branch
+        // since none of them fit the generic `x2 != null` two-point-line
+        // shape chain below (a set of independent vertical lines, or a
+        // multi-sample curve, not one straight segment).
+        if (d.tool === "cyclic-lines") paintCyclicLines(d.p1, d.p2);
+        else if (d.tool === "time-cycles") paintTimeCycles(d.p1, d.p2);
+        else paintSineLine(d.p1, d.p2);
         ctx.restore();
         continue;
       }
@@ -3106,6 +3206,53 @@ export function StudioChart({
             }
           }
         }
+        if ((d.tool === "cyclic-lines" || d.tool === "time-cycles") && !anchorAlreadyHitOnThisDrawing) {
+          // Hit-tests every actual GENERATED line position (same
+          // cyclicLineTimes/timeCyclesTimes calc.ts reads for rendering),
+          // not just the two defining anchors — a click on the 4th repeated
+          // line correctly selects the drawing.
+          const interval = Math.abs(d.p2.time - d.p1.time);
+          let times: number[];
+          if (d.tool === "cyclic-lines") {
+            const width = canvasRef.current?.clientWidth ?? 0;
+            const startLogical = chart.timeScale().coordinateToLogical(0);
+            const endLogical = chart.timeScale().coordinateToLogical(width);
+            if (startLogical != null && endLogical != null) {
+              const a = logicalToTime(bars, startLogical);
+              const b = logicalToTime(bars, endLogical);
+              times = cyclicLineTimes(d.p1.time, interval, Math.min(a, b), Math.max(a, b));
+            } else {
+              times = [d.p1.time];
+            }
+          } else {
+            times = timeCyclesTimes(Math.min(d.p1.time, d.p2.time), interval);
+          }
+          for (const t of times) {
+            const x = toPx({ time: t, price: d.p1.price });
+            if (x == null) continue;
+            const dist = Math.abs(x - mx);
+            if (dist < best) {
+              best = dist;
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
+        if (d.tool === "sine-line" && !anchorAlreadyHitOnThisDrawing) {
+          // Segment-distance hit-test against the exact same sampled curve
+          // paintSineLine renders (calc.ts's sineLinePoints) — same
+          // convention as Fib Spiral/Polyline's own multi-segment hit-test.
+          const pts = sineLinePoints(d.p1, d.p2).map((p) => [toPx(p), toPy(p)] as const);
+          for (let i = 0; i < pts.length - 1; i++) {
+            const [ax, ay] = pts[i];
+            const [bx, by] = pts[i + 1];
+            if (ax == null || ay == null || bx == null || by == null) continue;
+            const dist = distToSegment(mx, my, ax, ay, bx, by);
+            if (dist < best) {
+              best = dist;
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
         if ((d.tool === "long" || d.tool === "short") && d.stop != null && x1 != null && x2 != null) {
           const stopY = price.priceToCoordinate(d.stop);
           if (stopY != null) {
@@ -3569,6 +3716,27 @@ export function StudioChart({
           } else {
             pendingRef.current = { tool: "triangle", anchors };
           }
+        }
+        return;
+      }
+
+      if (tool === "cyclic-lines") {
+        // Two plain clicks (registry's own `multi-click`/anchorCount 2, NOT
+        // a drag like Time Cycles/Sine Line below): click 1 places the
+        // first cycle line, click 2 places the second — their time
+        // difference IS the base interval calc.ts's cyclicLineTimes then
+        // repeats indefinitely across the visible chart (see
+        // paintCyclicLines above). Commits in the same ONE onAddDrawing
+        // call as every other multi-click tool here, so it's exactly one
+        // history transaction regardless of the two clicks it took.
+        const pend = pendingRef.current;
+        if (!pend || pend.tool !== "cyclic-lines") {
+          pendingRef.current = { tool: "cyclic-lines", anchors: [pt] };
+        } else {
+          onAddDrawing(stampNew({ tool: "cyclic-lines", p1: pend.anchors[0], p2: pt }));
+          pendingRef.current = null;
+          previewPointRef.current = null;
+          onSelectDrawing?.(null);
         }
         return;
       }

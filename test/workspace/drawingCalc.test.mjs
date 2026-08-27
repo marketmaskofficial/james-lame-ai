@@ -23,6 +23,9 @@ import {
   computeFibTimeZoneLevels,
   computeFibSpeedFanTargets,
   lerpMarketPoint,
+  cyclicLineTimes,
+  timeCyclesTimes,
+  sineLinePoints,
 } from "../../src/lib/drawing/calc.ts";
 import { distToEllipseRing, fibSpiralPoints } from "../../src/lib/drawing/geometry.ts";
 
@@ -498,6 +501,90 @@ function bar(time, open, high, low, close, volume) {
   ok("fibSpiralPoints: radius strictly increases along the spiral (golden-ratio growth, never contracts)", monotonic);
   const pts2 = fibSpiralPoints(5, -5, 10, Math.PI / 2, 1);
   ok("fibSpiralPoints: deterministic — identical inputs produce identical output", JSON.stringify(pts) !== JSON.stringify(pts2) && pts2.length === fibSpiralPoints(5, -5, 10, Math.PI / 2, 1).length);
+}
+
+// ---- Phase 3D-3: Cyclic Lines / Time Cycles / Sine Line -------------------
+
+{
+  // Cyclic Lines: repeats bidirectionally, indefinitely, within the range.
+  const times = cyclicLineTimes(1000, 200, 0, 2000);
+  ok("cyclicLineTimes: includes the anchor itself", times.includes(1000));
+  ok("cyclicLineTimes: includes a forward repeat (1200)", times.includes(1200));
+  ok("cyclicLineTimes: includes a backward repeat (800)", times.includes(800));
+  ok("cyclicLineTimes: never generates a time outside [rangeStart, rangeEnd]", times.every((t) => t >= 0 && t <= 2000));
+  ok("cyclicLineTimes: evenly spaced by the interval", times.every((t, i) => i === 0 || Math.abs(times[i] - times[i - 1] - 200) < 1e-9));
+}
+
+{
+  // Reversed anchors: cyclicLineInterval is always computed as an absolute
+  // difference by the caller (Math.abs(p2.time - p1.time)) BEFORE reaching
+  // cyclicLineTimes, so the same anchorTime + interval pair produces the
+  // identical grid regardless of which anchor the user dragged first.
+  const forward = cyclicLineTimes(1000, 200, 0, 2000);
+  const reversedInterval = cyclicLineTimes(1000, Math.abs(800 - 1000), 0, 2000); // as if p1=1000,p2=800
+  ok("cyclicLineTimes: reversed-anchor interval (abs) produces the identical grid", JSON.stringify(forward) === JSON.stringify(reversedInterval));
+}
+
+{
+  // Degenerate interval (negligible drag) never infinite-loops.
+  const times = cyclicLineTimes(500, 0, 0, 10000);
+  ok("cyclicLineTimes: non-positive interval degrades to just the anchor", times.length === 1 && times[0] === 500);
+}
+
+{
+  // Time Cycles: fixed forward-only count, deliberately NOT the same policy
+  // as Cyclic Lines above even though both take an interval.
+  const times = timeCyclesTimes(1000, 200, 5);
+  ok("timeCyclesTimes: starts at the anchor itself", times[0] === 1000);
+  ok("timeCyclesTimes: produces exactly count+1 times (anchor + 5 forward repeats)", times.length === 6);
+  ok("timeCyclesTimes: every repeat is STRICTLY forward of the anchor (never backward)", times.every((t) => t >= 1000));
+  ok("timeCyclesTimes: last repeat lands at anchor + count*interval", times[times.length - 1] === 1000 + 5 * 200);
+  const degenerate = timeCyclesTimes(500, 0, 5);
+  ok("timeCyclesTimes: non-positive interval degrades to just the anchor", degenerate.length === 1 && degenerate[0] === 500);
+}
+
+{
+  // Time Cycles interval regeneration: moving either anchor recomputes both
+  // the interval and the anchor point fresh — no cached state.
+  const before = timeCyclesTimes(1000, 200, 3);
+  const movedInterval = timeCyclesTimes(1000, 300, 3);
+  const movedAnchor = timeCyclesTimes(1500, 200, 3);
+  ok("timeCyclesTimes: changing the interval changes every repeat", JSON.stringify(before) !== JSON.stringify(movedInterval));
+  ok("timeCyclesTimes: changing the anchor shifts every repeat", JSON.stringify(before) !== JSON.stringify(movedAnchor));
+}
+
+{
+  // Sine Line: p1 is the trough (baseline - amplitude), p2 the next peak
+  // (baseline + amplitude), half a period apart — BOTH anchors must sit
+  // exactly on the generated curve.
+  const p1 = { time: 0, price: 100 }; // trough
+  const p2 = { time: 500, price: 200 }; // peak
+  const pts = sineLinePoints(p1, p2, 0, 24); // no extra half-periods: just the defining pair's own curve
+  close("sineLinePoints: first sample sits exactly on p1 (the trough)", pts[0].price, 100, 1e-6);
+  close("sineLinePoints: last sample sits exactly on p2 (the peak)", pts[pts.length - 1].price, 200, 1e-6);
+  ok("sineLinePoints: every sampled price stays within [trough, peak]", pts.every((p) => p.price >= 100 - 1e-6 && p.price <= 200 + 1e-6));
+}
+
+{
+  // Reversed anchors (p2 earlier than p1): normalized internally so the
+  // SAME physical curve results regardless of drag direction.
+  const p1 = { time: 500, price: 200 }; // peak, but placed as the FIRST click
+  const p2 = { time: 0, price: 100 }; // trough, placed SECOND
+  const pts = sineLinePoints(p1, p2, 0, 24);
+  close("sineLinePoints (reversed anchors): first sample is still the EARLIER-in-time trough", pts[0].price, 100, 1e-6);
+  close("sineLinePoints (reversed anchors): last sample is still the LATER-in-time peak", pts[pts.length - 1].price, 200, 1e-6);
+}
+
+{
+  // Extending beyond the defining pair: more samples, still smooth
+  // (monotonic phase progression), still deterministic.
+  const p1 = { time: 0, price: 0 };
+  const p2 = { time: 100, price: 10 };
+  const pts = sineLinePoints(p1, p2, 3, 24);
+  const pts2 = sineLinePoints(p1, p2, 3, 24);
+  ok("sineLinePoints: extending adds samples before AND after the defining pair", pts[0].time < p1.time && pts[pts.length - 1].time > p2.time);
+  ok("sineLinePoints: deterministic — identical inputs produce identical output", JSON.stringify(pts) === JSON.stringify(pts2));
+  ok("sineLinePoints: time strictly increases sample to sample", pts.every((p, i) => i === 0 || p.time > pts[i - 1].time));
 }
 
 // ---- summary ----------------------------------------------------------------

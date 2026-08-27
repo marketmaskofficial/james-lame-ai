@@ -140,12 +140,12 @@ for (const t of TOOL_DEFS) {
 // those two — no other still-unimplemented tool may be flipped on alongside
 // them), so they move out of this list and into their own dedicated block
 // below, mirroring exactly how Ellipse/Polyline/Path graduated out of this
-// same list in Phase 3A. "xabcd" graduated out in Phase 3D-1 and
-// "elliott-impulse" graduates out in Phase 3D-2 (see their own dedicated
-// blocks further below).
+// same list in Phase 3A. "xabcd" graduated out in Phase 3D-1,
+// "elliott-impulse" in Phase 3D-2, and "cyclic-lines" in Phase 3D-3 (see
+// their own dedicated blocks further below).
 
 {
-  const DEFERRED_SAMPLE = ["gann-box", "gann-fan", "cyclic-lines", "rotated-rect", "ruler", "image"];
+  const DEFERRED_SAMPLE = ["gann-box", "gann-fan", "rotated-rect", "ruler", "image"];
   const wronglyImplemented = DEFERRED_SAMPLE.filter((id) => TOOL_BY_ID[id]?.implemented);
   ok(`deferred tools stay implemented:false (wrongly true: ${wronglyImplemented.join(",") || "none"})`, wronglyImplemented.length === 0);
 }
@@ -369,6 +369,34 @@ for (const t of TOOL_DEFS) {
   ok(
     "every Phase 3D-2 tool is five distinct tool ids",
     new Set(PHASE3D2_NEW_TOOLS.map((id) => TOOL_BY_ID[id]?.id)).size === 5,
+  );
+}
+
+// ---- Phase 3D-3 additions this phase claims as "fully implemented" --------
+// Cyclic Lines / Time Cycles / Sine Line — plain p1/p2 tools (NOT the
+// labeled multi-anchor primitive Chart Patterns/Elliott use above), so this
+// block checks anchorCount/interactionType/category instead of the
+// anchorLabel-capability checks those two families' blocks run.
+
+{
+  const PHASE3D3_NEW_TOOLS = ["cyclic-lines", "time-cycles", "sine-line"];
+  const EXPECTED_INTERACTION = { "cyclic-lines": "multi-click", "time-cycles": "drag", "sine-line": "drag" };
+  const missing = PHASE3D3_NEW_TOOLS.filter((id) => !TOOL_BY_ID[id]?.implemented);
+  ok(`every Phase 3D-3 new tool is implemented:true (missing: ${missing.join(",") || "none"})`, missing.length === 0);
+  for (const id of PHASE3D3_NEW_TOOLS) {
+    ok(`${id} is in IMPLEMENTED_TOOLS`, IMPLEMENTED_TOOLS.some((t) => t.id === id));
+    ok(`${id} resolves to the "cycles" category`, TOOL_BY_ID[id]?.category === "cycles");
+    ok(`${id} declares its expected 2-anchor count`, TOOL_BY_ID[id]?.anchorCount === 2);
+    ok(`${id} declares its expected interaction type (${EXPECTED_INTERACTION[id]})`, TOOL_BY_ID[id]?.interactionType === EXPECTED_INTERACTION[id]);
+    ok(`${id} declares stroke capability`, TOOL_BY_ID[id]?.capabilities.stroke === true);
+  }
+  ok(
+    "Cyclic Lines is multi-click (two discrete clicks) while Time Cycles/Sine Line are drag — genuinely distinct creation gestures, not an alias",
+    TOOL_BY_ID["cyclic-lines"]?.interactionType !== TOOL_BY_ID["time-cycles"]?.interactionType,
+  );
+  ok(
+    "every Phase 3D-3 tool is three distinct tool ids",
+    new Set(PHASE3D3_NEW_TOOLS.map((id) => TOOL_BY_ID[id]?.id)).size === 3,
   );
 }
 

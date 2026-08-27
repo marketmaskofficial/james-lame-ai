@@ -376,9 +376,24 @@ export const TOOL_DEFS: ToolDef[] = [
   { id: "elliott-triple-combo", name: "Triple Combo (W-X-Y-X-Z)", category: "elliott", icon: Activity, interactionType: "multi-click", anchorCount: 6, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
 
   // ---- Cycles -------------------------------------------------------------
-  { id: "cyclic-lines", name: "Cyclic Lines", category: "cycles", icon: RotateCw, interactionType: "multi-click", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: false },
-  { id: "time-cycles", name: "Time Cycles", category: "cycles", icon: RotateCw, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: false },
-  { id: "sine-line", name: "Sine Line", category: "cycles", icon: Activity, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: false },
+  // ---- Cycles (Phase 3D-3) --------------------------------------------------
+  // Cyclic Lines / Time Cycles are plain p1/p2 tools (NOT the Phase 3D-1/2
+  // labeled multi-anchor `points`-array primitive — there's nothing to
+  // label, just two anchors defining one base interval), so anchor
+  // editing/move/selection-handles/persistence all fall through to the
+  // SAME generic p1/p2 code every 2-anchor tool already gets for free; only
+  // rendering (repeating vertical lines) and hit-testing needed new code —
+  // see StudioChart.tsx's paintCyclicLines/paintTimeCycles and
+  // calc.ts's cyclicLineTimes/timeCyclesTimes, which both tools read from
+  // the exact same interval, differing only in repeat policy (see those
+  // functions' own doc comments).
+  { id: "cyclic-lines", name: "Cyclic Lines", category: "cycles", icon: RotateCw, interactionType: "multi-click", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "time-cycles", name: "Time Cycles", category: "cycles", icon: RotateCw, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  // Sine Line: a genuine parametric curve (calc.ts's sineLinePoints) — p1 is
+  // the wave's trough, p2 the very next peak (half a period apart), both
+  // sitting exactly on the rendered curve. Plain p1/p2 storage like the two
+  // tools above; only the curve itself is new geometry.
+  { id: "sine-line", name: "Sine Line", category: "cycles", icon: Activity, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
 
   // ---- Forecast / Trading Measurement --------------------------------------
   // Chart planning/measurement only — never wired to broker execution.

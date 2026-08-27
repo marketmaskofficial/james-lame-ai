@@ -307,3 +307,84 @@ export function computePositionMetrics(
     rewardValue: rewardPerUnit * valuePerPoint,
   };
 }
+
+// ---- Cycles: Cyclic Lines / Time Cycles / Sine Line (Phase 3D-3) ----------
+//
+// Cyclic Lines and Time Cycles are both defined by two anchors establishing
+// ONE base interval (`Math.abs(p2.time - p1.time)`, computed inline at each
+// call site — not worth its own one-line wrapper) — StudioChart.tsx's
+// paint/hit-test code for both reads that same interval, only the REPEAT
+// POLICY differs (see each function's own doc comment for why that's a real
+// behavioral distinction, not a cosmetic one).
+
+/** Every repeated Cyclic-Lines TIME within [rangeStart, rangeEnd], anchored
+ * at `anchorTime` and spaced by `interval`. Cyclic Lines' whole identity is
+ * "repeats indefinitely across the ENTIRE visible chart in both
+ * directions" — unlike Time Cycles below, there's no fixed count. Guards a
+ * degenerate (non-positive) interval or empty range by returning just the
+ * anchor, never an infinite loop. Reversed anchors produce the IDENTICAL
+ * grid: p1 and p2 are themselves exactly one interval apart, so either
+ * one's time already sits on the same absolute grid — this function only
+ * ever reads `anchorTime` (typically p1.time), never which anchor was
+ * placed first. */
+export function cyclicLineTimes(anchorTime: number, interval: number, rangeStart: number, rangeEnd: number): number[] {
+  if (!(interval > 0) || !(rangeEnd > rangeStart)) return [anchorTime];
+  const firstK = Math.ceil((rangeStart - anchorTime) / interval);
+  const lastK = Math.floor((rangeEnd - anchorTime) / interval);
+  const times: number[] = [];
+  for (let k = firstK; k <= lastK; k++) times.push(anchorTime + k * interval);
+  return times;
+}
+
+/** Time Cycles' own repeat policy — DELIBERATELY different from Cyclic
+ * Lines above even though both read the exact same interval: a FIXED count
+ * of cycles forward from the anchor only, never backward, never tied to
+ * the visible range. This IS the real behavioral distinction between the
+ * two TradingView tools (not a style difference), so it's a genuine second
+ * function rather than a parameterized wrapper around cyclicLineTimes.
+ * `count` defaults to 5 — TradingView's own default cycle count. */
+export function timeCyclesTimes(anchorTime: number, interval: number, count = 5): number[] {
+  if (!(interval > 0)) return [anchorTime];
+  const times: number[] = [anchorTime];
+  for (let k = 1; k <= count; k++) times.push(anchorTime + k * interval);
+  return times;
+}
+
+/** Sine Line's genuine deterministic parametric curve. The two defining
+ * anchors are a TROUGH (earlier in time, at baseline - amplitude) and the
+ * very next PEAK (later in time, at baseline + amplitude) — half a period
+ * apart — so BOTH anchors sit exactly ON the rendered curve, unlike a naive
+ * "amplitude from price delta, period from time delta" formula where
+ * neither endpoint would actually lie on the curve. Reversed anchors (p2
+ * earlier than p1) are normalized internally rather than requiring the
+ * caller to sort them first. Extends `extraHalfPeriods` beyond the defining
+ * pair on each side (a fixed, reasonable default — same "fixed sampling
+ * budget, smooth without excessive CPU" philosophy as geometry.ts's
+ * `fibSpiralPoints` and its own `turns` parameter) so the drawing reads as
+ * a genuine repeating wave, not one isolated hump. Returns MARKET-coordinate
+ * points, never pixels — StudioChart.tsx converts to pixels only at
+ * render/hit-test time. */
+export function sineLinePoints(
+  p1: { time: number; price: number },
+  p2: { time: number; price: number },
+  extraHalfPeriods = 3,
+  stepsPerHalfPeriod = 24,
+): { time: number; price: number }[] {
+  const early = p1.time <= p2.time ? p1 : p2;
+  const late = p1.time <= p2.time ? p2 : p1;
+  const halfPeriod = late.time - early.time;
+  if (!(halfPeriod > 0)) return [p1, p2];
+  const baseline = (early.price + late.price) / 2;
+  const amplitude = (late.price - early.price) / 2;
+  const totalHalfPeriods = 1 + extraHalfPeriods * 2;
+  const startTime = early.time - extraHalfPeriods * halfPeriod;
+  const totalSteps = Math.max(1, Math.round(totalHalfPeriods * stepsPerHalfPeriod));
+  const points: { time: number; price: number }[] = [];
+  for (let i = 0; i <= totalSteps; i++) {
+    const t = startTime + (i / stepsPerHalfPeriod) * halfPeriod;
+    const phase = (t - early.time) / halfPeriod;
+    const price = baseline - amplitude * Math.cos(phase * Math.PI);
+    points.push({ time: t, price });
+  }
+  return points;
+}
