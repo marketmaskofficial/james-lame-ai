@@ -17,6 +17,9 @@ import {
   distToEllipseRing,
   fibSpiralPoints,
   parallelChannelSecondRail,
+  quadraticBezierPoints,
+  cubicBezierPoints,
+  directionalArrowGlyph,
 } from "@/lib/drawing/geometry";
 import {
   DEFAULT_FIB_LEVELS,
@@ -292,6 +295,11 @@ export const MULTI_ANCHOR_PATTERN_TOOLS = new Set<DrawTool>([
   // Disjoint Channel (Phase 3D-5): two independent 2-point rails — see
   // PATTERN_SEGMENT_OVERRIDES below for its non-sequential segment pairing.
   "disjoint-channel",
+  // Double Curve (Phase 3D-6): 4 anchors (start/control1/control2/end) for
+  // a cubic Bezier — see its own render branch (BEFORE the generic
+  // zigzag/paintLabeledPattern check) and PATTERN_ANCHOR_LABELS' own doc
+  // comment for why it's here despite having no visible labels.
+  "double-curve",
 ]);
 
 /** Anchor point labels for each pattern tool, in anchor order — drawn next
@@ -320,6 +328,17 @@ export const PATTERN_ANCHOR_LABELS: Partial<Record<DrawTool, string[]>> = {
   "elliott-triangle": ["0", "A", "B", "C", "D", "E"],
   "elliott-double-combo": ["0", "W", "X", "Y"],
   "elliott-triple-combo": ["0", "W", "X", "Y", "X", "Z"],
+  // Double Curve (Phase 3D-6): four EMPTY labels — there's nothing to name
+  // (a cubic Bezier's control points aren't conventionally lettered like a
+  // harmonic pattern's anchors), but the array's LENGTH is what
+  // MULTI_ANCHOR_PATTERN_TOOLS' onDown reads to know it needs 4 clicks
+  // (one source of truth for anchor count, see that constant's own doc
+  // comment) — and paintLabeledPattern already skips drawing a falsy
+  // label, so this costs nothing visually. Double Curve never actually
+  // reaches paintLabeledPattern anyway (its own render branch intercepts
+  // first), but per-vertex hit-testing/dragging/persistence all still flow
+  // through the shared `points`-array machinery this map is part of.
+  "double-curve": ["", "", "", ""],
 };
 
 /** Anchor-index PAIRS that get a connecting segment, for the two pattern
@@ -2622,7 +2641,7 @@ export function StudioChart({
           }
         } else {
           handles.push({ x: x1, y: y1 });
-          if (x2 != null && y2 != null && d.tool !== "hline" && d.tool !== "vline" && d.tool !== "hray" && d.tool !== "crossline" && d.tool !== "arrow-up" && d.tool !== "arrow-down")
+          if (x2 != null && y2 != null && d.tool !== "hline" && d.tool !== "vline" && d.tool !== "hray" && d.tool !== "crossline" && d.tool !== "arrow-up" && d.tool !== "arrow-down" && d.tool !== "arrow-marker")
             handles.push({ x: x2, y: y2 });
           const p3 = d.points?.[0];
           if (
@@ -2635,6 +2654,8 @@ export function StudioChart({
               d.tool === "fib-time-trend" ||
               d.tool === "pitchfan" ||
               d.tool === "flat-channel" ||
+              d.tool === "rotated-rect" ||
+              d.tool === "curve" ||
               PITCHFORK_TOOLS.has(d.tool))
           ) {
             const hx = px(p3);
@@ -2690,6 +2711,26 @@ export function StudioChart({
         ctx.arc(x1, y1, 5 + lw, 0, Math.PI * 2);
         ctx.fill();
         if (d.text) ctx.fillText(d.text, x1 + 9, y1 + 4);
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "arrow-marker") {
+        // Reuses the exact "triangle glyph at one anchor" primitive
+        // Arrow Up/Down use just below, with a diagonal orientation
+        // (matching this tool's own toolbar icon) as the one parameter
+        // that varies — genuinely distinct from both Arrow Up/Down (which
+        // point straight up/down) and the 2-anchor Arrow (a line with an
+        // arrowhead, not a single glyph).
+        const size = 6 + lw * 2;
+        const glyph = directionalArrowGlyph(x1, y1, -Math.PI / 4, size);
+        ctx.setLineDash([]);
+        ctx.fillStyle = withAlpha(col, alpha);
+        ctx.beginPath();
+        ctx.moveTo(glyph.tip.x, glyph.tip.y);
+        ctx.lineTo(glyph.base1.x, glyph.base1.y);
+        ctx.lineTo(glyph.base2.x, glyph.base2.y);
+        ctx.closePath();
+        ctx.fill();
         ctx.restore();
         continue;
       }
@@ -2963,6 +3004,32 @@ export function StudioChart({
         continue;
       }
 
+      if (d.tool === "double-curve") {
+        // Intercepts BEFORE the generic MULTI_ANCHOR_PATTERN_TOOLS branch
+        // below — Double Curve shares that primitive's anchor storage/
+        // per-vertex editing, but needs its own cubic-Bezier render, not
+        // the generic zigzag paintLabeledPattern.
+        const anchors = d.points && d.points.length >= 4 ? d.points : null;
+        if (anchors) {
+          const p1x = px(anchors[0]);
+          const p1y = py(anchors[0]);
+          const c1x = px(anchors[1]);
+          const c1y = py(anchors[1]);
+          const c2x = px(anchors[2]);
+          const c2y = py(anchors[2]);
+          const p2x = px(anchors[3]);
+          const p2y = py(anchors[3]);
+          if (p1x != null && p1y != null && c1x != null && c1y != null && c2x != null && c2y != null && p2x != null && p2y != null) {
+            ctx.beginPath();
+            ctx.moveTo(p1x, p1y);
+            ctx.bezierCurveTo(c1x, c1y, c2x, c2y, p2x, p2y);
+            ctx.stroke();
+          }
+        }
+        ctx.restore();
+        continue;
+      }
+
       if (MULTI_ANCHOR_PATTERN_TOOLS.has(d.tool)) {
         // Phase 3D-1 chart-pattern tools: same "full ordered vertex array
         // lives in `points`" convention as Polyline/Path just above, painted
@@ -2983,6 +3050,49 @@ export function StudioChart({
       }
       if (d.tool === "regression-trend") {
         paintRegressionTrend(d.p1, d.p2, (d.settings?.regressionDeviations as number | undefined) ?? 2);
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "arc") {
+        // Genuine quadratic-Bezier curve, not a straight line — the bulge
+        // is a fixed fraction of the chord, perpendicular to it, recomputed
+        // fresh every render from p1/p2 (never persisted): a 2-anchor tool
+        // has no third point to shape the bend with (unlike Curve below).
+        if (x1 != null && y1 != null && x2 != null && y2 != null) {
+          const mx = (x1 + x2) / 2;
+          const my = (y1 + y2) / 2;
+          const dx = x2 - x1;
+          const dy = y2 - y1;
+          const len = Math.hypot(dx, dy) || 1;
+          const nx = -dy / len;
+          const ny = dx / len;
+          const bulge = len * 0.15;
+          const cx = mx + nx * bulge;
+          const cy = my + ny * bulge;
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.quadraticCurveTo(cx, cy, x2, y2);
+          ctx.stroke();
+        }
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "curve") {
+        // Quadratic Bezier from p1 to p2 with points[0] as a genuinely
+        // user-editable control point — one real bend, independently
+        // draggable (via the existing generic "p3" anchor), unlike Arc's
+        // fixed bulge above.
+        const p3 = d.points?.[0];
+        if (x1 != null && y1 != null && x2 != null && y2 != null && p3) {
+          const cx = px(p3);
+          const cy = py(p3);
+          if (cx != null && cy != null) {
+            ctx.beginPath();
+            ctx.moveTo(x1, y1);
+            ctx.quadraticCurveTo(cx, cy, x2, y2);
+            ctx.stroke();
+          }
+        }
         ctx.restore();
         continue;
       }
@@ -3132,6 +3242,28 @@ export function StudioChart({
           }
         } else if (d.tool === "flat-channel") {
           paintFlatChannel(x1, y1, x2, y2, d.points?.[0]);
+        } else if (d.tool === "rotated-rect") {
+          // The SAME shared perpendicular-offset primitive Parallel
+          // Channel/Flat Top-Bottom use, but CLOSED into a 4-corner
+          // quadrilateral instead of two open rails — what gives this its
+          // genuine oriented/rotated geometry, distinct from the
+          // axis-aligned Rectangle.
+          const p3 = d.points?.[0];
+          if (p3) {
+            const x3 = px(p3);
+            const y3 = py(p3);
+            if (x3 != null && y3 != null) {
+              const rail2 = parallelChannelSecondRail(x1, y1, x2, y2, x3, y3);
+              ctx.beginPath();
+              ctx.moveTo(x1, y1);
+              ctx.lineTo(x2, y2);
+              ctx.lineTo(rail2.x2, rail2.y2);
+              ctx.lineTo(rail2.x1, rail2.y1);
+              ctx.closePath();
+              ctx.fill();
+              ctx.stroke();
+            }
+          }
         } else if (d.tool === "fib") {
           const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? DEFAULT_FIB_LEVELS;
           const computed = computeFibLevels(d.p1.price, d.p2.price, levels.filter((l) => l.enabled !== false));
@@ -3400,7 +3532,7 @@ export function StudioChart({
   // Read by drawOverlay() to render the in-progress preview.
   const previewPointRef = useRef<MarketPoint | null>(null);
 
-  const NO_ANCHOR_2_TOOLS = new Set<DrawTool>(["hline", "vline", "hray", "crossline", "text", "marker", "vwap", "vp-anchored", "arrow-up", "arrow-down"]);
+  const NO_ANCHOR_2_TOOLS = new Set<DrawTool>(["hline", "vline", "hray", "crossline", "text", "marker", "vwap", "vp-anchored", "arrow-up", "arrow-down", "arrow-marker"]);
 
   // Closest drawing to a screen point — used by Select/erase (inside the
   // pointer-interaction effect below) AND by the double-click-for-settings
@@ -3465,6 +3597,8 @@ export function StudioChart({
             d.tool === "fib-time-trend" ||
             d.tool === "pitchfan" ||
             d.tool === "flat-channel" ||
+            d.tool === "rotated-rect" ||
+            d.tool === "curve" ||
             PITCHFORK_TOOLS.has(d.tool))
         ) {
           const dist = pixelDist(x3, y3, mx, my);
@@ -3702,6 +3836,87 @@ export function StudioChart({
                   best = dist2;
                   hit = { d, anchor: "body" };
                 }
+              }
+            }
+          }
+        }
+        if (d.tool === "rotated-rect" && x1 != null && y1 != null && x2 != null && y2 != null && x3 != null && y3 != null && p3 && !anchorAlreadyHitOnThisDrawing) {
+          // Real interior test on the actual 4-corner quadrilateral (same
+          // shared perpendicular-offset primitive the renderer uses), not
+          // an axis-aligned bounding box — a rotated rectangle's corners
+          // sit outside any such box.
+          const rail2 = parallelChannelSecondRail(x1, y1, x2, y2, x3, y3);
+          const poly = [
+            { x: x1, y: y1 },
+            { x: x2, y: y2 },
+            { x: rail2.x2, y: rail2.y2 },
+            { x: rail2.x1, y: rail2.y1 },
+          ];
+          if (!hit && pointInPolygon(mx, my, poly)) {
+            hit = { d, anchor: "body" };
+          }
+        }
+        if ((d.tool === "arc" || d.tool === "curve") && x1 != null && y1 != null && x2 != null && y2 != null && !anchorAlreadyHitOnThisDrawing) {
+          // Hit-tests the ACTUAL sampled curve (geometry.ts's
+          // quadraticBezierPoints), not the straight p1->p2 chord — Arc's
+          // control point is its own fixed-bulge formula (mirroring the
+          // renderer exactly); Curve's is the real, user-editable p3.
+          let cx: number;
+          let cy: number;
+          if (d.tool === "arc") {
+            const mxp = (x1 + x2) / 2;
+            const myp = (y1 + y2) / 2;
+            const dx = x2 - x1;
+            const dy = y2 - y1;
+            const len = Math.hypot(dx, dy) || 1;
+            const nx = -dy / len;
+            const ny = dx / len;
+            const bulge = len * 0.15;
+            cx = mxp + nx * bulge;
+            cy = myp + ny * bulge;
+          } else {
+            const p3 = d.points?.[0];
+            const tx = p3 ? toPx(p3) : null;
+            const ty = p3 ? toPy(p3) : null;
+            if (tx == null || ty == null) {
+              cx = (x1 + x2) / 2;
+              cy = (y1 + y2) / 2;
+            } else {
+              cx = tx;
+              cy = ty;
+            }
+          }
+          const pts = quadraticBezierPoints(x1, y1, cx, cy, x2, y2);
+          for (let i = 0; i < pts.length - 1; i++) {
+            const dist = distToSegment(mx, my, pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y);
+            if (dist < best) {
+              best = dist;
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
+        if (d.tool === "double-curve" && d.points && d.points.length >= 4) {
+          // Hit-tests the ACTUAL sampled cubic curve (geometry.ts's
+          // cubicBezierPoints) instead of falling through to
+          // MULTI_ANCHOR_PATTERN_TOOLS' generic straight-zigzag body test
+          // further below, which would test invisible chords between the
+          // control points rather than the rendered curve.
+          const a = d.points;
+          const p1x = toPx(a[0]);
+          const p1y = toPy(a[0]);
+          const c1x = toPx(a[1]);
+          const c1y = toPy(a[1]);
+          const c2x = toPx(a[2]);
+          const c2y = toPy(a[2]);
+          const p2x = toPx(a[3]);
+          const p2y = toPy(a[3]);
+          if (p1x != null && p1y != null && c1x != null && c1y != null && c2x != null && c2y != null && p2x != null && p2y != null) {
+            const pts = cubicBezierPoints(p1x, p1y, c1x, c1y, c2x, c2y, p2x, p2y);
+            for (let i = 0; i < pts.length - 1; i++) {
+              const dist = distToSegment(mx, my, pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y);
+              if (dist < best) {
+                best = dist;
+                hit = { d, anchor: "body" };
               }
             }
           }
@@ -4211,10 +4426,11 @@ export function StudioChart({
         return;
       }
 
-      if (tool === "channel" || tool === "flat-channel") {
-        // Flat Top/Bottom (Phase 3D-5) reuses this EXACT drag-then-click
-        // gesture — the only difference is which render/hit-test branch
-        // its own tool id resolves to afterward.
+      if (tool === "channel" || tool === "flat-channel" || tool === "rotated-rect") {
+        // Flat Top/Bottom (Phase 3D-5) and Rotated Rectangle (Phase 3D-6)
+        // both reuse this EXACT drag-then-click gesture — the only
+        // difference is which render/hit-test branch its own tool id
+        // resolves to afterward.
         const pend = pendingRef.current;
         if (pend && pend.tool === tool && pend.anchors.length === 2) {
           onAddDrawing(stampNew({ tool, p1: pend.anchors[0], p2: pend.anchors[1], points: [pt] }));
@@ -4227,7 +4443,7 @@ export function StudioChart({
         return;
       }
 
-      if (tool === "fib-ext" || tool === "fib-wedge" || tool === "fib-time-trend" || tool === "pitchfan" || PITCHFORK_TOOLS.has(tool)) {
+      if (tool === "fib-ext" || tool === "fib-wedge" || tool === "fib-time-trend" || tool === "pitchfan" || tool === "curve" || PITCHFORK_TOOLS.has(tool)) {
         // Trend-Based Fib Extension (A->B->C), Fib Wedge (pivot->B->C),
         // Trend-Based Fib Time (A->B->C, Phase 3C-3), and Pitchfan
         // (pivot->B->C, Phase 3C-3) all use Triangle's exact 3-plain-click
@@ -4372,7 +4588,7 @@ export function StudioChart({
         onAddDrawing(stampNew({ tool: "gann-square-fixed", p1: pt, p2 }));
         return;
       }
-      if (tool === "arrow-up" || tool === "arrow-down") {
+      if (tool === "arrow-up" || tool === "arrow-down" || tool === "arrow-marker") {
         onAddDrawing(stampNew({ tool, p1: pt, p2: pt }));
         return;
       }
@@ -4458,7 +4674,7 @@ export function StudioChart({
       const dl = Math.abs(timeToLogicalExtrapolated(bars, draft.p2.time) - timeToLogicalExtrapolated(bars, draft.p1.time));
       const negligible = dl < 0.5 && draft.p1.price === draft.p2.price;
 
-      if (draft.tool === "channel" || draft.tool === "fib-channel" || draft.tool === "flat-channel") {
+      if (draft.tool === "channel" || draft.tool === "fib-channel" || draft.tool === "flat-channel" || draft.tool === "rotated-rect") {
         if (negligible) return;
         pendingRef.current = { tool: draft.tool, anchors: [draft.p1, draft.p2] };
         return;

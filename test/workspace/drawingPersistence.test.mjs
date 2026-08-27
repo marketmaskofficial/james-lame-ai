@@ -1242,6 +1242,106 @@ function d(id) {
   );
 }
 
+// ---- Phase 3D-6: Brushes/Arrows/Shapes round trip --------------------------
+// Arrow Marker/Arc are plain p1(/p2) tools; Rotated Rectangle/Curve are
+// p1/p2/points[0] like Parallel Channel/Fib Wedge; Double Curve reuses the
+// Phase 3D-1 shared `points`-array-of-4 primitive — the regression this
+// guards against is the SAME as every prior multi-anchor phase: an anchor
+// silently dropped, reordered, or collapsed on save/load.
+
+{
+  fakeStorage.clear();
+
+  const arrowMarker = {
+    id: "am1",
+    tool: "arrow-marker",
+    chartInstanceId: "chart-1",
+    p1: { time: 100, price: 50 },
+    p2: { time: 100, price: 50 },
+    color: "#e6b800",
+  };
+
+  const rotatedRect = {
+    id: "rr1",
+    tool: "rotated-rect",
+    chartInstanceId: "chart-1",
+    p1: { time: 0, price: 10 },
+    p2: { time: 100, price: 10 },
+    points: [{ time: 20, price: 30 }],
+    color: "#4da3ff",
+  };
+
+  const doubleCurve = {
+    id: "dc2",
+    tool: "double-curve",
+    chartInstanceId: "chart-1",
+    p1: { time: 0, price: 0 }, // start
+    p2: { time: 100, price: 0 }, // end
+    points: [
+      { time: 30, price: 40 }, // control1
+      { time: 70, price: -40 }, // control2
+    ],
+    color: "#a855f7",
+  };
+
+  saveDrawingsFor("chart-1", "FTMUSDT", "15m", [arrowMarker, rotatedRect, doubleCurve]);
+  const loaded = loadDrawingsFor("chart-1", "FTMUSDT", "15m");
+
+  ok("Phase 3D-6 round trip: all three drawings come back", loaded.length === 3);
+
+  const loadedArrowMarker = loaded.find((x) => x.id === "am1");
+  ok("Arrow Marker: single anchor survives intact", loadedArrowMarker.p1.price === 50);
+
+  const loadedRotatedRect = loaded.find((x) => x.id === "rr1");
+  ok(
+    "Rotated Rectangle: p1/p2 (the sloped edge) and the 3rd anchor (points[0], sets orientation/width) survive intact",
+    loadedRotatedRect.p1.time === 0 && loadedRotatedRect.p2.time === 100 && loadedRotatedRect.points?.[0]?.price === 30,
+  );
+
+  const loadedDoubleCurve = loaded.find((x) => x.id === "dc2");
+  ok(
+    "Double Curve: all FOUR anchors (start/control1/control2/end) survive intact, in order, none collapsed",
+    Array.isArray(loadedDoubleCurve.points) &&
+      loadedDoubleCurve.points.length === 2 &&
+      loadedDoubleCurve.p1.price === 0 &&
+      loadedDoubleCurve.points[0].price === 40 &&
+      loadedDoubleCurve.points[1].price === -40 &&
+      loadedDoubleCurve.p2.price === 0,
+  );
+}
+
+// ---- Phase 3D-6: chartInstanceId isolation for the new tools --------------
+
+{
+  fakeStorage.clear();
+  const chartAArc = {
+    id: "a-arc",
+    tool: "arc",
+    chartInstanceId: "chart-A",
+    p1: { time: 0, price: 1 },
+    p2: { time: 300, price: 6 },
+  };
+  const chartBCurve = {
+    id: "b-cv",
+    tool: "curve",
+    chartInstanceId: "chart-B",
+    p1: { time: 0, price: 1 },
+    p2: { time: 300, price: 2 },
+    points: [{ time: 150, price: 8 }],
+  };
+
+  saveDrawingsFor("chart-A", "OPUSDT", "1h", [chartAArc]);
+  saveDrawingsFor("chart-B", "OPUSDT", "1h", [chartBCurve]);
+
+  const a = loadDrawingsFor("chart-A", "OPUSDT", "1h");
+  const b = loadDrawingsFor("chart-B", "OPUSDT", "1h");
+  ok("Arc/Curve respect chartInstanceId isolation: chart A only sees its arc", a.length === 1 && a[0].tool === "arc");
+  ok(
+    "chart B only sees its curve (control point intact), not chart A's arc",
+    b.length === 1 && b[0].tool === "curve" && b[0].points?.[0]?.price === 8,
+  );
+}
+
 // ---- summary ----------------------------------------------------------------
 
 console.log(`\n${pass}/${pass + fail} passed`);

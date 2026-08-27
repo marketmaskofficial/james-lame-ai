@@ -489,13 +489,25 @@ export const TOOL_DEFS: ToolDef[] = [
   { id: "arrow", name: "Arrow", category: "arrows", icon: ArrowUpRight, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
   { id: "arrow-up", name: "Arrow Up", category: "arrows", icon: ArrowUp, interactionType: "point", anchorCount: 1, capabilities: { stroke: true }, defaultStyle: { color: "#22c55e", width: 1.5 }, implemented: true },
   { id: "arrow-down", name: "Arrow Down", category: "arrows", icon: ArrowDown, interactionType: "point", anchorCount: 1, capabilities: { stroke: true }, defaultStyle: { color: "#ef4444", width: 1.5 }, implemented: true },
-  { id: "arrow-marker", name: "Arrow Marker", category: "arrows", icon: ArrowUpRight, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: false, note: "Redundant with the 2-anchor Arrow tool above — no distinct geometry to add." },
+  // Arrow Marker (Phase 3D-6): genuinely distinct from the 2-anchor Arrow
+  // above — a single-click directional glyph (like Arrow Up/Down's own
+  // triangle marker just above), not a second line-with-arrowhead tool.
+  // Reuses that exact "triangle glyph at one anchor" render primitive with
+  // a different fixed orientation (diagonal, matching its own toolbar icon)
+  // as the one parameter that varies — see StudioChart.tsx's render branch.
+  { id: "arrow-marker", name: "Arrow Marker", category: "arrows", icon: ArrowUpRight, interactionType: "point", anchorCount: 1, capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 1.5 }, implemented: true },
 
   // ---- Shapes ---------------------------------------------------------------
   { id: "rect", name: "Rectangle", category: "shapes", icon: Square, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true, fill: true }, defaultStyle: { ...LINE_DEFAULT, fillOpacity: 0.14 }, implemented: true },
   { id: "circle", name: "Circle", category: "shapes", icon: Circle, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true, fill: true }, defaultStyle: { ...LINE_DEFAULT, fillOpacity: 0.14 }, implemented: true },
   { id: "triangle", name: "Triangle", category: "shapes", icon: Triangle, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, fill: true }, defaultStyle: { ...LINE_DEFAULT, fillOpacity: 0.14 }, implemented: true },
-  { id: "rotated-rect", name: "Rotated Rectangle", category: "shapes", icon: RectangleHorizontal, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, fill: true }, defaultStyle: { ...LINE_DEFAULT, fillOpacity: 0.14 }, implemented: false, note: "Needs a rotation handle beyond the existing 2/3-anchor hit-test model." },
+  // Rotated Rectangle (Phase 3D-6): the SAME drag-then-click 3-anchor
+  // gesture as Parallel Channel/Flat Top-Bottom, and the SAME shared
+  // perpendicular-offset primitive (geometry.ts's parallelChannelSecondRail)
+  // — but CLOSED into a 4-corner quadrilateral (p1, p2, rail2.p2, rail2.p1)
+  // instead of two open rails. This is what gives it genuine oriented/
+  // rotated geometry distinct from the axis-aligned Rectangle above.
+  { id: "rotated-rect", name: "Rotated Rectangle", category: "shapes", icon: RectangleHorizontal, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, fill: true }, defaultStyle: { ...LINE_DEFAULT, fillOpacity: 0.14 }, implemented: true },
   // Ellipse (Phase 3A): reuses Circle's existing free-drag renderer 1:1 —
   // both anchors define a bounding box, rx/ry come from that box's half-
   // width/half-height, so an ellipse was already reachable by dragging
@@ -520,9 +532,26 @@ export const TOOL_DEFS: ToolDef[] = [
   // between the two, expressed as a capability flag rather than a
   // hidden/duplicated tool.
   { id: "path", name: "Path", category: "shapes", icon: PenTool, interactionType: "multi-click", anchorCount: "unlimited", capabilities: { stroke: true, fill: true }, defaultStyle: { ...LINE_DEFAULT, fillOpacity: 0.14 }, implemented: true },
-  { id: "arc", name: "Arc", category: "shapes", icon: Compass, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: false },
-  { id: "curve", name: "Curve", category: "shapes", icon: Spline, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: false },
-  { id: "double-curve", name: "Double Curve", category: "shapes", icon: Hexagon, interactionType: "multi-click", anchorCount: 4, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: false },
+  // Arc (Phase 3D-6): a genuine quadratic-Bezier curve between the two
+  // anchors — the bulge is a fixed fraction of the chord length/direction
+  // (recomputed fresh each render, never persisted; only p1/p2 are
+  // canonical), since a 2-anchor tool has no third point to shape the bend
+  // with (unlike Curve below).
+  { id: "arc", name: "Arc", category: "shapes", icon: Compass, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  // Curve (Phase 3D-6): quadratic Bezier from p1 to p2 with points[0] as a
+  // genuinely user-editable control point (one real bend) — the SAME
+  // 3-anchor multi-click gesture as Fib Wedge/Pitchfork above.
+  { id: "curve", name: "Curve", category: "shapes", icon: Spline, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  // Double Curve (Phase 3D-6): a CUBIC Bezier through all 4 anchors
+  // (start/control1/control2/end) — genuinely distinct math from Curve's
+  // quadratic (a cubic can bend twice, an S-shape a quadratic cannot
+  // express), not the same tool under a second id. Reuses Phase 3D-1's
+  // shared labeled multi-anchor primitive for anchor storage/per-vertex
+  // editing (empty-string labels — nothing to name, just borrowing the
+  // anchor-count-from-label-length convention and the already
+  // index-aware per-vertex drag it provides for free) with its own cubic
+  // render/hit-test in place of the generic zigzag.
+  { id: "double-curve", name: "Double Curve", category: "shapes", icon: Hexagon, interactionType: "multi-click", anchorCount: 4, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
 
   // ---- Text / Notes -----------------------------------------------------
   { id: "text", name: "Text", category: "text", icon: TypeIcon, interactionType: "point", anchorCount: 1, capabilities: { text: true }, defaultStyle: { color: "#e8eaf0" }, implemented: true },

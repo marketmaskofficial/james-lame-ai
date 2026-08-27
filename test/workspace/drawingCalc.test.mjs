@@ -37,7 +37,15 @@ import {
   pitchforkTarget,
   pitchforkTeethAnchors,
 } from "../../src/lib/drawing/calc.ts";
-import { distToEllipseRing, fibSpiralPoints, parallelChannelSecondRail, distToSegment } from "../../src/lib/drawing/geometry.ts";
+import {
+  distToEllipseRing,
+  fibSpiralPoints,
+  parallelChannelSecondRail,
+  distToSegment,
+  quadraticBezierPoints,
+  cubicBezierPoints,
+  directionalArrowGlyph,
+} from "../../src/lib/drawing/geometry.ts";
 
 let pass = 0;
 let fail = 0;
@@ -771,6 +779,66 @@ function bar(time, open, high, low, close, volume) {
   ok("regression: a click on the second rail is FAR from the baseline (would have missed pre-fix)", distToBaseline > 30);
   close("regression: that SAME click is essentially ON the second rail post-fix", distToRail2, 0, 1e-9);
   ok("regression: the second-rail distance is now what a 'best distance across both rails' check would correctly pick", distToRail2 < distToBaseline);
+}
+
+// ---- Phase 3D-6: Brushes/Arrows/Shapes closeout ----------------------------
+
+{
+  // Rotated Rectangle: the 4 corners (p1, p2, rail2.p2, rail2.p1) formed by
+  // parallelChannelSecondRail must be a genuine PARALLELOGRAM (opposite
+  // sides equal length and parallel) — the property that gives it real
+  // oriented/rotated geometry, distinct from an axis-aligned Rectangle.
+  const x1 = 0, y1 = 0, x2 = 100, y2 = 0, x3 = 20, y3 = 40;
+  const rail2 = parallelChannelSecondRail(x1, y1, x2, y2, x3, y3);
+  const side1 = Math.hypot(x2 - x1, y2 - y1);
+  const side2 = Math.hypot(rail2.x2 - rail2.x1, rail2.y2 - rail2.y1);
+  close("Rotated Rectangle: opposite sides (p1->p2 and rail2) have equal length", side1, side2);
+  const side3 = Math.hypot(rail2.x1 - x1, rail2.y1 - y1);
+  const side4 = Math.hypot(rail2.x2 - x2, rail2.y2 - y2);
+  close("Rotated Rectangle: the other pair of opposite sides also have equal length", side3, side4);
+  ok("Rotated Rectangle: the offset rail is NOT collinear with the baseline (genuinely a 2D box, not a degenerate line)", Math.abs(rail2.y1 - y1) > 1e-6);
+}
+
+{
+  // Arc/Curve: quadraticBezierPoints must start/end EXACTLY at the two
+  // endpoints and genuinely deviate from the straight chord in between
+  // (real curvature, not a straight line in disguise).
+  const pts = quadraticBezierPoints(0, 0, 50, 40, 100, 0);
+  close("quadraticBezierPoints: first sample sits exactly on the start point", pts[0].x, 0);
+  close("quadraticBezierPoints: last sample sits exactly on the end point", pts[pts.length - 1].x, 100);
+  close("quadraticBezierPoints: last sample's y matches the end point", pts[pts.length - 1].y, 0, 1e-9);
+  const midSample = pts[Math.floor(pts.length / 2)];
+  ok("quadraticBezierPoints: the midpoint sample deviates from the straight chord (genuine curvature)", midSample.y > 5);
+}
+
+{
+  // Double Curve: cubicBezierPoints must also start/end exactly at its two
+  // endpoints, and — the property that makes it genuinely DISTINCT from
+  // Curve's quadratic — must be able to express an S-shape (two bends,
+  // deviating in OPPOSITE directions on either half), which a quadratic
+  // curve through a single control point cannot.
+  const pts = cubicBezierPoints(0, 0, 30, 40, 70, -40, 100, 0);
+  close("cubicBezierPoints: first sample sits exactly on the start point", pts[0].x, 0);
+  close("cubicBezierPoints: last sample sits exactly on the end point", pts[pts.length - 1].x, 100);
+  const quarter = pts[Math.floor(pts.length / 4)];
+  const threeQuarter = pts[Math.floor((pts.length * 3) / 4)];
+  ok("cubicBezierPoints: an S-shaped control layout produces deviations in OPPOSITE directions (a real double bend)", quarter.y > 0 && threeQuarter.y < 0);
+}
+
+{
+  // Arrow Marker: the glyph's tip must sit exactly `size` pixels from the
+  // anchor along the given angle, and the two base points must be
+  // symmetric around that same angle (an isosceles triangle, not a
+  // lopsided one) — the deterministic shape behind "arrowhead orientation".
+  const size = 10;
+  const angle = -Math.PI / 4; // up-and-to-the-right
+  const glyph = directionalArrowGlyph(0, 0, angle, size);
+  close("directionalArrowGlyph: tip sits exactly `size` pixels from the anchor", Math.hypot(glyph.tip.x, glyph.tip.y), size, 1e-9);
+  close("directionalArrowGlyph: tip's angle from the anchor matches the requested orientation", Math.atan2(glyph.tip.y, glyph.tip.x), angle, 1e-9);
+  const base1Dist = Math.hypot(glyph.base1.x, glyph.base1.y);
+  const base2Dist = Math.hypot(glyph.base2.x, glyph.base2.y);
+  close("directionalArrowGlyph: both base points sit the same distance from the anchor (symmetric, isosceles)", base1Dist, base2Dist);
+  ok("directionalArrowGlyph: a different orientation angle moves the tip to a genuinely different position", directionalArrowGlyph(0, 0, 0, size).tip.x !== glyph.tip.x);
 }
 
 // ---- summary ----------------------------------------------------------------

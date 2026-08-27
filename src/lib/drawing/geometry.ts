@@ -378,3 +378,84 @@ export function parallelChannelSecondRail(
   const oy = ny * offset;
   return { x1: x1 + ox, y1: y1 + oy, x2: x2 + ox, y2: y2 + oy };
 }
+
+/**
+ * Sampled points (pixel space) along a quadratic Bezier curve — Arc's
+ * fixed-bulge curve and Curve's user-placed control point (Phase 3D-6) both
+ * hit-test through this one sampler, even though they RENDER via the
+ * native, perfectly smooth `ctx.quadraticCurveTo` (this is for hit-testing
+ * accuracy, not for drawing — a sampled polyline is the wrong tool for the
+ * pixels actually on screen, but an excellent, cheap approximation for
+ * "how close is the cursor to this curve").
+ */
+export function quadraticBezierPoints(
+  x1: number,
+  y1: number,
+  cx: number,
+  cy: number,
+  x2: number,
+  y2: number,
+  steps = 24,
+): { x: number; y: number }[] {
+  const points: { x: number; y: number }[] = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const mt = 1 - t;
+    points.push({
+      x: mt * mt * x1 + 2 * mt * t * cx + t * t * x2,
+      y: mt * mt * y1 + 2 * mt * t * cy + t * t * y2,
+    });
+  }
+  return points;
+}
+
+/**
+ * Sampled points (pixel space) along a CUBIC Bezier curve — Double Curve's
+ * own genuinely distinct geometry from Curve's quadratic: a cubic curve can
+ * bend twice (an S-shape), which a single quadratic control point cannot
+ * express. Same "sample for hit-testing, render natively via
+ * `ctx.bezierCurveTo`" split as quadraticBezierPoints above.
+ */
+export function cubicBezierPoints(
+  x1: number,
+  y1: number,
+  c1x: number,
+  c1y: number,
+  c2x: number,
+  c2y: number,
+  x2: number,
+  y2: number,
+  steps = 32,
+): { x: number; y: number }[] {
+  const points: { x: number; y: number }[] = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const mt = 1 - t;
+    points.push({
+      x: mt * mt * mt * x1 + 3 * mt * mt * t * c1x + 3 * mt * t * t * c2x + t * t * t * x2,
+      y: mt * mt * mt * y1 + 3 * mt * mt * t * c1y + 3 * mt * t * t * c2y + t * t * t * y2,
+    });
+  }
+  return points;
+}
+
+/**
+ * Three vertices (pixel space) of a small directional arrow/triangle glyph
+ * pointing along `angleRad` — Arrow Marker's own glyph (Phase 3D-6), reusing
+ * Arrow Up/Down's exact "triangle glyph at one anchor" shape with
+ * orientation as the one parameter that varies (`angleRad = -Math.PI/4` is
+ * up-and-to-the-right, matching Arrow Marker's own toolbar icon).
+ */
+export function directionalArrowGlyph(
+  cx: number,
+  cy: number,
+  angleRad: number,
+  size: number,
+  spread = 2.6,
+): { tip: { x: number; y: number }; base1: { x: number; y: number }; base2: { x: number; y: number } } {
+  return {
+    tip: { x: cx + Math.cos(angleRad) * size, y: cy + Math.sin(angleRad) * size },
+    base1: { x: cx + Math.cos(angleRad + spread) * size * 0.7, y: cy + Math.sin(angleRad + spread) * size * 0.7 },
+    base2: { x: cx + Math.cos(angleRad - spread) * size * 0.7, y: cy + Math.sin(angleRad - spread) * size * 0.7 },
+  };
+}

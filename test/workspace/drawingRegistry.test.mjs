@@ -141,12 +141,12 @@ for (const t of TOOL_DEFS) {
 // them), so they move out of this list and into their own dedicated block
 // below, mirroring exactly how Ellipse/Polyline/Path graduated out of this
 // same list in Phase 3A. "xabcd" graduated out in Phase 3D-1,
-// "elliott-impulse" in Phase 3D-2, "cyclic-lines" in Phase 3D-3, and
-// "gann-box"/"gann-fan" in Phase 3D-4 (see their own dedicated blocks
-// further below).
+// "elliott-impulse" in Phase 3D-2, "cyclic-lines" in Phase 3D-3,
+// "gann-box"/"gann-fan" in Phase 3D-4, and "rotated-rect" in Phase 3D-6
+// (see their own dedicated blocks further below).
 
 {
-  const DEFERRED_SAMPLE = ["rotated-rect", "ruler", "image"];
+  const DEFERRED_SAMPLE = ["ruler", "image"];
   const wronglyImplemented = DEFERRED_SAMPLE.filter((id) => TOOL_BY_ID[id]?.implemented);
   ok(`deferred tools stay implemented:false (wrongly true: ${wronglyImplemented.join(",") || "none"})`, wronglyImplemented.length === 0);
 }
@@ -492,6 +492,55 @@ for (const t of TOOL_DEFS) {
     "all four Pitchfork variants are four distinct tool ids — none aliased to one visual tool",
     new Set(PITCHFORK_IDS.map((id) => TOOL_BY_ID[id]?.id)).size === 4,
   );
+}
+
+// ---- Phase 3D-6: Brushes/Arrows/Shapes audit + completion ------------------
+// Brush, Highlighter, Arrow, Arrow Up/Down, Rectangle, Path, Circle,
+// Ellipse, Polyline, Triangle were already genuinely complete and are
+// deliberately NOT touched or re-tested here. Arrow Marker, Rotated
+// Rectangle, Arc, Curve, and Double Curve were the five found missing.
+
+{
+  const PHASE3D6_NEW_TOOLS = ["arrow-marker", "rotated-rect", "arc", "curve", "double-curve"];
+  const missing = PHASE3D6_NEW_TOOLS.filter((id) => !TOOL_BY_ID[id]?.implemented);
+  ok(`every Phase 3D-6 new tool is implemented:true (missing: ${missing.join(",") || "none"})`, missing.length === 0);
+  for (const id of PHASE3D6_NEW_TOOLS) {
+    ok(`${id} is in IMPLEMENTED_TOOLS`, IMPLEMENTED_TOOLS.some((t) => t.id === id));
+    ok(`${id} declares stroke capability`, TOOL_BY_ID[id]?.capabilities.stroke === true);
+  }
+  ok(
+    "all five Phase 3D-6 tools are five distinct tool ids",
+    new Set(PHASE3D6_NEW_TOOLS.map((id) => TOOL_BY_ID[id]?.id)).size === 5,
+  );
+
+  ok("Arrow Marker is a single-click point tool with one anchor — genuinely distinct from the 2-anchor Arrow", TOOL_BY_ID["arrow-marker"]?.interactionType === "point" && TOOL_BY_ID["arrow-marker"]?.anchorCount === 1);
+  ok("Arrow Marker is a distinct tool id from Arrow/Arrow Up/Arrow Down", TOOL_BY_ID["arrow-marker"]?.id !== TOOL_BY_ID["arrow"]?.id && TOOL_BY_ID["arrow-marker"]?.id !== TOOL_BY_ID["arrow-up"]?.id && TOOL_BY_ID["arrow-marker"]?.id !== TOOL_BY_ID["arrow-down"]?.id);
+
+  ok("Rotated Rectangle is a 3-anchor multi-click tool, same gesture as Parallel Channel", TOOL_BY_ID["rotated-rect"]?.interactionType === "multi-click" && TOOL_BY_ID["rotated-rect"]?.anchorCount === 3);
+  ok("Rotated Rectangle declares fill capability (closed 4-corner shape)", TOOL_BY_ID["rotated-rect"]?.capabilities.fill === true);
+  ok("Rotated Rectangle is a DISTINCT tool id from the axis-aligned Rectangle", TOOL_BY_ID["rotated-rect"]?.id !== TOOL_BY_ID["rect"]?.id);
+
+  ok("Arc is a 2-anchor drag tool", TOOL_BY_ID["arc"]?.interactionType === "drag" && TOOL_BY_ID["arc"]?.anchorCount === 2);
+  ok("Curve is a 3-anchor multi-click tool (start/control/end)", TOOL_BY_ID["curve"]?.interactionType === "multi-click" && TOOL_BY_ID["curve"]?.anchorCount === 3);
+  ok("Double Curve is a 4-anchor multi-click tool (start/control1/control2/end)", TOOL_BY_ID["double-curve"]?.interactionType === "multi-click" && TOOL_BY_ID["double-curve"]?.anchorCount === 4);
+  ok(
+    "Double Curve is a DISTINCT tool id from Curve — not the same tool under a second id",
+    TOOL_BY_ID["double-curve"]?.id !== TOOL_BY_ID["curve"]?.id && TOOL_BY_ID["double-curve"]?.anchorCount !== TOOL_BY_ID["curve"]?.anchorCount,
+  );
+
+  ok("Brush/Highlighter/Arrow/Arrow Up/Arrow Down/Rectangle/Path/Circle/Ellipse/Polyline/Triangle were already complete and remain implemented:true (untouched)", [
+    "brush",
+    "highlighter",
+    "arrow",
+    "arrow-up",
+    "arrow-down",
+    "rect",
+    "path",
+    "circle",
+    "ellipse",
+    "polyline",
+    "triangle",
+  ].every((id) => TOOL_BY_ID[id]?.implemented === true));
 }
 
 // ---- capability-gated settings sections have a real reason to exist -------
