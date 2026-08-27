@@ -448,6 +448,55 @@ export function DrawingSettingsPopover({
             </div>
           )}
 
+          {caps.table && (
+            <div className="mt-3 space-y-1.5">
+              <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Table</p>
+              {(() => {
+                const rows = (drawing.settings?.tableRows as string[][] | undefined) ?? [
+                  ["", ""],
+                  ["", ""],
+                ];
+                const setCell = (r: number, c: number, value: string) => {
+                  const next = rows.map((row) => [...row]);
+                  next[r][c] = value;
+                  setSetting("tableRows", next);
+                };
+                return (
+                  <>
+                    <div className="space-y-1">
+                      {rows.map((row, r) => (
+                        <div key={r} className="flex gap-1">
+                          {row.map((cell, c) => (
+                            <input
+                              key={c}
+                              value={cell}
+                              onChange={(e) => setCell(r, c, e.target.value)}
+                              className="w-16 rounded border border-border bg-background px-1.5 py-1 text-[11px] outline-none focus:border-brand"
+                            />
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex gap-1">
+                      <button
+                        onClick={() => setSetting("tableRows", [...rows.map((row) => [...row]), rows[0].map(() => "")])}
+                        className="flex-1 rounded border border-border py-1 text-[10.5px] hover:bg-accent"
+                      >
+                        + Row
+                      </button>
+                      <button
+                        onClick={() => setSetting("tableRows", rows.map((row) => [...row, ""]))}
+                        className="flex-1 rounded border border-border py-1 text-[10.5px] hover:bg-accent"
+                      >
+                        + Column
+                      </button>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          )}
+
           {caps.anchorLabel && (
             <div className="mt-3 space-y-1.5">
               <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Anchor</p>

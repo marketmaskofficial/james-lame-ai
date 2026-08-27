@@ -182,6 +182,13 @@ export type ToolCapabilities = {
    * ...), which aren't ratios of anything and have no per-level PRICE at
    * all (each level is a TIME). */
   levelValueKind?: "ratio" | "sequence";
+  /** Genuine structured rows/cells editor (Phase 3D-7's Table annotation) —
+   * a small grid of editable string cells (`settings.tableRows`), instead
+   * of the single-line free-text input `text` gives every other
+   * annotation. Mutually exclusive with `text` in practice (Table's
+   * content IS the grid), but nothing enforces that — a tool could
+   * declare both if it ever needed to. */
+  table?: boolean;
 };
 
 export type ToolDefaultStyle = {
@@ -556,14 +563,42 @@ export const TOOL_DEFS: ToolDef[] = [
   // ---- Text / Notes -----------------------------------------------------
   { id: "text", name: "Text", category: "text", icon: TypeIcon, interactionType: "point", anchorCount: 1, capabilities: { text: true }, defaultStyle: { color: "#e8eaf0" }, implemented: true },
   { id: "marker", name: "Note", category: "text", icon: MapPin, interactionType: "point", anchorCount: 1, capabilities: { text: true }, defaultStyle: { color: "#e6b800" }, implemented: true },
-  { id: "price-note", name: "Price Note", category: "text", icon: StickyNote, interactionType: "point", anchorCount: 1, capabilities: { text: true }, defaultStyle: { color: "#e6b800" }, implemented: false },
-  { id: "pin", name: "Pin", category: "text", icon: MapPin, interactionType: "point", anchorCount: 1, capabilities: { text: true }, defaultStyle: { color: "#e6b800" }, implemented: false, note: "Near-duplicate of Note's marker+label geometry — low distinct value without a custom pin glyph." },
-  { id: "table", name: "Table", category: "text", icon: Table, interactionType: "point", anchorCount: 1, capabilities: { text: true }, defaultStyle: {}, implemented: false },
-  { id: "callout", name: "Callout", category: "text", icon: MessageSquare, interactionType: "drag", anchorCount: 2, capabilities: { text: true, stroke: true }, defaultStyle: { color: "#e6b800" }, implemented: false },
-  { id: "comment", name: "Comment", category: "text", icon: MessageSquare, interactionType: "point", anchorCount: 1, capabilities: { text: true }, defaultStyle: { color: "#e6b800" }, implemented: false },
-  { id: "price-label", name: "Price Label", category: "text", icon: Tag, interactionType: "point", anchorCount: 1, capabilities: { text: true }, defaultStyle: { color: "#e6b800" }, implemented: false },
-  { id: "signpost", name: "Signpost", category: "text", icon: Tag, interactionType: "point", anchorCount: 1, capabilities: { text: true }, defaultStyle: { color: "#e6b800" }, implemented: false },
-  { id: "flag-mark", name: "Flag Mark", category: "text", icon: Flag, interactionType: "point", anchorCount: 1, capabilities: { text: true }, defaultStyle: { color: "#e6b800" }, implemented: false },
+  // Price Note (Phase 3D-7): its ONE genuine requirement is that the
+  // displayed price is DERIVED from p1.price fresh every render (see
+  // StudioChart.tsx's render branch), never a persisted formatted string —
+  // moving the anchor, panning, zooming, or reloading all show the live
+  // value. A small "note page" glyph (drawAnnotationGlyph) is its one
+  // visual difference from plain Note; the optional text still flows
+  // through the exact same shared drawTextLabel.
+  { id: "price-note", name: "Price Note", category: "text", icon: StickyNote, interactionType: "point", anchorCount: 1, capabilities: { text: true }, defaultStyle: { color: "#e6b800" }, implemented: true },
+  // Pin: the SAME single-anchor point-tool architecture as Note, but with
+  // its own genuine teardrop/pin glyph (drawAnnotationGlyph) instead of
+  // Note's plain dot — the "custom pin glyph" the old note here said was
+  // missing.
+  { id: "pin", name: "Pin", category: "text", icon: MapPin, interactionType: "point", anchorCount: 1, capabilities: { text: true }, defaultStyle: { color: "#e6b800" }, implemented: true },
+  // Table: genuine structured rows/cells (`table` capability — see its own
+  // doc comment above), not a text blob or screenshot. No `text` capability
+  // — a table's content IS the grid, not a single free-text field.
+  { id: "table", name: "Table", category: "text", icon: Table, interactionType: "point", anchorCount: 1, capabilities: { table: true }, defaultStyle: {}, implemented: true },
+  // Callout: a real 2-anchor tool — p1 is the pointed-to chart location,
+  // p2 is the text box position — connected by a drawn pointer line that's
+  // recomputed from both live anchors every render (see StudioChart.tsx),
+  // so editing/moving either anchor keeps the pointer correctly attached.
+  { id: "callout", name: "Callout", category: "text", icon: MessageSquare, interactionType: "drag", anchorCount: 2, capabilities: { text: true, stroke: true }, defaultStyle: { color: "#e6b800" }, implemented: true },
+  // Comment: single-anchor, its own speech-bubble glyph — genuinely
+  // visually distinct from Text (no glyph) and Note (a plain dot).
+  { id: "comment", name: "Comment", category: "text", icon: MessageSquare, interactionType: "point", anchorCount: 1, capabilities: { text: true }, defaultStyle: { color: "#e6b800" }, implemented: true },
+  // Price Label: same "derive the price from p1.price fresh every render,
+  // never persist a formatted string" requirement as Price Note above, with
+  // its own tag-shaped glyph.
+  { id: "price-label", name: "Price Label", category: "text", icon: Tag, interactionType: "point", anchorCount: 1, capabilities: { text: true }, defaultStyle: { color: "#e6b800" }, implemented: true },
+  // Signpost: single-anchor, its own post-and-sign glyph.
+  { id: "signpost", name: "Signpost", category: "text", icon: Tag, interactionType: "point", anchorCount: 1, capabilities: { text: true }, defaultStyle: { color: "#e6b800" }, implemented: true },
+  // Flag Mark: single-anchor, its own flag-on-a-pole glyph — a real
+  // parameterized shape in the SAME shared drawAnnotationGlyph as Pin/
+  // Signpost/Comment/Price Note/Price Label (one function, one `shape`
+  // parameter per tool), not aliased to either.
+  { id: "flag-mark", name: "Flag Mark", category: "text", icon: Flag, interactionType: "point", anchorCount: 1, capabilities: { text: true }, defaultStyle: { color: "#e6b800" }, implemented: true },
 
   // ---- Measurement ------------------------------------------------------
   { id: "price-range", name: "Price Range", category: "measure", icon: Ruler, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
@@ -572,6 +607,14 @@ export const TOOL_DEFS: ToolDef[] = [
   { id: "ruler", name: "Ruler / Measure", category: "measure", icon: Ruler, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: false, note: "Same measurement as Date + Price Range above — no distinct geometry to add without duplicating it." },
 
   // ---- Content (architecture-ready only, lowest priority) -----------------
+  // Image (Phase 3D-7 audit): stays implemented:false — this codebase has
+  // NO durable image/file upload infrastructure (no storage bucket, no
+  // upload server function; `profiles.avatar_url` is a plain URL column,
+  // not an upload pipeline). Placing a real image needs that asset-storage
+  // dependency built first; persisting a base64 blob into drawing
+  // localStorage instead — the one shortcut that WOULD "work" today — is
+  // explicitly the wrong tradeoff (unbounded localStorage growth, no real
+  // asset lifecycle) and deliberately not done here.
   { id: "image", name: "Image", category: "content", icon: Image, interactionType: "point", anchorCount: 1, capabilities: {}, defaultStyle: {}, implemented: false },
   { id: "content-icon", name: "Icon", category: "content", icon: Hash, interactionType: "point", anchorCount: 1, capabilities: {}, defaultStyle: {}, implemented: false },
   { id: "emoji", name: "Emoji", category: "content", icon: Smile, interactionType: "point", anchorCount: 1, capabilities: {}, defaultStyle: {}, implemented: false },

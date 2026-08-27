@@ -697,6 +697,73 @@ function fmt(n: number) {
   return n.toFixed(abs >= 1000 ? 1 : abs >= 1 ? 2 : 6);
 }
 
+type AnnotationGlyphShape = "pin" | "flag" | "signpost" | "comment" | "note";
+
+/**
+ * Small distinctive marker glyphs for the Text/Notes annotation family
+ * (Phase 3D-7) — each of Pin/Flag Mark/Signpost/Comment/Price Note's ONE
+ * visual difference from plain Text/Note, drawn once here instead of five
+ * near-duplicate inline shape blocks. Always paired with a `drawTextLabel`
+ * call for the actual text content, so every one of these tools still gets
+ * the exact same font/color/background/border/alignment machinery Text
+ * already has — this function only ever draws the marker, never text.
+ */
+function drawAnnotationGlyph(ctx: CanvasRenderingContext2D, shape: AnnotationGlyphShape, x: number, y: number, col: string, alpha: number): void {
+  ctx.save();
+  ctx.setLineDash([]);
+  ctx.fillStyle = withAlpha(col, alpha);
+  ctx.strokeStyle = withAlpha(col, alpha);
+  ctx.lineWidth = 1.5;
+  if (shape === "pin") {
+    ctx.beginPath();
+    ctx.arc(x, y - 6, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(x - 4, y - 3);
+    ctx.lineTo(x, y + 6);
+    ctx.lineTo(x + 4, y - 3);
+    ctx.closePath();
+    ctx.fill();
+  } else if (shape === "flag") {
+    ctx.beginPath();
+    ctx.moveTo(x, y - 14);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x, y - 14);
+    ctx.lineTo(x + 12, y - 10);
+    ctx.lineTo(x, y - 6);
+    ctx.closePath();
+    ctx.fill();
+  } else if (shape === "signpost") {
+    ctx.beginPath();
+    ctx.moveTo(x, y - 16);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.rect(x, y - 16, 20, 8);
+    ctx.fill();
+  } else if (shape === "comment") {
+    const w = 16;
+    const h = 11;
+    ctx.beginPath();
+    ctx.moveTo(x - w / 2, y - h - 6);
+    ctx.lineTo(x + w / 2, y - h - 6);
+    ctx.lineTo(x + w / 2, y - 6);
+    ctx.lineTo(x - w / 2 + 5, y - 6);
+    ctx.lineTo(x - w / 2 + 2, y);
+    ctx.lineTo(x - w / 2 + 2, y - 6);
+    ctx.lineTo(x - w / 2, y - 6);
+    ctx.closePath();
+    ctx.stroke();
+  } else if (shape === "note") {
+    ctx.beginPath();
+    ctx.rect(x - 6, y - 16, 12, 14);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
 /**
  * Shared renderer for Text/Note's `capabilities.text` settings (content,
  * color, size, bold, italic, alignment, background, border) — replaces two
@@ -2641,7 +2708,7 @@ export function StudioChart({
           }
         } else {
           handles.push({ x: x1, y: y1 });
-          if (x2 != null && y2 != null && d.tool !== "hline" && d.tool !== "vline" && d.tool !== "hray" && d.tool !== "crossline" && d.tool !== "arrow-up" && d.tool !== "arrow-down" && d.tool !== "arrow-marker")
+          if (x2 != null && y2 != null && !NO_ANCHOR_2_TOOLS.has(d.tool))
             handles.push({ x: x2, y: y2 });
           const p3 = d.points?.[0];
           if (
@@ -2711,6 +2778,72 @@ export function StudioChart({
         ctx.arc(x1, y1, 5 + lw, 0, Math.PI * 2);
         ctx.fill();
         if (d.text) ctx.fillText(d.text, x1 + 9, y1 + 4);
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "pin" || d.tool === "comment" || d.tool === "signpost" || d.tool === "flag-mark") {
+        // Phase 3D-7: one shared glyph function, one shape per tool id —
+        // see drawAnnotationGlyph's own doc comment.
+        const shape: AnnotationGlyphShape = d.tool === "pin" ? "pin" : d.tool === "comment" ? "comment" : d.tool === "signpost" ? "signpost" : "flag";
+        drawAnnotationGlyph(ctx, shape, x1, y1, col, alpha);
+        if (d.text) drawTextLabel(ctx, d, x1 + 16, y1 - 4, col, alpha);
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "price-note" || d.tool === "price-label") {
+        // The displayed price is DERIVED from d.p1.price fresh every
+        // render — never a persisted formatted string — so it stays
+        // correct through pan/zoom/reload/anchor movement automatically.
+        // The optional user text is appended, still flowing through the
+        // exact same shared drawTextLabel every other annotation uses.
+        if (d.tool === "price-note") drawAnnotationGlyph(ctx, "note", x1, y1, col, alpha);
+        const priceStr = fmt(d.p1.price);
+        const combinedText = d.text ? `${priceStr} — ${d.text}` : priceStr;
+        drawTextLabel(ctx, { ...d, text: combinedText }, x1 + (d.tool === "price-note" ? 10 : 6), y1 - 4, col, alpha);
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "table") {
+        const rows = (d.settings?.tableRows as string[][] | undefined) ?? [
+          ["", ""],
+          ["", ""],
+        ];
+        const cellW = 60;
+        const cellH = 20;
+        ctx.setLineDash([]);
+        ctx.font = "11px ui-sans-serif, system-ui";
+        ctx.strokeStyle = withAlpha(col, alpha);
+        ctx.fillStyle = withAlpha(col, alpha);
+        ctx.lineWidth = 1;
+        for (let r = 0; r < rows.length; r++) {
+          for (let c = 0; c < rows[r].length; c++) {
+            const cx = x1 + c * cellW;
+            const cy = y1 + r * cellH;
+            ctx.strokeRect(cx, cy, cellW, cellH);
+            const val = rows[r][c] ?? "";
+            if (val) ctx.fillText(val, cx + 4, cy + cellH - 6);
+          }
+        }
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "callout") {
+        const cx2 = px(d.p2);
+        const cy2 = py(d.p2);
+        if (cx2 != null && cy2 != null) {
+          // The pointer line is recomputed from BOTH live anchors every
+          // render, so editing/moving either one keeps it correctly
+          // attached — never a persisted/cached line.
+          ctx.setLineDash([]);
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(cx2, cy2);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(x1, y1, 2.5, 0, Math.PI * 2);
+          ctx.fill();
+          drawTextLabel(ctx, d, cx2 + 4, cy2, col, alpha);
+        }
         ctx.restore();
         continue;
       }
@@ -3532,7 +3665,26 @@ export function StudioChart({
   // Read by drawOverlay() to render the in-progress preview.
   const previewPointRef = useRef<MarketPoint | null>(null);
 
-  const NO_ANCHOR_2_TOOLS = new Set<DrawTool>(["hline", "vline", "hray", "crossline", "text", "marker", "vwap", "vp-anchored", "arrow-up", "arrow-down", "arrow-marker"]);
+  const NO_ANCHOR_2_TOOLS = new Set<DrawTool>([
+    "hline",
+    "vline",
+    "hray",
+    "crossline",
+    "text",
+    "marker",
+    "vwap",
+    "vp-anchored",
+    "arrow-up",
+    "arrow-down",
+    "arrow-marker",
+    "pin",
+    "comment",
+    "signpost",
+    "flag-mark",
+    "price-note",
+    "price-label",
+    "table",
+  ]);
 
   // Closest drawing to a screen point — used by Select/erase (inside the
   // pointer-interaction effect below) AND by the double-click-for-settings
@@ -4256,6 +4408,26 @@ export function StudioChart({
         ) {
           hit = { d, anchor: "body" };
         }
+        if (d.tool === "table" && x1 != null && y1 != null && !hit) {
+          const rows = (d.settings?.tableRows as string[][] | undefined) ?? [
+            ["", ""],
+            ["", ""],
+          ];
+          const cellW = 60;
+          const cellH = 20;
+          const w = (rows[0]?.length ?? 1) * cellW;
+          const h = rows.length * cellH;
+          if (mx >= x1 && mx <= x1 + w && my >= y1 && my <= y1 + h) {
+            hit = { d, anchor: "body" };
+          }
+        }
+        if (d.tool === "callout" && x1 != null && y1 != null && x2 != null && y2 != null && !anchorAlreadyHitOnThisDrawing) {
+          const dist = distToSegment(mx, my, x1, y1, x2, y2);
+          if (dist < best) {
+            best = dist;
+            hit = { d, anchor: "body" };
+          }
+        }
         if (
           d.tool === "ellipse" && x1 != null && x2 != null && y1 != null && y2 != null && !hit
         ) {
@@ -4537,10 +4709,43 @@ export function StudioChart({
         onAddDrawing(stampNew({ tool, p1: pt, p2: pt }));
         return;
       }
-      if (tool === "text" || tool === "marker") {
+      if (
+        tool === "text" ||
+        tool === "marker" ||
+        tool === "pin" ||
+        tool === "comment" ||
+        tool === "signpost" ||
+        tool === "flag-mark" ||
+        tool === "price-note" ||
+        tool === "price-label"
+      ) {
+        // Every one of these single-anchor annotation tools (Phase 3D-7's
+        // Pin/Comment/Signpost/Flag Mark/Price Note/Price Label reusing
+        // Note's exact prompt-then-place gesture) has OPTIONAL text — only
+        // plain Text itself requires non-empty content, matching its
+        // existing behavior exactly.
         const text = window.prompt(tool === "text" ? "Label text" : "Note text (optional)");
         if (tool === "text" && !text) return;
         onAddDrawing(stampNew({ tool, p1: pt, p2: pt, ...(text ? { text } : {}) }));
+        return;
+      }
+      if (tool === "table") {
+        // No prompt — Table's content is edited via its own grid UI in the
+        // settings popover (double-click after creation), not a single
+        // text prompt.
+        onAddDrawing(
+          stampNew({
+            tool,
+            p1: pt,
+            p2: pt,
+            settings: {
+              tableRows: [
+                ["", ""],
+                ["", ""],
+              ],
+            },
+          }),
+        );
         return;
       }
       if (tool === "vwap") {

@@ -543,6 +543,50 @@ for (const t of TOOL_DEFS) {
   ].every((id) => TOOL_BY_ID[id]?.implemented === true));
 }
 
+// ---- Phase 3D-7: Text/Notes/Content audit + completion ---------------------
+// Text and Note (marker) were already genuinely complete and are
+// deliberately NOT touched or re-tested here. Price Note, Pin, Table,
+// Callout, Comment, Price Label, Signpost, and Flag Mark were the eight
+// found missing. Image stays implemented:false (no durable asset-storage
+// infrastructure exists in this codebase — see registry.ts's own comment).
+// Post/Idea are publishing/community actions, not chart drawings — they
+// have no registry entry at all and are not expected to.
+
+{
+  const PHASE3D7_NEW_TOOLS = ["price-note", "pin", "table", "callout", "comment", "price-label", "signpost", "flag-mark"];
+  const missing = PHASE3D7_NEW_TOOLS.filter((id) => !TOOL_BY_ID[id]?.implemented);
+  ok(`every Phase 3D-7 new tool is implemented:true (missing: ${missing.join(",") || "none"})`, missing.length === 0);
+  for (const id of PHASE3D7_NEW_TOOLS) {
+    ok(`${id} is in IMPLEMENTED_TOOLS`, IMPLEMENTED_TOOLS.some((t) => t.id === id));
+    ok(`${id} resolves to the "text" category`, TOOL_BY_ID[id]?.category === "text");
+  }
+  ok(
+    "all eight Phase 3D-7 tools are eight distinct tool ids",
+    new Set(PHASE3D7_NEW_TOOLS.map((id) => TOOL_BY_ID[id]?.id)).size === 8,
+  );
+
+  const SINGLE_ANCHOR_TEXT_TOOLS = ["price-note", "pin", "comment", "price-label", "signpost", "flag-mark"];
+  for (const id of SINGLE_ANCHOR_TEXT_TOOLS) {
+    ok(`${id} is a single-click point tool`, TOOL_BY_ID[id]?.interactionType === "point" && TOOL_BY_ID[id]?.anchorCount === 1);
+    ok(`${id} declares text capability (optional label, same shared drawTextLabel every annotation uses)`, TOOL_BY_ID[id]?.capabilities.text === true);
+  }
+  ok(
+    "Pin/Comment/Signpost/Flag Mark/Price Note are five distinct tool ids despite sharing one glyph renderer",
+    new Set(["pin", "comment", "signpost", "flag-mark", "price-note"].map((id) => TOOL_BY_ID[id]?.id)).size === 5,
+  );
+
+  ok("Table declares the new table capability (structured rows/cells), not plain text", TOOL_BY_ID["table"]?.capabilities.table === true && !TOOL_BY_ID["table"]?.capabilities.text);
+  ok("Table is a single-click point tool", TOOL_BY_ID["table"]?.interactionType === "point" && TOOL_BY_ID["table"]?.anchorCount === 1);
+
+  ok("Callout is a real 2-anchor tool (pointed-to location + text box position)", TOOL_BY_ID["callout"]?.interactionType === "drag" && TOOL_BY_ID["callout"]?.anchorCount === 2);
+  ok("Callout declares text capability", TOOL_BY_ID["callout"]?.capabilities.text === true);
+
+  ok("Image remains implemented:false — no durable asset-storage infrastructure exists yet", TOOL_BY_ID["image"]?.implemented === false);
+  ok("Post/Idea have no registry entry — publishing/community actions, not chart drawings", TOOL_BY_ID["post"] === undefined && TOOL_BY_ID["idea"] === undefined);
+
+  ok("Text and Note (marker) were already complete and remain implemented:true (untouched)", TOOL_BY_ID["text"]?.implemented === true && TOOL_BY_ID["marker"]?.implemented === true);
+}
+
 // ---- capability-gated settings sections have a real reason to exist -------
 
 {

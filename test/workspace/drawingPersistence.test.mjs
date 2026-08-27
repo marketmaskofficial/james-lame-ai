@@ -1342,6 +1342,123 @@ function d(id) {
   );
 }
 
+// ---- Phase 3D-7: Text/Notes round trip -------------------------------------
+// Text itself (already complete, verified here for the first time) plus
+// the eight newly implemented annotation tools. Price Note/Price Label's
+// key property: only p1.price and the optional user `text` are persisted —
+// there is no separate "displayPrice"/formatted-string field to go stale,
+// since the render path always derives the shown price from p1.price fresh.
+
+{
+  fakeStorage.clear();
+
+  const textDrawing = {
+    id: "t1",
+    tool: "text",
+    chartInstanceId: "chart-1",
+    p1: { time: 100, price: 50 },
+    p2: { time: 100, price: 50 },
+    text: "Support zone",
+    settings: { fontSize: "large", bold: true, align: "center" },
+    color: "#e8eaf0",
+  };
+
+  const priceLabel = {
+    id: "pl1",
+    tool: "price-label",
+    chartInstanceId: "chart-1",
+    p1: { time: 200, price: 79250.5 },
+    p2: { time: 200, price: 79250.5 },
+    text: "resistance",
+    color: "#e6b800",
+  };
+
+  const callout = {
+    id: "co1",
+    tool: "callout",
+    chartInstanceId: "chart-1",
+    p1: { time: 0, price: 100 }, // pointed-to chart location
+    p2: { time: 200, price: 150 }, // text box position
+    text: "Watch this breakout",
+    color: "#4da3ff",
+  };
+
+  const table = {
+    id: "tb1",
+    tool: "table",
+    chartInstanceId: "chart-1",
+    p1: { time: 300, price: 60 },
+    p2: { time: 300, price: 60 },
+    settings: {
+      tableRows: [
+        ["Level", "Price"],
+        ["R1", "80000"],
+        ["S1", "77500"],
+      ],
+    },
+  };
+
+  saveDrawingsFor("chart-1", "DOGEUSDT", "1h", [textDrawing, priceLabel, callout, table]);
+  const loaded = loadDrawingsFor("chart-1", "DOGEUSDT", "1h");
+
+  ok("Phase 3D-7 round trip: all four drawings come back", loaded.length === 4);
+
+  const loadedText = loaded.find((x) => x.id === "t1");
+  ok("Text: content and formatting settings survive intact", loadedText.text === "Support zone" && loadedText.settings.fontSize === "large" && loadedText.settings.bold === true);
+
+  const loadedPriceLabel = loaded.find((x) => x.id === "pl1");
+  ok("Price Label: the anchor price (the actual source of truth for the displayed value) survives intact", loadedPriceLabel.p1.price === 79250.5);
+  ok("Price Label: no separate stale 'displayPrice'/formatted-string field exists on the persisted object", loadedPriceLabel.displayPrice === undefined && loadedPriceLabel.formattedPrice === undefined);
+  ok("Price Label: the optional user text survives intact, separate from the price", loadedPriceLabel.text === "resistance");
+
+  const loadedCallout = loaded.find((x) => x.id === "co1");
+  ok(
+    "Callout: BOTH anchors (pointed-to location p1, text box position p2) survive intact — the pointer geometry has two real endpoints, not one",
+    loadedCallout.p1.price === 100 && loadedCallout.p2.price === 150,
+  );
+  ok("Callout: text content survives intact, tied to the p2 text-box anchor", loadedCallout.text === "Watch this breakout");
+
+  const loadedTable = loaded.find((x) => x.id === "tb1");
+  ok(
+    "Table: the FULL structured grid (all rows/cells) survives intact, not a flattened text blob",
+    Array.isArray(loadedTable.settings.tableRows) &&
+      loadedTable.settings.tableRows.length === 3 &&
+      loadedTable.settings.tableRows[0][1] === "Price" &&
+      loadedTable.settings.tableRows[2][0] === "S1" &&
+      loadedTable.settings.tableRows[2][1] === "77500",
+  );
+}
+
+// ---- Phase 3D-7: chartInstanceId isolation for the new tools --------------
+
+{
+  fakeStorage.clear();
+  const chartAPin = {
+    id: "a-pin",
+    tool: "pin",
+    chartInstanceId: "chart-A",
+    p1: { time: 0, price: 1 },
+    p2: { time: 0, price: 1 },
+    text: "chart A pin",
+  };
+  const chartBFlagMark = {
+    id: "b-flag",
+    tool: "flag-mark",
+    chartInstanceId: "chart-B",
+    p1: { time: 0, price: 5 },
+    p2: { time: 0, price: 5 },
+    text: "chart B flag",
+  };
+
+  saveDrawingsFor("chart-A", "SHIBUSDT", "1h", [chartAPin]);
+  saveDrawingsFor("chart-B", "SHIBUSDT", "1h", [chartBFlagMark]);
+
+  const a = loadDrawingsFor("chart-A", "SHIBUSDT", "1h");
+  const b = loadDrawingsFor("chart-B", "SHIBUSDT", "1h");
+  ok("Pin/Flag Mark respect chartInstanceId isolation: chart A only sees its pin", a.length === 1 && a[0].tool === "pin" && a[0].text === "chart A pin");
+  ok("chart B only sees its flag mark, not chart A's pin", b.length === 1 && b[0].tool === "flag-mark" && b[0].p1.price === 5);
+}
+
 // ---- summary ----------------------------------------------------------------
 
 console.log(`\n${pass}/${pass + fail} passed`);
