@@ -514,6 +514,110 @@ function d(id) {
   ok("chart B only sees its speed fan, not chart A's time zone", b.length === 1 && b[0].tool === "fib-speed-fan" && b[0].p2.price === 2.5);
 }
 
+// ---- Phase 3C-3: Trend-Based Fib Time / Pitchfan round-trip ----------------
+// Both are 3-anchor tools (like Fib Extension/Channel/Wedge above) — the
+// regression this guards against is the same one: the third anchor
+// (`points[0]`) silently collapsing away, or the tool-specific level set
+// getting dropped/coerced somewhere in the save/load path.
+
+{
+  fakeStorage.clear();
+
+  const fibTimeTrend = {
+    id: "ftt1",
+    tool: "fib-time-trend",
+    chartInstanceId: "chart-1",
+    p1: { time: 0, price: 10 }, // A — start of the measured trend interval
+    p2: { time: 1000, price: 20 }, // B — end of the measured trend interval
+    points: [{ time: 5000, price: 30 }], // C — the projection anchor
+    color: "#e6b800",
+    settings: {
+      fibShowLabel: true,
+      fibLevels: [
+        { value: 0, enabled: true },
+        { value: 1, enabled: true, color: "#22c55e" },
+        { value: 3, enabled: false },
+        { value: 5, enabled: true },
+      ],
+    },
+  };
+
+  const pitchfan = {
+    id: "pf1",
+    tool: "pitchfan",
+    chartInstanceId: "chart-1",
+    p1: { time: 0, price: 100 }, // pivot
+    p2: { time: 500, price: 150 }, // B
+    points: [{ time: 500, price: 250 }], // C
+    color: "#4da3ff",
+    settings: {
+      fibShowLabel: true,
+      fibShowPrice: true,
+      fibLevels: [{ value: 0.382, enabled: true }, { value: 0.618, enabled: true, color: "#ef4444" }, { value: 1.618, enabled: false }],
+    },
+  };
+
+  saveDrawingsFor("chart-1", "BNBUSDT", "15m", [fibTimeTrend, pitchfan]);
+  const loaded = loadDrawingsFor("chart-1", "BNBUSDT", "15m");
+
+  ok("Phase 3C-3 round trip: both new Fib drawings come back", loaded.length === 2);
+
+  const loadedTimeTrend = loaded.find((x) => x.id === "ftt1");
+  ok("Trend-Based Fib Time: A/B trend anchors (p1/p2) survive intact", loadedTimeTrend.p1.time === 0 && loadedTimeTrend.p2.time === 1000);
+  ok(
+    "Trend-Based Fib Time: the THIRD anchor (C, the projection origin) survives in `points`, not collapsed away",
+    Array.isArray(loadedTimeTrend.points) && loadedTimeTrend.points.length === 1 && loadedTimeTrend.points[0].time === 5000,
+  );
+  ok(
+    "Trend-Based Fib Time: the Fibonacci-SEQUENCE level set survives intact",
+    loadedTimeTrend.settings.fibLevels.length === 4 &&
+      loadedTimeTrend.settings.fibLevels.find((l) => l.value === 1).color === "#22c55e" &&
+      loadedTimeTrend.settings.fibLevels.find((l) => l.value === 3).enabled === false,
+  );
+
+  const loadedPitchfan = loaded.find((x) => x.id === "pf1");
+  ok("Pitchfan: pivot (p1) survives intact", loadedPitchfan.p1.price === 100);
+  ok("Pitchfan: B (p2) survives intact", loadedPitchfan.p2.price === 150);
+  ok(
+    "Pitchfan: C (3rd point) survives in `points`, not collapsed to a 2-anchor shape",
+    Array.isArray(loadedPitchfan.points) && loadedPitchfan.points[0].price === 250,
+  );
+  ok(
+    "Pitchfan: ratio level set survives intact",
+    loadedPitchfan.settings.fibLevels.length === 3 && loadedPitchfan.settings.fibLevels.find((l) => l.value === 0.618).color === "#ef4444",
+  );
+}
+
+// ---- Phase 3C-3: chartInstanceId isolation for the two new tools -----------
+
+{
+  fakeStorage.clear();
+  const chartATimeTrend = {
+    id: "a-ftt",
+    tool: "fib-time-trend",
+    chartInstanceId: "chart-A",
+    p1: { time: 0, price: 1 },
+    p2: { time: 100, price: 2 },
+    points: [{ time: 500, price: 3 }],
+  };
+  const chartBPitchfan = {
+    id: "b-pf",
+    tool: "pitchfan",
+    chartInstanceId: "chart-B",
+    p1: { time: 0, price: 1 },
+    p2: { time: 100, price: 2 },
+    points: [{ time: 100, price: 2.5 }],
+  };
+
+  saveDrawingsFor("chart-A", "XRPUSDT", "1h", [chartATimeTrend]);
+  saveDrawingsFor("chart-B", "XRPUSDT", "1h", [chartBPitchfan]);
+
+  const a = loadDrawingsFor("chart-A", "XRPUSDT", "1h");
+  const b = loadDrawingsFor("chart-B", "XRPUSDT", "1h");
+  ok("Trend-Based Fib Time/Pitchfan respect chartInstanceId isolation: chart A only sees its time projection", a.length === 1 && a[0].tool === "fib-time-trend");
+  ok("chart B only sees its pitchfan, not chart A's time projection", b.length === 1 && b[0].tool === "pitchfan" && b[0].points[0].price === 2.5);
+}
+
 // ---- summary ----------------------------------------------------------------
 
 console.log(`\n${pass}/${pass + fail} passed`);

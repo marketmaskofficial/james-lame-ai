@@ -1911,20 +1911,28 @@ export function StudioChart({
       ctx.restore();
     };
 
-    /** Fib Wedge: a genuine radial ray fan from a shared pivot (A),
-     * Pitchfan-style — NOT parallel horizontal lines. Each enabled ratio's
-     * ray passes through `lerpMarketPoint(B, C, ratio)`, computed in MARKET
-     * coordinates (independent time/price interpolation) so the fan's
-     * geometry is correct even when price and time don't share a pixel
-     * scale; only the already-interpolated point gets converted to a pixel
-     * position (via px/py) and then extended in pixel space with the same
-     * `projectLineForward` Ray/Extended Line already use. */
+    /** Fib Wedge: a genuine radial ray fan from a shared pivot (A) — NOT
+     * parallel horizontal lines. Each enabled ratio's ray passes through
+     * `lerpMarketPoint(B, C, ratio)`, computed in MARKET coordinates
+     * (independent time/price interpolation) so the fan's geometry is
+     * correct even when price and time don't share a pixel scale; only the
+     * already-interpolated point gets converted to a pixel position (via
+     * px/py) and then extended in pixel space with the same
+     * `projectLineForward` Ray/Extended Line already use.
+     *
+     * Shared verbatim with Pitchfan (Phase 3C-3) via a nullable
+     * `fillOpacity` — Pitchfan is this exact same pivot-ray-fan geometry per
+     * this function's own original name ("Pitchfan-style"), differing only
+     * in that a traditional pitchfork is unfilled lines, never a closed
+     * fill wedge. `fillOpacity == null` skips the fill-closing block below
+     * entirely rather than duplicating this whole function for one tool
+     * that needs identical ray math and no fill. */
     const paintFibWedge = (
       pivot: MarketPoint,
       b: MarketPoint,
       c: MarketPoint,
       levels: FibLevel[],
-      fillOpacity: number,
+      fillOpacity: number | null,
       showLabel: boolean,
       showPrice: boolean,
       col: string,
@@ -1955,7 +1963,7 @@ export function StudioChart({
           ctx.fillText(label, ex + 4, ey - 2);
         }
       }
-      if (rayEnds.length >= 2) {
+      if (fillOpacity != null && rayEnds.length >= 2) {
         const first = rayEnds[0];
         const last = rayEnds[rayEnds.length - 1];
         ctx.beginPath();
@@ -1969,16 +1977,23 @@ export function StudioChart({
       ctx.restore();
     };
 
-    /** Fib Time Zone: full-height vertical lines at whole-Fibonacci-sequence
-     * multiples of the base interval between the two anchors (see calc.ts's
-     * computeFibTimeZoneLevels) — the same vertical-line convention the
-     * pre-existing `vline` tool already uses, one line per enabled level
-     * instead of a single line at one fixed time. Labels show the raw
-     * sequence VALUE (0, 1, 2, 3, 5, ...), never a percentage — these levels
-     * aren't ratios of anything. */
-    const paintFibTimeZone = (p1: MarketPoint, p2: MarketPoint, levels: FibLevel[], showLabel: boolean, col: string) => {
-      const interval = p2.time - p1.time;
-      const computed = computeFibTimeZoneLevels(p1.time, interval, levels.filter((l) => l.enabled !== false));
+    /** Fib Time Zone / Trend-Based Fib Time: full-height vertical lines at
+     * whole-Fibonacci-sequence multiples of a base time interval (see
+     * calc.ts's computeFibTimeZoneLevels) — the same vertical-line
+     * convention the pre-existing `vline` tool already uses, one line per
+     * enabled level instead of a single line at one fixed time. Labels show
+     * the raw sequence VALUE (0, 1, 2, 3, 5, ...), never a percentage —
+     * these levels aren't ratios of anything.
+     *
+     * Takes the already-resolved `startTime`/`interval` rather than two
+     * MarketPoints so Trend-Based Fib Time (Phase 3C-3) can share this
+     * verbatim: Fib Time Zone's own two anchors ARE the start/interval
+     * (`p1.time`, `p2.time - p1.time`), while Trend-Based Fib Time measures
+     * its interval from A->B and projects from a separate third anchor C
+     * (`p3.time`, `p2.time - p1.time`) — same rendering, different inputs,
+     * no second vertical-line renderer. */
+    const paintFibTimeZone = (startTime: number, interval: number, levels: FibLevel[], showLabel: boolean, col: string) => {
+      const computed = computeFibTimeZoneLevels(startTime, interval, levels.filter((l) => l.enabled !== false));
       ctx.save();
       ctx.setLineDash([]);
       for (const lvl of computed) {
@@ -2076,7 +2091,7 @@ export function StudioChart({
           if (x2 != null && y2 != null && d.tool !== "hline" && d.tool !== "vline" && d.tool !== "hray" && d.tool !== "arrow-up" && d.tool !== "arrow-down")
             handles.push({ x: x2, y: y2 });
           const p3 = d.points?.[0];
-          if (p3 && (d.tool === "channel" || d.tool === "triangle" || d.tool === "fib-ext" || d.tool === "fib-channel" || d.tool === "fib-wedge")) {
+          if (p3 && (d.tool === "channel" || d.tool === "triangle" || d.tool === "fib-ext" || d.tool === "fib-channel" || d.tool === "fib-wedge" || d.tool === "fib-time-trend" || d.tool === "pitchfan")) {
             const hx = px(p3);
             const hy = py(p3);
             if (hx != null && hy != null) handles.push({ x: hx, y: hy });
@@ -2567,10 +2582,22 @@ export function StudioChart({
           }
         } else if (d.tool === "fib-time") {
           const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
-          paintFibTimeZone(d.p1, d.p2, levels, d.settings?.fibShowLabel !== false, col);
+          paintFibTimeZone(d.p1.time, d.p2.time - d.p1.time, levels, d.settings?.fibShowLabel !== false, col);
+        } else if (d.tool === "fib-time-trend") {
+          const p3 = d.points?.[0];
+          if (p3) {
+            const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+            paintFibTimeZone(p3.time, d.p2.time - d.p1.time, levels, d.settings?.fibShowLabel !== false, col);
+          }
         } else if (d.tool === "fib-speed-fan") {
           const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
           paintFibSpeedFan(d.p1, d.p2, levels, d.settings?.fibShowLabel !== false, d.settings?.fibShowPrice !== false, col);
+        } else if (d.tool === "pitchfan") {
+          const p3 = d.points?.[0];
+          if (p3) {
+            const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+            paintFibWedge(d.p1, d.p2, p3, levels, null, d.settings?.fibShowLabel !== false, d.settings?.fibShowPrice !== false, col);
+          }
         } else if (d.tool === "long" || d.tool === "short") {
           const entry = d.p1.price;
           const target = d.p2.price;
@@ -2697,6 +2724,10 @@ export function StudioChart({
           paintFibChannel(first, second, cursorPt, defaultFibLevelsForTool("fib-channel"), 0.08, true, true, previewColor);
         } else if (pending.tool === "fib-wedge") {
           paintFibWedge(first, second, cursorPt, defaultFibLevelsForTool("fib-wedge"), 0.08, true, true, previewColor);
+        } else if (pending.tool === "fib-time-trend") {
+          paintFibTimeZone(cursorPt.time, second.time - first.time, defaultFibLevelsForTool("fib-time-trend"), true, previewColor);
+        } else if (pending.tool === "pitchfan") {
+          paintFibWedge(first, second, cursorPt, defaultFibLevelsForTool("pitchfan"), null, true, true, previewColor);
         }
       }
     }
@@ -2791,7 +2822,7 @@ export function StudioChart({
             hit = { d, anchor: "p2" };
           }
         }
-        if (x3 != null && y3 != null && (d.tool === "channel" || d.tool === "triangle" || d.tool === "fib-ext" || d.tool === "fib-channel" || d.tool === "fib-wedge")) {
+        if (x3 != null && y3 != null && (d.tool === "channel" || d.tool === "triangle" || d.tool === "fib-ext" || d.tool === "fib-channel" || d.tool === "fib-wedge" || d.tool === "fib-time-trend" || d.tool === "pitchfan")) {
           const dist = pixelDist(x3, y3, mx, my);
           if (dist < best) {
             best = dist;
@@ -2985,6 +3016,43 @@ export function StudioChart({
           const canvasWidth = canvasRef.current?.clientWidth ?? 2000;
           const targets = computeFibSpeedFanTargets(d.p1, d.p2, enabled);
           for (const target of targets) {
+            const tx = toPx(target);
+            const ty = toPy(target);
+            if (tx == null || ty == null) continue;
+            const { x: ex, y: ey } = projectLineForward(x1, y1, tx, ty, canvasWidth);
+            const dist = distToSegment(mx, my, x1, y1, ex, ey);
+            if (dist < best) {
+              best = dist;
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
+        if (d.tool === "fib-time-trend" && p3 && !anchorAlreadyHitOnThisDrawing) {
+          // Same "hit-test the rendered vertical lines" convention as Fib
+          // Time Zone above, projected from C (the third anchor) instead of
+          // p1 — matches paintFibTimeZone's own geometry exactly (see the
+          // `fib-time-trend` render branch: startTime=p3.time,
+          // interval=p2.time-p1.time).
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+          const computed = computeFibTimeZoneLevels(p3.time, d.p2.time - d.p1.time, levels.filter((l) => l.enabled !== false));
+          for (const lvl of computed) {
+            const lx = toPx({ time: lvl.time, price: p3.price });
+            if (lx == null) continue;
+            if (Math.abs(lx - mx) < best) {
+              best = Math.abs(lx - mx);
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
+        if (d.tool === "pitchfan" && x1 != null && y1 != null && x3 != null && p3 && !anchorAlreadyHitOnThisDrawing) {
+          // Identical ray hit-testing to Fib Wedge above — same pivot-ray-fan
+          // geometry (see paintFibWedge, shared verbatim via a null
+          // fillOpacity for this tool).
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+          const enabled = levels.filter((l) => l.enabled !== false);
+          const canvasWidth = canvasRef.current?.clientWidth ?? 2000;
+          for (const lvl of enabled) {
+            const target = lerpMarketPoint(d.p2, p3, lvl.value);
             const tx = toPx(target);
             const ty = toPy(target);
             if (tx == null || ty == null) continue;
@@ -3222,14 +3290,16 @@ export function StudioChart({
         return;
       }
 
-      if (tool === "fib-ext" || tool === "fib-wedge") {
-        // Trend-Based Fib Extension (A->B->C) and Fib Wedge (pivot->B->C)
-        // both use Triangle's exact 3-plain-click pattern (unlike Fib
-        // Channel just below, which drags its first two anchors): the third
-        // click's live cursor position is what a user is actually watching
-        // update in real time (the extension's projected levels / the
-        // wedge's ray fan — see the pending-preview block further down),
-        // which reads far more naturally as three discrete placements than a
+      if (tool === "fib-ext" || tool === "fib-wedge" || tool === "fib-time-trend" || tool === "pitchfan") {
+        // Trend-Based Fib Extension (A->B->C), Fib Wedge (pivot->B->C),
+        // Trend-Based Fib Time (A->B->C, Phase 3C-3), and Pitchfan
+        // (pivot->B->C, Phase 3C-3) all use Triangle's exact 3-plain-click
+        // pattern (unlike Fib Channel just below, which drags its first two
+        // anchors): the third click's live cursor position is what a user is
+        // actually watching update in real time (the extension's projected
+        // levels / the wedge's ray fan / the time projection / the pitchfan's
+        // own ray fan — see the pending-preview block further down), which
+        // reads far more naturally as three discrete placements than a
         // drag-then-click.
         const pend = pendingRef.current;
         if (!pend || pend.tool !== tool) {

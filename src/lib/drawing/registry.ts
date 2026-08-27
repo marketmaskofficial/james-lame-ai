@@ -260,7 +260,14 @@ export const TOOL_DEFS: ToolDef[] = [
   // anchor the way Fib Wedge's B->C segment is. `reverseAnchors: false`
   // because p1 is that fixed ray origin, not a symmetric endpoint.
   { id: "fib-speed-fan", name: "Fib Speed Resistance Fan", category: "fib", icon: Fan, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true, levels: true, reverseAnchors: false }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: true },
-  { id: "fib-time-trend", name: "Trend-Based Fib Time", category: "fib", icon: Ruler, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: false },
+  // Trend-Based Fib Time (Phase 3C-3): A->B measures the base time interval
+  // (exactly like Trend-Based Fib Extension's A->B price move), C is the
+  // projection origin — see calc.ts's defaultFibLevelsForTool and
+  // StudioChart.tsx's generalized paintFibTimeZone(startTime, interval, ...),
+  // shared verbatim with Fib Time Zone. `levelValueKind: "sequence"` for the
+  // same reason as Fib Time Zone: these levels are whole-number multiples,
+  // never a ratio/percentage.
+  { id: "fib-time-trend", name: "Trend-Based Fib Time", category: "fib", icon: Ruler, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, levels: true, levelValueKind: "sequence" }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: true },
   { id: "fib-circles", name: "Fib Circles", category: "fib", icon: Circle, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: false },
   { id: "fib-spiral", name: "Fib Spiral", category: "fib", icon: RotateCw, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: false },
   { id: "fib-speed-arcs", name: "Fib Speed Resistance Arcs", category: "fib", icon: Compass, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: false },
@@ -270,7 +277,14 @@ export const TOOL_DEFS: ToolDef[] = [
   // lines. `reverseAnchors: false` because p1 here is the pivot, not a
   // symmetric endpoint (see ToolCapabilities.reverseAnchors's doc comment).
   { id: "fib-wedge", name: "Fib Wedge", category: "fib", icon: Triangle, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, fill: true, levels: true, reverseAnchors: false }, defaultStyle: { color: "#e6b800", width: 1, fillOpacity: 0.08 }, implemented: true },
-  { id: "pitchfan", name: "Pitchfan", category: "fib", icon: Fan, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: false },
+  // Pitchfan (Phase 3C-3): the exact same pivot-ray-fan geometry as Fib
+  // Wedge just above (see paintFibWedge's own doc comment — it was already
+  // named "Pitchfan-style" back in Phase 3C) — shared verbatim via a
+  // nullable fillOpacity rather than a second ray-fan renderer. No `fill`
+  // capability: a traditional pitchfork is unfilled lines, unlike Wedge's
+  // closed fill zone. `reverseAnchors: false` for the same reason as
+  // Wedge: p1 here is the pivot, not a symmetric endpoint.
+  { id: "pitchfan", name: "Pitchfan", category: "fib", icon: Fan, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, levels: true, reverseAnchors: false }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: true },
 
   // ---- Gann Tools -------------------------------------------------------
   // Would share one geometry primitive (fixed-angle grid from an anchor) —

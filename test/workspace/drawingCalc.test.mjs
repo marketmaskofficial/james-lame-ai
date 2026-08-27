@@ -374,6 +374,83 @@ function bar(time, open, high, low, close, volume) {
   ok("fib-speed-fan: moving B changes every target", movedB !== base);
 }
 
+// ---- Phase 3C-3: Trend-Based Fib Time / Pitchfan --------------------------
+// Both reuse existing math verbatim (computeFibTimeZoneLevels /
+// lerpMarketPoint) with different inputs — no new calc.ts functions, so
+// these tests exercise the exact call pattern StudioChart.tsx's
+// fib-time-trend/pitchfan render branches use, not new primitives.
+
+{
+  ok(
+    "defaultFibLevelsForTool('fib-time-trend') reuses Fib Time Zone's exact defaults (same array reference)",
+    defaultFibLevelsForTool("fib-time-trend") === FIB_TIME_ZONE_DEFAULT_LEVELS,
+  );
+  ok(
+    "defaultFibLevelsForTool('pitchfan') reuses Fib Wedge's exact defaults (same array reference)",
+    defaultFibLevelsForTool("pitchfan") === FIB_WEDGE_DEFAULT_LEVELS,
+  );
+}
+
+{
+  // Trend-Based Fib Time: A=(t:0), B=(t:1000) measures a +1000 interval;
+  // projection starts from C=(t:5000), NOT from A — this is the one thing
+  // that differs from plain Fib Time Zone (which projects from its own p1).
+  const a = { time: 0 };
+  const b = { time: 1000 };
+  const c = { time: 5000 };
+  const interval = b.time - a.time;
+  const levels = computeFibTimeZoneLevels(c.time, interval, [
+    { value: 0, enabled: true },
+    { value: 1, enabled: true },
+    { value: 3, enabled: true },
+  ]);
+  close("fib-time-trend: level 0 sits exactly on the projection anchor C, not A", levels.find((l) => l.value === 0).time, 5000);
+  close("fib-time-trend: level 1 is one A->B interval past C", levels.find((l) => l.value === 1).time, 6000);
+  close("fib-time-trend: level 3 is three A->B intervals past C", levels.find((l) => l.value === 3).time, 8000);
+}
+
+{
+  // Reversing A/B flips the measured interval's sign, and projection from C
+  // follows that same (now-backward) direction — exactly like Fib
+  // Extension's reversed-anchor behavior, applied to time instead of price.
+  const a = { time: 1000 };
+  const b = { time: 0 };
+  const c = { time: 5000 };
+  const levels = computeFibTimeZoneLevels(c.time, b.time - a.time, [{ value: 0, enabled: true }, { value: 2, enabled: true }]);
+  close("fib-time-trend reversed: level 0 still sits exactly on C", levels.find((l) => l.value === 0).time, 5000);
+  close("fib-time-trend reversed: level 2 projects backward from C (negative interval)", levels.find((l) => l.value === 2).time, 3000);
+}
+
+{
+  // Moving any of the three anchors (A, B, or C) recalculates every level.
+  const a = { time: 0 };
+  const b = { time: 1000 };
+  const c = { time: 5000 };
+  const base = computeFibTimeZoneLevels(c.time, b.time - a.time, [{ value: 2, enabled: true }])[0].time;
+  const movedA = computeFibTimeZoneLevels(c.time, b.time - 500, [{ value: 2, enabled: true }])[0].time;
+  const movedB = computeFibTimeZoneLevels(c.time, 1500 - a.time, [{ value: 2, enabled: true }])[0].time;
+  const movedC = computeFibTimeZoneLevels(6000, b.time - a.time, [{ value: 2, enabled: true }])[0].time;
+  ok("fib-time-trend: moving A changes every level", movedA !== base);
+  ok("fib-time-trend: moving B changes every level", movedB !== base);
+  ok("fib-time-trend: moving C changes every level", movedC !== base);
+}
+
+{
+  // Pitchfan: identical pivot-ray-fan math to Fib Wedge — a ray target is
+  // lerpMarketPoint(B, C, ratio), exactly as StudioChart.tsx's paintFibWedge
+  // (shared verbatim by pitchfan via a null fillOpacity) computes it.
+  const pivot = { time: 0, price: 100 };
+  const b = { time: 500, price: 150 };
+  const c = { time: 500, price: 250 };
+  const ray0 = lerpMarketPoint(b, c, 0);
+  const ray1 = lerpMarketPoint(b, c, 1);
+  const rayHalf = lerpMarketPoint(b, c, 0.5);
+  close("pitchfan: ratio 0 ray target sits exactly on B", ray0.price, 150);
+  close("pitchfan: ratio 1 ray target sits exactly on C", ray1.price, 250);
+  close("pitchfan: ratio 0.5 ray target is the B->C midpoint", rayHalf.price, 200);
+  ok("pitchfan: the pivot itself never moves — only ray TARGETS vary by ratio", pivot.price === 100);
+}
+
 // ---- summary ----------------------------------------------------------------
 
 console.log(`\n${pass}/${pass + fail} passed`);

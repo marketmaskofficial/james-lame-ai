@@ -136,6 +136,15 @@ export function defaultFibLevelsForTool(tool: string): FibLevel[] {
   if (tool === "fib-wedge") return FIB_WEDGE_DEFAULT_LEVELS;
   if (tool === "fib-time") return FIB_TIME_ZONE_DEFAULT_LEVELS;
   if (tool === "fib-speed-fan") return FIB_SPEED_FAN_DEFAULT_LEVELS;
+  // Trend-Based Fib Time (Phase 3C-3): the identical Fibonacci SEQUENCE
+  // concept as Fib Time Zone, just measured from a trend (A->B) instead of
+  // the tool's own two anchors directly — reuses the exact same default
+  // set rather than a duplicate "same 11 numbers, different name" constant.
+  if (tool === "fib-time-trend") return FIB_TIME_ZONE_DEFAULT_LEVELS;
+  // Pitchfan (Phase 3C-3): the identical pivot-ray-fan geometry as Fib
+  // Wedge (see StudioChart.tsx's paintFibWedge, shared verbatim) — reuses
+  // Wedge's own default ratio set for the same reason.
+  if (tool === "pitchfan") return FIB_WEDGE_DEFAULT_LEVELS;
   return DEFAULT_FIB_LEVELS;
 }
 

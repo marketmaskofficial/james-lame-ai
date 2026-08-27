@@ -148,16 +148,16 @@ for (const t of TOOL_DEFS) {
   ok(`deferred tools stay implemented:false (wrongly true: ${wronglyImplemented.join(",") || "none"})`, wronglyImplemented.length === 0);
 }
 
-// ---- other still-unimplemented Fibonacci tools stay hidden (Phase 3C/3C-2) -
+// ---- other still-unimplemented Fibonacci tools stay hidden (Phase 3C/3C-2/3C-3)
 // Phase 3C implemented Trend-Based Fib Extension / Fib Channel / Fib Wedge;
-// Phase 3C-2 (below) adds Fib Time Zone / Fib Speed Resistance Fan. Every
-// OTHER still-unbuilt member of the Fibonacci family (Trend-Based Fib Time,
-// Circles, Spiral, Speed Resistance Arcs, Pitchfan) must stay
-// implemented:false alongside them — this phase's brief is deliberately
-// narrow to exactly these two tools, nothing else in the family.
+// Phase 3C-2 added Fib Time Zone / Fib Speed Resistance Fan; Phase 3C-3
+// (below) adds Trend-Based Fib Time / Pitchfan. Every OTHER still-unbuilt
+// member of the Fibonacci family (Circles, Spiral, Speed Resistance Arcs)
+// must stay implemented:false alongside them — each phase's brief is
+// deliberately narrow to exactly its own tools, nothing else in the family.
 
 {
-  const DEFERRED_FIB_FAMILY = ["fib-time-trend", "fib-circles", "fib-spiral", "fib-speed-arcs", "pitchfan"];
+  const DEFERRED_FIB_FAMILY = ["fib-circles", "fib-spiral", "fib-speed-arcs"];
   const wronglyImplemented = DEFERRED_FIB_FAMILY.filter((id) => TOOL_BY_ID[id]?.implemented);
   ok(`deferred Fibonacci tools stay implemented:false (wrongly true: ${wronglyImplemented.join(",") || "none"})`, wronglyImplemented.length === 0);
 }
@@ -248,6 +248,46 @@ for (const t of TOOL_DEFS) {
   );
   ok("Fib Time Zone and Fib Speed Resistance Fan are two distinct tool ids", new Set(PHASE3C2_NEW_TOOLS.map((id) => TOOL_BY_ID[id]?.id)).size === 2);
   ok("Fib Speed Resistance Fan is distinct from Fib Wedge (own id, not an alias)", TOOL_BY_ID["fib-speed-fan"]?.id !== TOOL_BY_ID["fib-wedge"]?.id);
+}
+
+// ---- Phase 3C-3 additions this phase claims as "fully implemented" --------
+// Trend-Based Fib Time / Pitchfan ONLY — no other still-unimplemented
+// Fibonacci (or any other family's) tool may be flipped on alongside them
+// (checked above via DEFERRED_FIB_FAMILY/DEFERRED_SAMPLE).
+
+{
+  const PHASE3C3_NEW_TOOLS = ["fib-time-trend", "pitchfan"];
+  const missing = PHASE3C3_NEW_TOOLS.filter((id) => !TOOL_BY_ID[id]?.implemented);
+  ok(`every Phase 3C-3 new tool is implemented:true (missing: ${missing.join(",") || "none"})`, missing.length === 0);
+  for (const id of PHASE3C3_NEW_TOOLS) {
+    ok(`${id} is in IMPLEMENTED_TOOLS`, IMPLEMENTED_TOOLS.some((t) => t.id === id));
+    ok(`${id} resolves to the "fib" category`, TOOL_BY_ID[id]?.category === "fib");
+    ok(`${id} declares levels capability (reuses the shared Fib level model)`, TOOL_BY_ID[id]?.capabilities.levels === true);
+    ok(`${id} is a 3-anchor multi-click tool`, TOOL_BY_ID[id]?.interactionType === "multi-click" && TOOL_BY_ID[id]?.anchorCount === 3);
+  }
+  ok(
+    "Trend-Based Fib Time declares levelValueKind 'sequence' (whole Fibonacci-sequence multiples, not ratios)",
+    TOOL_BY_ID["fib-time-trend"]?.capabilities.levelValueKind === "sequence",
+  );
+  ok(
+    "Pitchfan does NOT declare a sequence levelValueKind (its levels ARE ratios, like Fib Wedge)",
+    TOOL_BY_ID["pitchfan"]?.capabilities.levelValueKind !== "sequence",
+  );
+  ok(
+    "Pitchfan explicitly opts OUT of reverse-anchors (p1 is a shared pivot, not a symmetric endpoint) — same as Fib Wedge",
+    TOOL_BY_ID["pitchfan"]?.capabilities.reverseAnchors === false,
+  );
+  ok(
+    "Trend-Based Fib Time does NOT opt out of reverse-anchors (A/B measure a trend, not a fixed pivot)",
+    TOOL_BY_ID["fib-time-trend"]?.capabilities.reverseAnchors !== false,
+  );
+  ok(
+    "Pitchfan does NOT declare fill capability (unfilled fan lines, unlike Fib Wedge's closed fill zone)",
+    !TOOL_BY_ID["pitchfan"]?.capabilities.fill,
+  );
+  ok("Fib Wedge and Pitchfan are distinct tool ids despite sharing render code", TOOL_BY_ID["fib-wedge"]?.id !== TOOL_BY_ID["pitchfan"]?.id);
+  ok("Fib Time Zone and Trend-Based Fib Time are distinct tool ids despite sharing render code", TOOL_BY_ID["fib-time"]?.id !== TOOL_BY_ID["fib-time-trend"]?.id);
+  ok("fib-time-trend/pitchfan are two distinct tool ids", new Set(PHASE3C3_NEW_TOOLS.map((id) => TOOL_BY_ID[id]?.id)).size === 2);
 }
 
 // ---- capability-gated settings sections have a real reason to exist -------
