@@ -348,14 +348,32 @@ export const TOOL_DEFS: ToolDef[] = [
   // XABCD/Cypher/ABCD, just with a longer label set.
   { id: "three-drives", name: "Three Drives", category: "patterns", icon: LineChart, interactionType: "multi-click", anchorCount: 6, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
 
-  // ---- Elliott Waves ------------------------------------------------------
-  // One configurable labeled multi-anchor primitive would back all five —
-  // none built yet.
-  { id: "elliott-impulse", name: "Impulse (1-2-3-4-5)", category: "elliott", icon: Activity, interactionType: "multi-click", anchorCount: 6, capabilities: { stroke: true, text: true }, defaultStyle: LINE_DEFAULT, implemented: false, note: "Needs the shared labeled multi-anchor primitive first." },
-  { id: "elliott-correction", name: "Correction (A-B-C)", category: "elliott", icon: Activity, interactionType: "multi-click", anchorCount: 4, capabilities: { stroke: true, text: true }, defaultStyle: LINE_DEFAULT, implemented: false },
-  { id: "elliott-triangle", name: "Triangle (A-B-C-D-E)", category: "elliott", icon: Activity, interactionType: "multi-click", anchorCount: 6, capabilities: { stroke: true, text: true }, defaultStyle: LINE_DEFAULT, implemented: false },
-  { id: "elliott-double-combo", name: "Double Combo (W-X-Y)", category: "elliott", icon: Activity, interactionType: "multi-click", anchorCount: 4, capabilities: { stroke: true, text: true }, defaultStyle: LINE_DEFAULT, implemented: false },
-  { id: "elliott-triple-combo", name: "Triple Combo (W-X-Y-X-Z)", category: "elliott", icon: Activity, interactionType: "multi-click", anchorCount: 6, capabilities: { stroke: true, text: true }, defaultStyle: LINE_DEFAULT, implemented: false },
+  // ---- Elliott Waves (Phase 3D-2) ------------------------------------------
+  // Extends Phase 3D-1's shared labeled multi-anchor primitive (see
+  // StudioChart.tsx's MULTI_ANCHOR_PATTERN_TOOLS/PATTERN_ANCHOR_LABELS/
+  // patternSegments) — no separate Elliott engine. Every tool's anchor count
+  // is one MORE than its label sequence implies (Impulse's "1-2-3-4-5" is 6
+  // anchors, not 5): TradingView's own Elliott tools all start from an
+  // unlabeled origin point (labeled "0" here) before the first named wave,
+  // exactly like Phase 3D-1's Head and Shoulders/Triangle Pattern already
+  // having more structural anchors than their name alone suggests. Same
+  // `anchorLabel` reuse and dropped `text` capability as Phase 3D-1's
+  // pattern tools, for the same reason (see registry's Pattern Tools
+  // section above).
+  { id: "elliott-impulse", name: "Impulse (1-2-3-4-5)", category: "elliott", icon: Activity, interactionType: "multi-click", anchorCount: 6, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "elliott-correction", name: "Correction (A-B-C)", category: "elliott", icon: Activity, interactionType: "multi-click", anchorCount: 4, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  // Triangle (A-B-C-D-E): a plain 6-anchor zigzag (0-A-B-C-D-E), NOT the
+  // converging-trendline topology of Phase 3D-1's Triangle Pattern and NOT
+  // the unrelated 3-anchor geometric "Triangle" shape — three fully
+  // distinct tool ids/geometries that happen to share the word "triangle".
+  { id: "elliott-triangle", name: "Triangle (A-B-C-D-E)", category: "elliott", icon: Activity, interactionType: "multi-click", anchorCount: 6, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "elliott-double-combo", name: "Double Combo (W-X-Y)", category: "elliott", icon: Activity, interactionType: "multi-click", anchorCount: 4, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  // Triple Combo (W-X-Y-X-Z): label sequence repeats "X" at anchor indices 2
+  // and 4 — anchor identity is ALWAYS the index into `points`, never the
+  // label string (see PATTERN_ANCHOR_LABELS' own doc comment), so the
+  // repeat is purely cosmetic and can't collide in editing/hit-testing/
+  // persistence.
+  { id: "elliott-triple-combo", name: "Triple Combo (W-X-Y-X-Z)", category: "elliott", icon: Activity, interactionType: "multi-click", anchorCount: 6, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
 
   // ---- Cycles -------------------------------------------------------------
   { id: "cyclic-lines", name: "Cyclic Lines", category: "cycles", icon: RotateCw, interactionType: "multi-click", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: false },

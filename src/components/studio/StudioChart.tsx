@@ -245,23 +245,42 @@ export function anchorsOf(d: Pick<Drawing, "p1" | "p2" | "points" | "tool">): Ma
   return [d.p1, d.p2, ...(d.points ?? [])];
 }
 
-/** Chart-pattern tools (Phase 3D-1) built on ONE shared labeled multi-anchor
- * primitive instead of six independent mini drawing engines: each stores its
- * complete ordered anchor list in `points` (Polyline/Path's exact
- * convention above), gets per-vertex editing/hit-testing/move for free via
- * the SAME code paths those two tools already use, and only needs its own
- * label set + (where the geometry isn't a plain zigzag) segment topology —
- * see PATTERN_ANCHOR_LABELS/patternSegments below. Elliott Wave tools
- * (next phase) are expected to extend this exact set rather than getting
- * their own engine. */
-export const MULTI_ANCHOR_PATTERN_TOOLS = new Set<DrawTool>(["xabcd", "cypher", "head-shoulders", "abcd", "triangle-pattern", "three-drives"]);
+/** Chart-pattern AND Elliott Wave tools (Phase 3D-1, extended Phase 3D-2)
+ * built on ONE shared labeled multi-anchor primitive instead of eleven
+ * independent mini drawing engines: each stores its complete ordered anchor
+ * list in `points` (Polyline/Path's exact convention above), gets
+ * per-vertex editing/hit-testing/move for free via the SAME code paths
+ * those two tools already use, and only needs its own label set + (where
+ * the geometry isn't a plain zigzag) segment topology — see
+ * PATTERN_ANCHOR_LABELS/patternSegments below. */
+export const MULTI_ANCHOR_PATTERN_TOOLS = new Set<DrawTool>([
+  "xabcd",
+  "cypher",
+  "head-shoulders",
+  "abcd",
+  "triangle-pattern",
+  "three-drives",
+  "elliott-impulse",
+  "elliott-correction",
+  "elliott-triangle",
+  "elliott-double-combo",
+  "elliott-triple-combo",
+]);
 
 /** Anchor point labels for each pattern tool, in anchor order — drawn next
  * to each vertex (see paintLabeledPattern) whenever the tool's `anchorLabel`
  * capability's "Show anchor marker + label" setting is on (default on, same
  * setting key Anchored VWAP already uses). Array length also doubles as
  * that tool's required anchor count for construction (see the onDown
- * pattern-tool branch) — one source of truth instead of two. */
+ * pattern-tool branch) — one source of truth instead of two.
+ *
+ * The five Elliott tools (Phase 3D-2) all start from an unlabeled "0" origin
+ * anchor before their named wave sequence, matching TradingView's own
+ * Elliott tools and each one's registry anchorCount (e.g. Impulse's
+ * "1-2-3-4-5" name is 5 waves but 6 anchors: 0,1,2,3,4,5). Triple Combo
+ * repeats "X" at indices 2 and 4 on purpose — anchor identity is always the
+ * INDEX into this array / `points`, never the label string, so a repeated
+ * label can never collide in editing, hit-testing, or persistence. */
 export const PATTERN_ANCHOR_LABELS: Partial<Record<DrawTool, string[]>> = {
   xabcd: ["X", "A", "B", "C", "D"],
   cypher: ["X", "A", "B", "C", "D"],
@@ -269,6 +288,11 @@ export const PATTERN_ANCHOR_LABELS: Partial<Record<DrawTool, string[]>> = {
   "head-shoulders": ["LS", "H", "RS", "N1", "N2"],
   "triangle-pattern": ["1", "2", "3", "4"],
   "three-drives": ["1", "2", "3", "4", "5", "6"],
+  "elliott-impulse": ["0", "1", "2", "3", "4", "5"],
+  "elliott-correction": ["0", "A", "B", "C"],
+  "elliott-triangle": ["0", "A", "B", "C", "D", "E"],
+  "elliott-double-combo": ["0", "W", "X", "Y"],
+  "elliott-triple-combo": ["0", "W", "X", "Y", "X", "Z"],
 };
 
 /** Anchor-index PAIRS that get a connecting segment, for the two pattern

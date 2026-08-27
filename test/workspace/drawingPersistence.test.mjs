@@ -843,6 +843,129 @@ function d(id) {
   );
 }
 
+// ---- Phase 3D-2: Elliott Wave tools' round trip ---------------------------
+// Same storage convention as every Phase 3D-1 pattern tool (full ordered
+// anchor array in `points`) — the regression this specifically guards
+// against is Triple Combo's repeated "X" wave: since anchor identity here
+// is the ARRAY INDEX, not the label text, both "X" anchors (index 2 and 4)
+// must survive save/load as two independent points at their own
+// coordinates, never merged/deduped into one.
+
+{
+  fakeStorage.clear();
+
+  const impulse = {
+    id: "ei1",
+    tool: "elliott-impulse",
+    chartInstanceId: "chart-1",
+    p1: { time: 0, price: 0 }, // wave 0
+    p2: { time: 500, price: 80 }, // wave 5
+    points: [
+      { time: 0, price: 0 }, // 0
+      { time: 100, price: 30 }, // 1
+      { time: 150, price: 15 }, // 2
+      { time: 300, price: 60 }, // 3
+      { time: 350, price: 40 }, // 4
+      { time: 500, price: 80 }, // 5
+    ],
+    color: "#e6b800",
+  };
+
+  const tripleCombo = {
+    id: "tc1",
+    tool: "elliott-triple-combo",
+    chartInstanceId: "chart-1",
+    p1: { time: 0, price: 0 }, // wave 0
+    p2: { time: 500, price: 30 }, // wave Z
+    points: [
+      { time: 0, price: 0 }, // 0
+      { time: 100, price: 40 }, // W
+      { time: 200, price: 10 }, // X (first)
+      { time: 300, price: 50 }, // Y
+      { time: 400, price: 15 }, // X (second — SAME label, DIFFERENT coordinates)
+      { time: 500, price: 30 }, // Z
+    ],
+    color: "#4da3ff",
+    settings: { showAnchorLabel: true },
+  };
+
+  saveDrawingsFor("chart-1", "AVAXUSDT", "30m", [impulse, tripleCombo]);
+  const loaded = loadDrawingsFor("chart-1", "AVAXUSDT", "30m");
+
+  ok("Phase 3D-2 round trip: both Elliott drawings come back", loaded.length === 2);
+
+  const loadedImpulse = loaded.find((x) => x.id === "ei1");
+  ok(
+    "Elliott Impulse: all SIX anchors (0/1/2/3/4/5) survive intact, in order",
+    Array.isArray(loadedImpulse.points) &&
+      loadedImpulse.points.length === 6 &&
+      loadedImpulse.points[1].price === 30 &&
+      loadedImpulse.points[3].price === 60 &&
+      loadedImpulse.points[5].price === 80,
+  );
+
+  const loadedTriple = loaded.find((x) => x.id === "tc1");
+  ok(
+    "Elliott Triple Combo: all SIX anchors survive intact, in order, none merged",
+    Array.isArray(loadedTriple.points) && loadedTriple.points.length === 6,
+  );
+  ok(
+    "Elliott Triple Combo: the FIRST 'X' anchor (index 2) keeps its own coordinates",
+    loadedTriple.points[2].time === 200 && loadedTriple.points[2].price === 10,
+  );
+  ok(
+    "Elliott Triple Combo: the SECOND 'X' anchor (index 4) keeps its own, DIFFERENT coordinates — repeated label never collapses the two points into one",
+    loadedTriple.points[4].time === 400 && loadedTriple.points[4].price === 15,
+  );
+  ok(
+    "Elliott Triple Combo: the two 'X' anchors remain distinct after round-trip",
+    loadedTriple.points[2].time !== loadedTriple.points[4].time && loadedTriple.points[2].price !== loadedTriple.points[4].price,
+  );
+}
+
+// ---- Phase 3D-2: chartInstanceId isolation for the Elliott tools ----------
+
+{
+  fakeStorage.clear();
+  const chartACorrection = {
+    id: "a-ec",
+    tool: "elliott-correction",
+    chartInstanceId: "chart-A",
+    p1: { time: 0, price: 1 },
+    p2: { time: 300, price: 4 },
+    points: [
+      { time: 0, price: 1 },
+      { time: 100, price: 5 },
+      { time: 200, price: 2 },
+      { time: 300, price: 4 },
+    ],
+  };
+  const chartBDoubleCombo = {
+    id: "b-edc",
+    tool: "elliott-double-combo",
+    chartInstanceId: "chart-B",
+    p1: { time: 0, price: 1 },
+    p2: { time: 300, price: 6 },
+    points: [
+      { time: 0, price: 1 },
+      { time: 100, price: 7 },
+      { time: 200, price: 3 },
+      { time: 300, price: 6 },
+    ],
+  };
+
+  saveDrawingsFor("chart-A", "DOTUSDT", "1h", [chartACorrection]);
+  saveDrawingsFor("chart-B", "DOTUSDT", "1h", [chartBDoubleCombo]);
+
+  const a = loadDrawingsFor("chart-A", "DOTUSDT", "1h");
+  const b = loadDrawingsFor("chart-B", "DOTUSDT", "1h");
+  ok("Elliott Correction/Double Combo respect chartInstanceId isolation: chart A only sees its correction", a.length === 1 && a[0].tool === "elliott-correction");
+  ok(
+    "chart B only sees its double combo (all 4 anchors intact), not chart A's correction",
+    b.length === 1 && b[0].tool === "elliott-double-combo" && b[0].points.length === 4 && b[0].points[1].price === 7,
+  );
+}
+
 // ---- summary ----------------------------------------------------------------
 
 console.log(`\n${pass}/${pass + fail} passed`);
