@@ -1594,6 +1594,50 @@ function d(id) {
   );
 }
 
+// ---- Phase 3D-9: Anchored VWAP round trip + isolation ---------------------
+// Anchored VWAP, Fixed Range Volume Profile, and Anchored Volume Profile
+// were ALL already genuinely implemented (real math, already covered by
+// drawingCalc.test.mjs/drawingVolumeProfile.test.mjs/volumeProfileMath.
+// test.mjs) — this audit found exactly one gap: unlike vp-fixed/vp-anchored
+// just above, "vwap" itself had no persistence/isolation coverage. Its own
+// key property: only the anchor (p1) and style settings are persisted —
+// never the generated VWAP series (which can be thousands of points),
+// recomputed fresh from `bars` on every render instead.
+
+{
+  fakeStorage.clear();
+  const vwap = {
+    id: "vw1",
+    tool: "vwap",
+    chartInstanceId: "chart-1",
+    p1: { time: 300, price: 11 }, // the anchor — the ONE thing this tool's series is derived from
+    p2: { time: 300, price: 11 },
+    color: "#4da3ff",
+    settings: { showAnchorLabel: false, style: "dashed" },
+  };
+  saveDrawingsFor("chart-1", "ETHUSDT", "5m", [vwap]);
+  const loaded = loadDrawingsFor("chart-1", "ETHUSDT", "5m");
+
+  ok("Anchored VWAP round trip: the drawing comes back", loaded.length === 1);
+  ok("Anchored VWAP: the anchor time survives intact", loaded[0].p1.time === 300);
+  ok("Anchored VWAP: style settings (line style/anchor label) survive intact", loaded[0].settings.showAnchorLabel === false && loaded[0].settings.style === "dashed");
+  ok("Anchored VWAP: no generated series was persisted (recomputed fresh from bars, not stored)", loaded[0].points === undefined && loaded[0].series === undefined);
+}
+
+{
+  fakeStorage.clear();
+  const chartAVwap = { id: "a-vw", tool: "vwap", chartInstanceId: "chart-A", p1: { time: 100, price: 5 }, p2: { time: 100, price: 5 } };
+  const chartBVwap = { id: "b-vw", tool: "vwap", chartInstanceId: "chart-B", p1: { time: 200, price: 8 }, p2: { time: 200, price: 8 } };
+
+  saveDrawingsFor("chart-A", "ADAUSDT", "1h", [chartAVwap]);
+  saveDrawingsFor("chart-B", "ADAUSDT", "1h", [chartBVwap]);
+
+  const a = loadDrawingsFor("chart-A", "ADAUSDT", "1h");
+  const b = loadDrawingsFor("chart-B", "ADAUSDT", "1h");
+  ok("Anchored VWAP respects chartInstanceId isolation: chart A only sees its own anchor", a.length === 1 && a[0].p1.time === 100);
+  ok("chart B only sees its own anchor, not chart A's", b.length === 1 && b[0].p1.time === 200);
+}
+
 // ---- summary ----------------------------------------------------------------
 
 console.log(`\n${pass}/${pass + fail} passed`);
