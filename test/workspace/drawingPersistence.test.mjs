@@ -703,6 +703,146 @@ function d(id) {
   ok("chart B only sees its spiral, not chart A's circles", b.length === 1 && b[0].tool === "fib-spiral" && b[0].p2.price === 2.5);
 }
 
+// ---- Phase 3D-1: chart-pattern tools' round trip --------------------------
+// All six share ONE storage convention (full ordered anchor array in
+// `points`, p1/p2 mirrored to first/last — Polyline/Path's own convention,
+// see StudioChart.tsx's anchorsOf) — the regression this guards against is
+// the same as every prior multi-anchor phase: an anchor silently dropped or
+// reordered on save/load, or the `showAnchorLabel` setting getting coerced.
+
+{
+  fakeStorage.clear();
+
+  const xabcd = {
+    id: "xa1",
+    tool: "xabcd",
+    chartInstanceId: "chart-1",
+    p1: { time: 0, price: 100 }, // X
+    p2: { time: 400, price: 40 }, // D (mirror of points[last])
+    points: [
+      { time: 0, price: 100 }, // X
+      { time: 100, price: 20 }, // A
+      { time: 200, price: 60 }, // B
+      { time: 300, price: 10 }, // C
+      { time: 400, price: 40 }, // D
+    ],
+    color: "#e6b800",
+    settings: { showAnchorLabel: true },
+  };
+
+  const headShoulders = {
+    id: "hs1",
+    tool: "head-shoulders",
+    chartInstanceId: "chart-1",
+    p1: { time: 0, price: 50 },
+    p2: { time: 450, price: 45 },
+    points: [
+      { time: 0, price: 50 }, // LS
+      { time: 100, price: 80 }, // H
+      { time: 200, price: 55 }, // RS
+      { time: 250, price: 40 }, // N1
+      { time: 450, price: 45 }, // N2
+    ],
+    color: "#4da3ff",
+    settings: { showAnchorLabel: false },
+  };
+
+  const abcd = {
+    id: "ab1",
+    tool: "abcd",
+    chartInstanceId: "chart-1",
+    p1: { time: 0, price: 10 },
+    p2: { time: 300, price: 25 },
+    points: [
+      { time: 0, price: 10 },
+      { time: 100, price: 30 },
+      { time: 200, price: 15 },
+      { time: 300, price: 25 },
+    ],
+    color: "#a855f7",
+  };
+
+  saveDrawingsFor("chart-1", "ETHUSDT", "1h", [xabcd, headShoulders, abcd]);
+  const loaded = loadDrawingsFor("chart-1", "ETHUSDT", "1h");
+
+  ok("Phase 3D-1 round trip: all three pattern drawings come back", loaded.length === 3);
+
+  const loadedXabcd = loaded.find((x) => x.id === "xa1");
+  ok(
+    "XABCD: all FIVE anchors (X/A/B/C/D) survive intact, in order, none dropped",
+    Array.isArray(loadedXabcd.points) &&
+      loadedXabcd.points.length === 5 &&
+      loadedXabcd.points[0].price === 100 &&
+      loadedXabcd.points[2].price === 60 &&
+      loadedXabcd.points[4].price === 40,
+  );
+  ok("XABCD: p1/p2 mirror the first/last anchor", loadedXabcd.p1.price === 100 && loadedXabcd.p2.price === 40);
+  ok("XABCD: showAnchorLabel setting survives intact", loadedXabcd.settings.showAnchorLabel === true);
+
+  const loadedHS = loaded.find((x) => x.id === "hs1");
+  ok(
+    "Head and Shoulders: all FIVE anchors (LS/H/RS/N1/N2) survive intact, in order",
+    Array.isArray(loadedHS.points) &&
+      loadedHS.points.length === 5 &&
+      loadedHS.points[1].price === 80 &&
+      loadedHS.points[3].price === 40 &&
+      loadedHS.points[4].price === 45,
+  );
+  ok("Head and Shoulders: showAnchorLabel:false survives intact (not coerced to true)", loadedHS.settings.showAnchorLabel === false);
+
+  const loadedAbcd = loaded.find((x) => x.id === "ab1");
+  ok(
+    "ABCD: all FOUR anchors survive intact, in order",
+    Array.isArray(loadedAbcd.points) && loadedAbcd.points.length === 4 && loadedAbcd.points[1].price === 30 && loadedAbcd.points[3].price === 25,
+  );
+}
+
+// ---- Phase 3D-1: chartInstanceId isolation for the pattern tools ----------
+
+{
+  fakeStorage.clear();
+  const chartACypher = {
+    id: "a-cy",
+    tool: "cypher",
+    chartInstanceId: "chart-A",
+    p1: { time: 0, price: 1 },
+    p2: { time: 400, price: 5 },
+    points: [
+      { time: 0, price: 1 },
+      { time: 100, price: 4 },
+      { time: 200, price: 2 },
+      { time: 300, price: 6 },
+      { time: 400, price: 5 },
+    ],
+  };
+  const chartBThreeDrives = {
+    id: "b-td",
+    tool: "three-drives",
+    chartInstanceId: "chart-B",
+    p1: { time: 0, price: 1 },
+    p2: { time: 500, price: 9 },
+    points: [
+      { time: 0, price: 1 },
+      { time: 100, price: 8 },
+      { time: 200, price: 2 },
+      { time: 300, price: 9 },
+      { time: 400, price: 3 },
+      { time: 500, price: 9 },
+    ],
+  };
+
+  saveDrawingsFor("chart-A", "LTCUSDT", "15m", [chartACypher]);
+  saveDrawingsFor("chart-B", "LTCUSDT", "15m", [chartBThreeDrives]);
+
+  const a = loadDrawingsFor("chart-A", "LTCUSDT", "15m");
+  const b = loadDrawingsFor("chart-B", "LTCUSDT", "15m");
+  ok("Cypher/Three Drives respect chartInstanceId isolation: chart A only sees its cypher", a.length === 1 && a[0].tool === "cypher");
+  ok(
+    "chart B only sees its three-drives (all 6 anchors intact), not chart A's cypher",
+    b.length === 1 && b[0].tool === "three-drives" && b[0].points.length === 6 && b[0].points[3].price === 9,
+  );
+}
+
 // ---- summary ----------------------------------------------------------------
 
 console.log(`\n${pass}/${pass + fail} passed`);

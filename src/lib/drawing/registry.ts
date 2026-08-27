@@ -155,7 +155,9 @@ export type ToolCapabilities = {
   levels?: boolean;
   /** Long/Short-style entry/stop/target + R:R display. */
   positionMetrics?: boolean;
-  /** Anchor marker/label visibility toggle (Anchored VWAP). */
+  /** Anchor marker/label visibility toggle — originally Anchored VWAP's
+   * single marker+label switch, reused as-is by Phase 3D-1's chart-pattern
+   * tools to show/hide every X/A/B/C/D-style anchor label at once. */
   anchorLabel?: boolean;
   /** Volume Profile calculation + histogram settings (Phase 3B: Fixed Range /
    * Anchored Volume Profile) — rows, Value Area %, profile width/placement,
@@ -314,15 +316,37 @@ export const TOOL_DEFS: ToolDef[] = [
   { id: "gann-square", name: "Gann Square", category: "gann", icon: Hash, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: false },
   { id: "gann-fan", name: "Gann Fan", category: "gann", icon: Fan, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: false },
 
-  // ---- Pattern Tools ------------------------------------------------------
-  // Manual anchor-placement tools (per spec: NOT automatic detection). None
-  // implemented yet — declared for toolbar/settings architecture readiness.
-  { id: "xabcd", name: "XABCD", category: "patterns", icon: LineChart, interactionType: "multi-click", anchorCount: 5, capabilities: { stroke: true, text: true }, defaultStyle: LINE_DEFAULT, implemented: false },
-  { id: "cypher", name: "Cypher", category: "patterns", icon: LineChart, interactionType: "multi-click", anchorCount: 5, capabilities: { stroke: true, text: true }, defaultStyle: LINE_DEFAULT, implemented: false },
-  { id: "head-shoulders", name: "Head and Shoulders", category: "patterns", icon: LineChart, interactionType: "multi-click", anchorCount: 5, capabilities: { stroke: true, text: true }, defaultStyle: LINE_DEFAULT, implemented: false },
-  { id: "abcd", name: "ABCD", category: "patterns", icon: LineChart, interactionType: "multi-click", anchorCount: 4, capabilities: { stroke: true, text: true }, defaultStyle: LINE_DEFAULT, implemented: false },
-  { id: "triangle-pattern", name: "Triangle Pattern", category: "patterns", icon: LineChart, interactionType: "multi-click", anchorCount: 4, capabilities: { stroke: true, text: true }, defaultStyle: LINE_DEFAULT, implemented: false },
-  { id: "three-drives", name: "Three Drives", category: "patterns", icon: LineChart, interactionType: "multi-click", anchorCount: 6, capabilities: { stroke: true, text: true }, defaultStyle: LINE_DEFAULT, implemented: false },
+  // ---- Pattern Tools (Phase 3D-1) ------------------------------------------
+  // Manual anchor-placement tools (NOT automatic detection) built on ONE
+  // shared labeled multi-anchor primitive (see StudioChart.tsx's
+  // MULTI_ANCHOR_PATTERN_TOOLS/PATTERN_ANCHOR_LABELS/patternSegments) rather
+  // than six independent mini engines. `anchorLabel` (previously only
+  // Anchored VWAP's single marker+label toggle) is reused here for the same
+  // "Show anchor marker + label" setting, now driving every X/A/B/C/D-style
+  // label at once — no new capability flag or settings-popover code needed.
+  // `text` was dropped from these: that capability is a free-typed label
+  // BODY (font/align/background) meant for the Text/Note tools, not the
+  // fixed X/A/B/C/D-style labels these patterns actually need.
+  { id: "xabcd", name: "XABCD", category: "patterns", icon: LineChart, interactionType: "multi-click", anchorCount: 5, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  // Cypher: identical X->A->B->C->D geometry/zigzag to XABCD just above —
+  // kept a fully distinct tool id (per spec) even though it shares every
+  // byte of render/hit-test/creation code, the same way Fib Wedge/Pitchfan
+  // already share code under two separate ids.
+  { id: "cypher", name: "Cypher", category: "patterns", icon: LineChart, interactionType: "multi-click", anchorCount: 5, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  // Head and Shoulders: 5 anchors — Left Shoulder -> Head -> Right Shoulder
+  // (a 3-point zigzag) PLUS an independent 2-point neckline (N1/N2), not a
+  // continuation of that zigzag — see patternSegments' head-shoulders
+  // override in StudioChart.tsx.
+  { id: "head-shoulders", name: "Head and Shoulders", category: "patterns", icon: LineChart, interactionType: "multi-click", anchorCount: 5, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "abcd", name: "ABCD", category: "patterns", icon: LineChart, interactionType: "multi-click", anchorCount: 4, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  // Triangle Pattern: 4 anchors forming two CONVERGING trendlines (0->2 and
+  // 1->3 — see patternSegments' triangle-pattern override), not a 0-1-2-3
+  // zigzag and not the unrelated 3-anchor geometric "Triangle" shape tool.
+  { id: "triangle-pattern", name: "Triangle Pattern", category: "patterns", icon: LineChart, interactionType: "multi-click", anchorCount: 4, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  // Three Drives: a plain 6-anchor zigzag (three drive legs + two
+  // retracement legs) — the default patternSegments topology, same as
+  // XABCD/Cypher/ABCD, just with a longer label set.
+  { id: "three-drives", name: "Three Drives", category: "patterns", icon: LineChart, interactionType: "multi-click", anchorCount: 6, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
 
   // ---- Elliott Waves ------------------------------------------------------
   // One configurable labeled multi-anchor primitive would back all five —

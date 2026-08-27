@@ -232,15 +232,62 @@ export type Drawing = {
  * array, for code (serialization, tests, "does this fit on screen at all")
  * that genuinely doesn't care about each tool's specific anchor roles. */
 export function anchorsOf(d: Pick<Drawing, "p1" | "p2" | "points" | "tool">): MarketPoint[] {
-  // Brush/Highlighter (freehand) AND Polyline/Path (Phase 3A's controlled
-  // multi-click chain) all store their COMPLETE ordered vertex list in
-  // `points` — p1/p2 are kept mirrored to points[0]/points[last] purely so
-  // generic (tool-agnostic) code that only knows about p1/p2 still resolves
-  // a sane position, never the authoritative geometry.
-  if (d.tool === "brush" || d.tool === "highlighter" || d.tool === "polyline" || d.tool === "path") {
+  // Brush/Highlighter (freehand), Polyline/Path (Phase 3A's controlled
+  // multi-click chain), AND the Phase 3D-1 chart-pattern tools (see
+  // MULTI_ANCHOR_PATTERN_TOOLS below) all store their COMPLETE ordered
+  // vertex list in `points` — p1/p2 are kept mirrored to points[0]/
+  // points[last] purely so generic (tool-agnostic) code that only knows
+  // about p1/p2 still resolves a sane position, never the authoritative
+  // geometry.
+  if (d.tool === "brush" || d.tool === "highlighter" || d.tool === "polyline" || d.tool === "path" || MULTI_ANCHOR_PATTERN_TOOLS.has(d.tool)) {
     return d.points?.length ? d.points : [d.p1, d.p2];
   }
   return [d.p1, d.p2, ...(d.points ?? [])];
+}
+
+/** Chart-pattern tools (Phase 3D-1) built on ONE shared labeled multi-anchor
+ * primitive instead of six independent mini drawing engines: each stores its
+ * complete ordered anchor list in `points` (Polyline/Path's exact
+ * convention above), gets per-vertex editing/hit-testing/move for free via
+ * the SAME code paths those two tools already use, and only needs its own
+ * label set + (where the geometry isn't a plain zigzag) segment topology —
+ * see PATTERN_ANCHOR_LABELS/patternSegments below. Elliott Wave tools
+ * (next phase) are expected to extend this exact set rather than getting
+ * their own engine. */
+export const MULTI_ANCHOR_PATTERN_TOOLS = new Set<DrawTool>(["xabcd", "cypher", "head-shoulders", "abcd", "triangle-pattern", "three-drives"]);
+
+/** Anchor point labels for each pattern tool, in anchor order — drawn next
+ * to each vertex (see paintLabeledPattern) whenever the tool's `anchorLabel`
+ * capability's "Show anchor marker + label" setting is on (default on, same
+ * setting key Anchored VWAP already uses). Array length also doubles as
+ * that tool's required anchor count for construction (see the onDown
+ * pattern-tool branch) — one source of truth instead of two. */
+export const PATTERN_ANCHOR_LABELS: Partial<Record<DrawTool, string[]>> = {
+  xabcd: ["X", "A", "B", "C", "D"],
+  cypher: ["X", "A", "B", "C", "D"],
+  abcd: ["A", "B", "C", "D"],
+  "head-shoulders": ["LS", "H", "RS", "N1", "N2"],
+  "triangle-pattern": ["1", "2", "3", "4"],
+  "three-drives": ["1", "2", "3", "4", "5", "6"],
+};
+
+/** Anchor-index PAIRS that get a connecting segment, for the two pattern
+ * tools whose geometry ISN'T simply "connect every anchor to the next"
+ * (Polyline's default zigzag, used by every other pattern tool here):
+ * Triangle Pattern draws two converging trendlines (anchor 0->2 and 1->3,
+ * not a 0-1-2-3 zigzag), and Head and Shoulders' last two anchors are an
+ * independent neckline, not a continuation of the shoulder/head zigzag. */
+const PATTERN_SEGMENT_OVERRIDES: Partial<Record<DrawTool, [number, number][]>> = {
+  "triangle-pattern": [[0, 2], [1, 3]],
+  "head-shoulders": [[0, 1], [1, 2], [3, 4]],
+};
+
+function patternSegments(tool: DrawTool, count: number): [number, number][] {
+  const override = PATTERN_SEGMENT_OVERRIDES[tool];
+  if (override) return override;
+  const segs: [number, number][] = [];
+  for (let i = 1; i < count; i++) segs.push([i - 1, i]);
+  return segs;
 }
 
 const DEFAULT_DRAW_COLOR = "#e6b800";
@@ -2158,6 +2205,40 @@ export function StudioChart({
       ctx.restore();
     };
 
+    /** Shared render primitive for every Phase 3D-1 chart-pattern tool (see
+     * MULTI_ANCHOR_PATTERN_TOOLS above) — draws that tool's connecting
+     * segments (patternSegments: a plain zigzag by default, or Triangle
+     * Pattern/Head and Shoulders' own topology) plus each anchor's label,
+     * from the SAME ordered anchor array the shared hit-test/edit code
+     * below reads. One function instead of six near-identical ones. */
+    const paintLabeledPattern = (tool: DrawTool, anchors: MarketPoint[], showLabels: boolean, col: string) => {
+      const pts = anchors.map((p) => ({ x: px(p), y: py(p) }));
+      const segs = patternSegments(tool, anchors.length);
+      ctx.beginPath();
+      let any = false;
+      for (const [a, b] of segs) {
+        const pa = pts[a];
+        const pb = pts[b];
+        if (!pa || !pb || pa.x == null || pa.y == null || pb.x == null || pb.y == null) continue;
+        ctx.moveTo(pa.x, pa.y);
+        ctx.lineTo(pb.x, pb.y);
+        any = true;
+      }
+      if (any) ctx.stroke();
+      if (showLabels) {
+        const labels = PATTERN_ANCHOR_LABELS[tool];
+        if (labels) {
+          ctx.fillStyle = withAlpha(col, 0.9);
+          anchors.forEach((_p, i) => {
+            const sp = pts[i];
+            if (!sp || sp.x == null || sp.y == null) return;
+            const label = labels[i];
+            if (label) ctx.fillText(label, sp.x + 6, sp.y - 6);
+          });
+        }
+      }
+    };
+
     const all = draftRef.current ? [...draws, draftRef.current] : draws;
     const pending = pendingRef.current;
     const selected = stateRef.current.selectedId;
@@ -2184,11 +2265,12 @@ export function StudioChart({
       ctx.font = "11px ui-sans-serif, system-ui";
 
       if (d.id === selected) {
-        if (d.tool === "polyline" || d.tool === "path") {
+        if (d.tool === "polyline" || d.tool === "path" || MULTI_ANCHOR_PATTERN_TOOLS.has(d.tool)) {
           // Every vertex gets its own handle (not just p1/p2) — Phase 3A's
-          // "each vertex has an editable anchor" requirement. p1/p2 are
-          // points[0]/points[last], so this already covers the endpoints
-          // too; no separate p1/p2 push needed.
+          // "each vertex has an editable anchor" requirement, reused verbatim
+          // for Phase 3D-1's chart-pattern tools. p1/p2 are points[0]/
+          // points[last], so this already covers the endpoints too; no
+          // separate p1/p2 push needed.
           const allPts = d.points && d.points.length > 0 ? d.points : [d.p1, d.p2];
           for (const pt of allPts) {
             const hx = px(pt);
@@ -2510,6 +2592,18 @@ export function StudioChart({
           }
           ctx.stroke();
         }
+        ctx.restore();
+        continue;
+      }
+
+      if (MULTI_ANCHOR_PATTERN_TOOLS.has(d.tool)) {
+        // Phase 3D-1 chart-pattern tools: same "full ordered vertex array
+        // lives in `points`" convention as Polyline/Path just above, painted
+        // through the one shared paintLabeledPattern instead of a per-tool
+        // renderer (see its own doc comment for why the connecting segments
+        // aren't always a plain zigzag).
+        const anchors = d.points && d.points.length > 0 ? d.points : [d.p1, d.p2];
+        paintLabeledPattern(d.tool, anchors, d.settings?.showAnchorLabel !== false, col);
         ctx.restore();
         continue;
       }
@@ -2925,14 +3019,14 @@ export function StudioChart({
         // vertex array. They get their own per-vertex hit test instead (see
         // the `point:${i}` block below), which correctly writes back into
         // `points` (and re-derives the p1/p2 mirror from it).
-        if (x1 != null && y1 != null && d.tool !== "polyline" && d.tool !== "path") {
+        if (x1 != null && y1 != null && d.tool !== "polyline" && d.tool !== "path" && !MULTI_ANCHOR_PATTERN_TOOLS.has(d.tool)) {
           const dist = pixelDist(x1, y1, mx, my);
           if (dist < best) {
             best = dist;
             hit = { d, anchor: "p1" };
           }
         }
-        if (x2 != null && y2 != null && !NO_ANCHOR_2_TOOLS.has(d.tool) && d.tool !== "polyline" && d.tool !== "path") {
+        if (x2 != null && y2 != null && !NO_ANCHOR_2_TOOLS.has(d.tool) && d.tool !== "polyline" && d.tool !== "path" && !MULTI_ANCHOR_PATTERN_TOOLS.has(d.tool)) {
           const dist = pixelDist(x2, y2, mx, my);
           if (dist < best) {
             best = dist;
@@ -2958,7 +3052,7 @@ export function StudioChart({
         // so every body hit-test below (not just the Fib family) can defer
         // to an anchor this same drawing already matched.
         const anchorAlreadyHitOnThisDrawing = hit !== null && hit.d === d && hit.anchor !== "body";
-        if ((d.tool === "polyline" || d.tool === "path") && d.points && d.points.length > 0) {
+        if ((d.tool === "polyline" || d.tool === "path" || MULTI_ANCHOR_PATTERN_TOOLS.has(d.tool)) && d.points && d.points.length > 0) {
           for (let i = 0; i < d.points.length; i++) {
             const vx = toPx(d.points[i]);
             const vy = toPy(d.points[i]);
@@ -2967,6 +3061,24 @@ export function StudioChart({
             if (dist < best) {
               best = dist;
               hit = { d, anchor: `point:${i}` as AnchorKind };
+            }
+          }
+        }
+        if (MULTI_ANCHOR_PATTERN_TOOLS.has(d.tool) && d.points && d.points.length > 1 && !anchorAlreadyHitOnThisDrawing) {
+          // Segment-distance body hit-test using this tool's actual
+          // connecting topology (patternSegments — a plain zigzag, or
+          // Triangle Pattern/Head and Shoulders' own layout), not a
+          // bounding box, matching Polyline/Brush's own convention below.
+          const pxPts = d.points.map((p) => [toPx(p), toPy(p)] as const);
+          const segs = patternSegments(d.tool, d.points.length);
+          for (const [a, b] of segs) {
+            const pa = pxPts[a];
+            const pb = pxPts[b];
+            if (!pa || !pb || pa[0] == null || pa[1] == null || pb[0] == null || pb[1] == null) continue;
+            const dist = distToSegment(mx, my, pa[0], pa[1], pb[0], pb[1]);
+            if (dist < best) {
+              best = dist;
+              hit = { d, anchor: "body" };
             }
           }
         }
@@ -3492,6 +3604,35 @@ export function StudioChart({
         }
         canvas.setPointerCapture(e.pointerId);
         draftRef.current = { id: "__draft__", tool: "fib-channel", p1: pt, p2: pt };
+        return;
+      }
+
+      if (MULTI_ANCHOR_PATTERN_TOOLS.has(tool)) {
+        // Generic fixed-N-anchor multi-click primitive (Phase 3D-1): the
+        // SAME accumulate-then-commit gesture as Triangle's fixed-3-click
+        // pattern above, generalized to whatever anchor count this tool's
+        // label set declares (PATTERN_ANCHOR_LABELS' array length — one
+        // source of truth for anchor count, not a second hardcoded number).
+        // Every completed anchor set commits in ONE onAddDrawing call, so
+        // exactly one history transaction is created regardless of how many
+        // clicks it took; Escape mid-construction already clears
+        // `pendingRef` generically (see the keyboard effect below), leaving
+        // no phantom history entry.
+        const need = PATTERN_ANCHOR_LABELS[tool]?.length ?? 2;
+        const pend = pendingRef.current;
+        if (!pend || pend.tool !== tool) {
+          pendingRef.current = { tool, anchors: [pt] };
+        } else {
+          const anchors = [...pend.anchors, pt];
+          if (anchors.length >= need) {
+            onAddDrawing(stampNew({ tool, p1: anchors[0], p2: anchors[anchors.length - 1], points: anchors }));
+            pendingRef.current = null;
+            previewPointRef.current = null;
+            onSelectDrawing?.(null);
+          } else {
+            pendingRef.current = { tool, anchors };
+          }
+        }
         return;
       }
 

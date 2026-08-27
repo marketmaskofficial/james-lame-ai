@@ -140,10 +140,12 @@ for (const t of TOOL_DEFS) {
 // those two — no other still-unimplemented tool may be flipped on alongside
 // them), so they move out of this list and into their own dedicated block
 // below, mirroring exactly how Ellipse/Polyline/Path graduated out of this
-// same list in Phase 3A.
+// same list in Phase 3A. "xabcd" graduates out the same way in Phase 3D-1
+// (see its own dedicated block further below) — "elliott-impulse" stays
+// here since Elliott Waves are explicitly out of scope for this phase.
 
 {
-  const DEFERRED_SAMPLE = ["gann-box", "gann-fan", "xabcd", "elliott-impulse", "cyclic-lines", "rotated-rect", "ruler", "image"];
+  const DEFERRED_SAMPLE = ["gann-box", "gann-fan", "elliott-impulse", "cyclic-lines", "rotated-rect", "ruler", "image"];
   const wronglyImplemented = DEFERRED_SAMPLE.filter((id) => TOOL_BY_ID[id]?.implemented);
   ok(`deferred tools stay implemented:false (wrongly true: ${wronglyImplemented.join(",") || "none"})`, wronglyImplemented.length === 0);
 }
@@ -304,6 +306,34 @@ for (const t of TOOL_DEFS) {
   ok("Fib Speed Resistance Arcs declares levels capability (concentric Fibonacci-ratio half-arcs)", TOOL_BY_ID["fib-speed-arcs"]?.capabilities.levels === true);
   ok("Fib Spiral does NOT declare levels capability (no discrete ratio levels on a continuous spiral)", !TOOL_BY_ID["fib-spiral"]?.capabilities.levels);
   ok("fib-circles/fib-speed-arcs/fib-spiral are three distinct tool ids", new Set(PHASE3C4_NEW_TOOLS.map((id) => TOOL_BY_ID[id]?.id)).size === 3);
+}
+
+// ---- Phase 3D-1 additions this phase claims as "fully implemented" --------
+// XABCD / Cypher / Head and Shoulders / ABCD / Triangle Pattern / Three
+// Drives — the shared labeled multi-anchor primitive's first six tools.
+// Elliott Wave ids (elliott-impulse etc.) stay out of IMPLEMENTED_TOOLS —
+// checked above via DEFERRED_SAMPLE.
+
+{
+  const PHASE3D1_NEW_TOOLS = ["xabcd", "cypher", "head-shoulders", "abcd", "triangle-pattern", "three-drives"];
+  const EXPECTED_ANCHOR_COUNT = { xabcd: 5, cypher: 5, "head-shoulders": 5, abcd: 4, "triangle-pattern": 4, "three-drives": 6 };
+  const missing = PHASE3D1_NEW_TOOLS.filter((id) => !TOOL_BY_ID[id]?.implemented);
+  ok(`every Phase 3D-1 new tool is implemented:true (missing: ${missing.join(",") || "none"})`, missing.length === 0);
+  for (const id of PHASE3D1_NEW_TOOLS) {
+    ok(`${id} is in IMPLEMENTED_TOOLS`, IMPLEMENTED_TOOLS.some((t) => t.id === id));
+    ok(`${id} resolves to the "patterns" category`, TOOL_BY_ID[id]?.category === "patterns");
+    ok(`${id} is a multi-click tool`, TOOL_BY_ID[id]?.interactionType === "multi-click");
+    ok(`${id} declares its expected fixed anchor count (${EXPECTED_ANCHOR_COUNT[id]})`, TOOL_BY_ID[id]?.anchorCount === EXPECTED_ANCHOR_COUNT[id]);
+    ok(`${id} declares stroke capability`, TOOL_BY_ID[id]?.capabilities.stroke === true);
+    ok(`${id} declares anchorLabel capability (shared X/A/B/C/D-style label toggle)`, TOOL_BY_ID[id]?.capabilities.anchorLabel === true);
+    ok(`${id} does NOT declare the unrelated free-text 'text' capability`, !TOOL_BY_ID[id]?.capabilities.text);
+  }
+  ok("triangle-pattern is a DISTINCT tool id from the generic geometric 'triangle' shape", TOOL_BY_ID["triangle-pattern"]?.id !== TOOL_BY_ID["triangle"]?.id);
+  ok("xabcd and cypher are distinct tool ids despite identical anchor geometry", TOOL_BY_ID["xabcd"]?.id !== TOOL_BY_ID["cypher"]?.id);
+  ok(
+    "every Phase 3D-1 tool is six distinct tool ids",
+    new Set(PHASE3D1_NEW_TOOLS.map((id) => TOOL_BY_ID[id]?.id)).size === 6,
+  );
 }
 
 // ---- capability-gated settings sections have a real reason to exist -------
