@@ -444,6 +444,56 @@ for (const t of TOOL_DEFS) {
   );
 }
 
+// ---- Phase 3D-5: Lines/Channels/Pitchforks audit + completion --------------
+// Info Line / Trend Angle / Crossline / Regression Trend / Flat Top-Bottom /
+// Disjoint Channel / the four Pitchfork variants — the ten tools the audit
+// found missing (Trend Line/Ray/Extended Line/Horizontal+Vertical Line/
+// Horizontal Ray/Parallel Channel were already genuinely complete and are
+// deliberately NOT touched or re-tested here).
+
+{
+  const PHASE3D5_NEW_TOOLS = [
+    "info-line",
+    "trend-angle",
+    "crossline",
+    "regression-trend",
+    "flat-channel",
+    "disjoint-channel",
+    "pitchfork",
+    "schiff-pitchfork",
+    "modified-schiff-pitchfork",
+    "inside-pitchfork",
+  ];
+  const missing = PHASE3D5_NEW_TOOLS.filter((id) => !TOOL_BY_ID[id]?.implemented);
+  ok(`every Phase 3D-5 new tool is implemented:true (missing: ${missing.join(",") || "none"})`, missing.length === 0);
+  for (const id of PHASE3D5_NEW_TOOLS) {
+    ok(`${id} is in IMPLEMENTED_TOOLS`, IMPLEMENTED_TOOLS.some((t) => t.id === id));
+    ok(`${id} resolves to the "lines" category (Lines/Channels/Pitchforks all share this one toolbar family)`, TOOL_BY_ID[id]?.category === "lines");
+    ok(`${id} declares stroke capability`, TOOL_BY_ID[id]?.capabilities.stroke === true);
+  }
+  ok(
+    "all ten Phase 3D-5 tools are ten distinct tool ids",
+    new Set(PHASE3D5_NEW_TOOLS.map((id) => TOOL_BY_ID[id]?.id)).size === 10,
+  );
+
+  ok("Info Line/Trend Angle are 2-anchor drag tools, same gesture as Trend Line", TOOL_BY_ID["info-line"]?.interactionType === "drag" && TOOL_BY_ID["info-line"]?.anchorCount === 2 && TOOL_BY_ID["trend-angle"]?.interactionType === "drag" && TOOL_BY_ID["trend-angle"]?.anchorCount === 2);
+  ok("Crossline is a single-click point tool with one anchor", TOOL_BY_ID["crossline"]?.interactionType === "point" && TOOL_BY_ID["crossline"]?.anchorCount === 1);
+  ok("Regression Trend is a 2-anchor drag tool (defines the fitted time RANGE)", TOOL_BY_ID["regression-trend"]?.interactionType === "drag" && TOOL_BY_ID["regression-trend"]?.anchorCount === 2);
+  ok("Regression Trend declares fill capability (channel shading)", TOOL_BY_ID["regression-trend"]?.capabilities.fill === true);
+  ok("Flat Top/Bottom is a 3-anchor multi-click tool, same gesture as Parallel Channel", TOOL_BY_ID["flat-channel"]?.interactionType === "multi-click" && TOOL_BY_ID["flat-channel"]?.anchorCount === 3);
+  ok("Flat Top/Bottom is a DISTINCT tool id from Parallel Channel despite sharing the creation gesture", TOOL_BY_ID["flat-channel"]?.id !== TOOL_BY_ID["channel"]?.id);
+  ok("Disjoint Channel is a 4-anchor multi-click tool (two independent 2-point rails)", TOOL_BY_ID["disjoint-channel"]?.interactionType === "multi-click" && TOOL_BY_ID["disjoint-channel"]?.anchorCount === 4);
+
+  const PITCHFORK_IDS = ["pitchfork", "schiff-pitchfork", "modified-schiff-pitchfork", "inside-pitchfork"];
+  for (const id of PITCHFORK_IDS) {
+    ok(`${id} is a 3-anchor multi-click tool`, TOOL_BY_ID[id]?.interactionType === "multi-click" && TOOL_BY_ID[id]?.anchorCount === 3);
+  }
+  ok(
+    "all four Pitchfork variants are four distinct tool ids — none aliased to one visual tool",
+    new Set(PITCHFORK_IDS.map((id) => TOOL_BY_ID[id]?.id)).size === 4,
+  );
+}
+
 // ---- capability-gated settings sections have a real reason to exist -------
 
 {

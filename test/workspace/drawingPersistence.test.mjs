@@ -1142,6 +1142,106 @@ function d(id) {
   ok("chart B only sees its fan, not chart A's square", b.length === 1 && b[0].tool === "gann-fan" && b[0].p2.price === 6);
 }
 
+// ---- Phase 3D-5: Lines/Channels/Pitchforks round trip ----------------------
+// Info Line/Trend Angle/Crossline/Regression Trend/Flat Top-Bottom are plain
+// p1/p2(/points[0]) tools; Disjoint Channel reuses the Phase 3D-1 shared
+// `points`-array primitive (4 independent anchors); the four Pitchfork
+// variants are plain p1/p2/points[0] (P0/P1/P2) like Fib Wedge/Pitchfan.
+
+{
+  fakeStorage.clear();
+
+  const trendAngle = {
+    id: "ta1",
+    tool: "trend-angle",
+    chartInstanceId: "chart-1",
+    p1: { time: 0, price: 100 },
+    p2: { time: 500, price: 150 },
+    color: "#e6b800",
+  };
+
+  const disjointChannel = {
+    id: "dc1",
+    tool: "disjoint-channel",
+    chartInstanceId: "chart-1",
+    p1: { time: 0, price: 10 },
+    p2: { time: 400, price: 40 },
+    points: [
+      { time: 0, price: 10 }, // rail 1 start
+      { time: 200, price: 25 }, // rail 1 end
+      { time: 100, price: 5 }, // rail 2 start (independent, non-parallel)
+      { time: 400, price: 40 }, // rail 2 end
+    ],
+    color: "#4da3ff",
+  };
+
+  const pitchfork = {
+    id: "pf1",
+    tool: "schiff-pitchfork",
+    chartInstanceId: "chart-1",
+    p1: { time: 0, price: 100 }, // P0
+    p2: { time: 100, price: 150 }, // P1
+    points: [{ time: 200, price: 50 }], // P2
+    color: "#a855f7",
+  };
+
+  saveDrawingsFor("chart-1", "NEARUSDT", "1h", [trendAngle, disjointChannel, pitchfork]);
+  const loaded = loadDrawingsFor("chart-1", "NEARUSDT", "1h");
+
+  ok("Phase 3D-5 round trip: all three drawings come back", loaded.length === 3);
+
+  const loadedTrendAngle = loaded.find((x) => x.id === "ta1");
+  ok("Trend Angle: p1/p2 survive intact", loadedTrendAngle.p1.price === 100 && loadedTrendAngle.p2.price === 150);
+
+  const loadedDisjoint = loaded.find((x) => x.id === "dc1");
+  ok(
+    "Disjoint Channel: all FOUR anchors (two independent rails) survive intact, in order",
+    Array.isArray(loadedDisjoint.points) &&
+      loadedDisjoint.points.length === 4 &&
+      loadedDisjoint.points[1].price === 25 &&
+      loadedDisjoint.points[2].price === 5,
+  );
+
+  const loadedPitchfork = loaded.find((x) => x.id === "pf1");
+  ok("Schiff Pitchfork: P0/P1 (p1/p2) survive intact", loadedPitchfork.p1.price === 100 && loadedPitchfork.p2.price === 150);
+  ok(
+    "Schiff Pitchfork: the THIRD anchor (P2) survives in `points`, not collapsed away",
+    Array.isArray(loadedPitchfork.points) && loadedPitchfork.points.length === 1 && loadedPitchfork.points[0].price === 50,
+  );
+}
+
+// ---- Phase 3D-5: chartInstanceId isolation for the new tools --------------
+
+{
+  fakeStorage.clear();
+  const chartACrossline = {
+    id: "a-cl",
+    tool: "crossline",
+    chartInstanceId: "chart-A",
+    p1: { time: 100, price: 5 },
+    p2: { time: 100, price: 5 },
+  };
+  const chartBFlatChannel = {
+    id: "b-fc",
+    tool: "flat-channel",
+    chartInstanceId: "chart-B",
+    p1: { time: 0, price: 1 },
+    p2: { time: 300, price: 6 },
+    points: [{ time: 150, price: 3 }],
+  };
+
+  saveDrawingsFor("chart-A", "APTUSDT", "1h", [chartACrossline]);
+  saveDrawingsFor("chart-B", "APTUSDT", "1h", [chartBFlatChannel]);
+
+  const a = loadDrawingsFor("chart-A", "APTUSDT", "1h");
+  const b = loadDrawingsFor("chart-B", "APTUSDT", "1h");
+  ok("Crossline/Flat Top-Bottom respect chartInstanceId isolation: chart A only sees its crossline", a.length === 1 && a[0].tool === "crossline");
+  ok(
+    "chart B only sees its flat channel (3rd anchor intact), not chart A's crossline",
+    b.length === 1 && b[0].tool === "flat-channel" && b[0].points?.[0]?.price === 3,
+  );
+}
+
 // ---- summary ----------------------------------------------------------------
 
 console.log(`\n${pass}/${pass + fail} passed`);

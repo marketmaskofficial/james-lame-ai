@@ -32,6 +32,10 @@ import {
   gannFanRatioLabel,
   GANN_FAN_RATIOS,
   GANN_FAN_DEFAULT_LEVELS,
+  computeLinearRegression,
+  pitchforkHandle,
+  pitchforkTarget,
+  pitchforkTeethAnchors,
 } from "../../src/lib/drawing/calc.ts";
 import { distToEllipseRing, fibSpiralPoints } from "../../src/lib/drawing/geometry.ts";
 
@@ -657,6 +661,76 @@ function bar(time, open, high, low, close, volume) {
   // decimal string instead of a wrong label.
   ok("gannFanRatioLabel: known ratio resolves to its conventional 'AxB' label", gannFanRatioLabel(2) === "2x1" && gannFanRatioLabel(0.25) === "1x4");
   ok("gannFanRatioLabel: unrecognized custom value degrades to a plain decimal string", gannFanRatioLabel(1.5) === "1.5");
+}
+
+// ---- Phase 3D-5: Regression Trend / Pitchfork family -----------------------
+
+{
+  // Perfect linear data: slope/intercept must be exact, residuals zero.
+  const points = [
+    { time: 0, value: 10 },
+    { time: 100, value: 20 },
+    { time: 200, value: 30 },
+    { time: 300, value: 40 },
+  ];
+  const { slope, intercept, stdDev } = computeLinearRegression(points);
+  close("computeLinearRegression: perfectly linear data recovers the exact slope", slope, 0.1);
+  close("computeLinearRegression: perfectly linear data recovers the exact intercept", intercept, 10);
+  close("computeLinearRegression: zero residuals for perfectly linear data", stdDev, 0, 1e-9);
+}
+
+{
+  // Flat data (zero slope): the fit should be a horizontal line at the mean.
+  const points = [
+    { time: 0, value: 50 },
+    { time: 100, value: 50 },
+    { time: 200, value: 50 },
+  ];
+  const { slope, intercept } = computeLinearRegression(points);
+  close("computeLinearRegression: flat data has zero slope", slope, 0);
+  close("computeLinearRegression: flat data's intercept equals the constant value", intercept, 50);
+}
+
+{
+  // Degenerate inputs never throw / divide by zero.
+  ok("computeLinearRegression: empty input degrades to a zero-everything result", computeLinearRegression([]).slope === 0 && computeLinearRegression([]).stdDev === 0);
+  const single = computeLinearRegression([{ time: 5, value: 42 }]);
+  ok("computeLinearRegression: single point degrades to zero slope at that value", single.slope === 0 && single.intercept === 42);
+}
+
+{
+  // Pitchfork: all four variants built from lerpMarketPoint's midpoint math
+  // (t=0.5) — verify each variant's documented handle/target/teeth.
+  const p0 = { time: 0, price: 100 };
+  const p1 = { time: 100, price: 150 };
+  const p2 = { time: 200, price: 60 };
+  const midP1P2 = { time: 150, price: 105 };
+
+  const stdHandle = pitchforkHandle(p0, p1, p2, "standard");
+  ok("pitchforkHandle standard: handle is P0 itself", stdHandle.time === p0.time && stdHandle.price === p0.price);
+  const stdTarget = pitchforkTarget(p0, p1, p2, "standard");
+  close("pitchforkTarget standard: target is the midpoint of P1/P2", stdTarget.price, midP1P2.price);
+  const [stdT1, stdT2] = pitchforkTeethAnchors(p0, p1, p2, "standard");
+  ok("pitchforkTeethAnchors standard: teeth pass through P1 and P2", stdT1 === p1 && stdT2 === p2);
+
+  const schiffHandle = pitchforkHandle(p0, p1, p2, "schiff");
+  close("pitchforkHandle schiff: handle is the midpoint of P0/P1", schiffHandle.price, (p0.price + p1.price) / 2);
+  const schiffTarget = pitchforkTarget(p0, p1, p2, "schiff");
+  ok("pitchforkTarget schiff: SAME target as standard (midpoint of P1/P2)", schiffTarget.price === stdTarget.price && schiffTarget.time === stdTarget.time);
+
+  const modSchiffHandle = pitchforkHandle(p0, p1, p2, "modified-schiff");
+  close("pitchforkHandle modified-schiff: handle is the midpoint of P0 and midpoint(P1,P2)", modSchiffHandle.price, (p0.price + midP1P2.price) / 2);
+  ok(
+    "pitchforkHandle: standard/schiff/modified-schiff produce three DIFFERENT handle points (not aliased)",
+    stdHandle.price !== schiffHandle.price && schiffHandle.price !== modSchiffHandle.price && stdHandle.price !== modSchiffHandle.price,
+  );
+
+  const insideHandle = pitchforkHandle(p0, p1, p2, "inside");
+  ok("pitchforkHandle inside: handle is P1 (swapped pivot)", insideHandle.time === p1.time && insideHandle.price === p1.price);
+  const insideTarget = pitchforkTarget(p0, p1, p2, "inside");
+  close("pitchforkTarget inside: target is the midpoint of P0/P2 (not P1/P2)", insideTarget.price, (p0.price + p2.price) / 2);
+  const [insideT1, insideT2] = pitchforkTeethAnchors(p0, p1, p2, "inside");
+  ok("pitchforkTeethAnchors inside: teeth pass through P0 and P2 (not P1/P2)", insideT1 === p0 && insideT2 === p2);
 }
 
 // ---- summary ----------------------------------------------------------------

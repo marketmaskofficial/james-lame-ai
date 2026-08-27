@@ -484,3 +484,94 @@ export function gannFanRatioLabel(value: number): string {
   const known = GANN_FAN_RATIOS.find((r) => Math.abs(r.value - value) < 1e-9);
   return known ? known.label : String(value);
 }
+
+// ---- Regression Trend (Phase 3D-5) -----------------------------------------
+
+export type RegressionResult = { slope: number; intercept: number; stdDev: number };
+
+/** Ordinary least-squares linear regression over (time, value) points —
+ * Regression Trend's actual math, not a generic channel substitute. `slope`/
+ * `intercept` describe the fitted line (`value = slope*time + intercept`);
+ * `stdDev` is the population standard deviation of the RESIDUALS
+ * (actual - predicted), used to offset the channel's upper/lower bounds by
+ * a multiple of it — the conventional "regression channel" construction. */
+export function computeLinearRegression(points: { time: number; value: number }[]): RegressionResult {
+  const n = points.length;
+  if (n === 0) return { slope: 0, intercept: 0, stdDev: 0 };
+  if (n === 1) return { slope: 0, intercept: points[0].value, stdDev: 0 };
+  let sumX = 0;
+  let sumY = 0;
+  for (const p of points) {
+    sumX += p.time;
+    sumY += p.value;
+  }
+  const meanX = sumX / n;
+  const meanY = sumY / n;
+  let num = 0;
+  let den = 0;
+  for (const p of points) {
+    num += (p.time - meanX) * (p.value - meanY);
+    den += (p.time - meanX) ** 2;
+  }
+  const slope = den !== 0 ? num / den : 0;
+  const intercept = meanY - slope * meanX;
+  let sumSqResid = 0;
+  for (const p of points) {
+    const predicted = slope * p.time + intercept;
+    sumSqResid += (p.value - predicted) ** 2;
+  }
+  const stdDev = Math.sqrt(sumSqResid / n);
+  return { slope, intercept, stdDev };
+}
+
+// ---- Pitchfork family (Phase 3D-5) -----------------------------------------
+//
+// Standard (Andrews'), Schiff, Modified Schiff, and Inside Pitchfork share
+// ONE geometry model instead of four renderers — all built from
+// `lerpMarketPoint`'s existing midpoint math (t=0.5) applied to a different
+// combination of the three defining anchors P0/P1/P2:
+//   - standard: median runs P0 -> midpoint(P1,P2); outer teeth pass through
+//     P1 and P2, parallel to the median.
+//   - schiff: median origin shifts to midpoint(P0,P1) (same target/teeth as
+//     standard) — the well-known "Schiff" variant.
+//   - modified-schiff: median origin shifts further, to the midpoint of P0
+//     and the standard target (midpoint(P1,P2)).
+//   - inside: swaps which point is the pivot — P1 becomes the origin, P0/P2
+//     become the outer teeth anchors, target becomes midpoint(P0,P2).
+// These are commonly-cited definitions for each variant, not an
+// automatically-validated "correct" pattern — like every other manual
+// pattern tool in this app, the drawing works regardless of whether it
+// matches a textbook example.
+
+export type PitchforkVariant = "standard" | "schiff" | "modified-schiff" | "inside";
+
+export function pitchforkHandle(
+  p0: { time: number; price: number },
+  p1: { time: number; price: number },
+  p2: { time: number; price: number },
+  variant: PitchforkVariant,
+): { time: number; price: number } {
+  if (variant === "inside") return p1;
+  if (variant === "schiff") return lerpMarketPoint(p0, p1, 0.5);
+  if (variant === "modified-schiff") return lerpMarketPoint(p0, lerpMarketPoint(p1, p2, 0.5), 0.5);
+  return p0;
+}
+
+export function pitchforkTarget(
+  p0: { time: number; price: number },
+  p1: { time: number; price: number },
+  p2: { time: number; price: number },
+  variant: PitchforkVariant,
+): { time: number; price: number } {
+  if (variant === "inside") return lerpMarketPoint(p0, p2, 0.5);
+  return lerpMarketPoint(p1, p2, 0.5);
+}
+
+export function pitchforkTeethAnchors(
+  p0: { time: number; price: number },
+  p1: { time: number; price: number },
+  p2: { time: number; price: number },
+  variant: PitchforkVariant,
+): [{ time: number; price: number }, { time: number; price: number }] {
+  return variant === "inside" ? [p0, p2] : [p1, p2];
+}

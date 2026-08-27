@@ -228,10 +228,54 @@ export const TOOL_DEFS: ToolDef[] = [
   { id: "trend", name: "Trend Line", category: "lines", icon: TrendingUp, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
   { id: "ray", name: "Ray", category: "lines", icon: ArrowUpRight, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
   { id: "extended", name: "Extended Line", category: "lines", icon: ArrowUpRight, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  // Info Line / Trend Angle (Phase 3D-5 audit): identical 2-anchor drag
+  // geometry to Trend Line above (reused verbatim, see StudioChart.tsx's
+  // shared trend/ray/extended render branch) — the ONE difference is an
+  // extra computed label (price change/%/bar count/angle for Info Line;
+  // just the angle for Trend Angle), never a second line renderer.
+  { id: "info-line", name: "Info Line", category: "lines", icon: Ruler, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "trend-angle", name: "Trend Angle", category: "lines", icon: Activity, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
   { id: "hline", name: "Horizontal Line", category: "lines", icon: Minus, interactionType: "point", anchorCount: 1, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
   { id: "hray", name: "Horizontal Ray", category: "lines", icon: Minus, interactionType: "point", anchorCount: 1, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
   { id: "vline", name: "Vertical Line", category: "lines", icon: Minus, interactionType: "point", anchorCount: 1, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  // Crossline: a single click (like Horizontal/Vertical Line above) that
+  // draws BOTH a full horizontal and full vertical line through the one
+  // anchor — genuinely its own tool, not an alias of either.
+  { id: "crossline", name: "Crossline", category: "lines", icon: Hash, interactionType: "point", anchorCount: 1, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
   { id: "channel", name: "Parallel Channel", category: "lines", icon: GitBranch, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, fill: true }, defaultStyle: { ...LINE_DEFAULT, fillOpacity: 0.08 }, implemented: true },
+  // Regression Trend (Phase 3D-5): genuine ordinary-least-squares linear
+  // regression over every bar's close price within [p1.time, p2.time] (see
+  // calc.ts's computeLinearRegression) — NOT a generic channel with the
+  // rails substituted in. The channel bounds are the fitted line offset by
+  // a multiple of the residual standard deviation, the conventional
+  // "regression channel" construction.
+  { id: "regression-trend", name: "Regression Trend", category: "lines", icon: Spline, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true, fill: true }, defaultStyle: { ...LINE_DEFAULT, fillOpacity: 0.08 }, implemented: true },
+  // Flat Top/Bottom: the SAME 3-anchor drag-then-click creation gesture as
+  // Parallel Channel above (added to that exact code path, not a second
+  // one) and the SAME "sloped rail + offset rail + fill" render shape —
+  // its one geometric difference is that the second rail is forced
+  // HORIZONTAL at the third anchor's price, not parallel-offset to the
+  // sloped rail (see StudioChart.tsx's paintFlatChannel).
+  { id: "flat-channel", name: "Flat Top/Bottom", category: "lines", icon: RectangleHorizontal, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, fill: true }, defaultStyle: { ...LINE_DEFAULT, fillOpacity: 0.08 }, implemented: true },
+  // Disjoint Channel: two INDEPENDENT 2-point rails (anchors 0-1 and 2-3),
+  // deliberately not required to be parallel — reuses Phase 3D-1's shared
+  // labeled multi-anchor primitive (MULTI_ANCHOR_PATTERN_TOOLS) with a
+  // non-sequential segment override, exactly like Triangle Pattern's own
+  // converging-trendline topology, rather than a fifth bespoke
+  // creation/render/hit-test path. No anchor labels (nothing to name).
+  { id: "disjoint-channel", name: "Disjoint Channel", category: "lines", icon: GitBranch, interactionType: "multi-click", anchorCount: 4, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  // Pitchfork family (Phase 3D-5): Standard (Andrews'), Schiff, Modified
+  // Schiff, and Inside all share ONE geometry model (calc.ts's
+  // pitchforkHandle/pitchforkTarget/pitchforkTeethAnchors + StudioChart.tsx's
+  // single paintPitchfork) rather than four renderers — see calc.ts's own
+  // doc comment for exactly how each variant's median origin/target/teeth
+  // differ. All four use the SAME 3-anchor multi-click gesture as Fib
+  // Wedge/Pitchfan above (P0/P1/P2 stored as p1/p2/points[0], identical
+  // convention).
+  { id: "pitchfork", name: "Pitchfork", category: "lines", icon: Fan, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "schiff-pitchfork", name: "Schiff Pitchfork", category: "lines", icon: Fan, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "modified-schiff-pitchfork", name: "Modified Schiff Pitchfork", category: "lines", icon: Fan, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "inside-pitchfork", name: "Inside Pitchfork", category: "lines", icon: Fan, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
 
   // ---- Fibonacci Tools ------------------------------------------------------
   // One reusable Fib engine (src/lib/drawing/calc.ts's FibLevel/computeFibLevels)

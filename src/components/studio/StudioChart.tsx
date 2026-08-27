@@ -35,6 +35,11 @@ import {
   gannFanSlope,
   gannFanRatioLabel,
   GANN_FAN_DEFAULT_LEVELS,
+  computeLinearRegression,
+  pitchforkHandle,
+  pitchforkTarget,
+  pitchforkTeethAnchors,
+  type PitchforkVariant,
   type FibLevel,
 } from "@/lib/drawing/calc";
 import { getToolStyleDefaults } from "@/lib/drawing/styleDefaults";
@@ -83,10 +88,20 @@ export type DrawTool =
   | "trend"
   | "ray"
   | "extended"
+  | "info-line"
+  | "trend-angle"
   | "hline"
   | "vline"
   | "hray"
+  | "crossline"
   | "channel"
+  | "regression-trend"
+  | "flat-channel"
+  | "disjoint-channel"
+  | "pitchfork"
+  | "schiff-pitchfork"
+  | "modified-schiff-pitchfork"
+  | "inside-pitchfork"
   | "arrow"
   // Fibonacci Tools — one shared Fib engine (src/lib/drawing/calc.ts) backs
   // every variant below; only "fib" is implemented this phase, the rest are
@@ -273,6 +288,9 @@ export const MULTI_ANCHOR_PATTERN_TOOLS = new Set<DrawTool>([
   "elliott-triangle",
   "elliott-double-combo",
   "elliott-triple-combo",
+  // Disjoint Channel (Phase 3D-5): two independent 2-point rails — see
+  // PATTERN_SEGMENT_OVERRIDES below for its non-sequential segment pairing.
+  "disjoint-channel",
 ]);
 
 /** Anchor point labels for each pattern tool, in anchor order — drawn next
@@ -312,7 +330,25 @@ export const PATTERN_ANCHOR_LABELS: Partial<Record<DrawTool, string[]>> = {
 const PATTERN_SEGMENT_OVERRIDES: Partial<Record<DrawTool, [number, number][]>> = {
   "triangle-pattern": [[0, 2], [1, 3]],
   "head-shoulders": [[0, 1], [1, 2], [3, 4]],
+  // Disjoint Channel (Phase 3D-5): two fully INDEPENDENT rails (0->1 and
+  // 2->3) — deliberately not connected to each other, unlike every other
+  // pattern tool's default zigzag.
+  "disjoint-channel": [[0, 1], [2, 3]],
 };
+
+/** Pitchfork family (Phase 3D-5) — see calc.ts's own doc comment for the
+ * shared geometry model each variant reads from. Kept as its own small set
+ * (not folded into MULTI_ANCHOR_PATTERN_TOOLS) because these are plain
+ * p1/p2/points[0] tools — the SAME 3-anchor convention Fib Wedge/Pitchfan
+ * already use — not the labeled `points`-array-of-N primitive. */
+const PITCHFORK_TOOLS = new Set<DrawTool>(["pitchfork", "schiff-pitchfork", "modified-schiff-pitchfork", "inside-pitchfork"]);
+
+function pitchforkVariantOf(tool: DrawTool): PitchforkVariant {
+  if (tool === "schiff-pitchfork") return "schiff";
+  if (tool === "modified-schiff-pitchfork") return "modified-schiff";
+  if (tool === "inside-pitchfork") return "inside";
+  return "standard";
+}
 
 function patternSegments(tool: DrawTool, count: number): [number, number][] {
   const override = PATTERN_SEGMENT_OVERRIDES[tool];
@@ -2421,6 +2457,130 @@ export function StudioChart({
       ctx.restore();
     };
 
+    /** Shared render primitive for all four Pitchfork variants (Phase
+     * 3D-5) — see calc.ts's own doc comment for how each variant's
+     * handle/target/teeth differ. Median + both teeth are extended via the
+     * SAME projectLineForward every other ray-fan tool in this file uses. */
+    const paintPitchfork = (p0: MarketPoint, p1: MarketPoint, p2: MarketPoint, variant: PitchforkVariant) => {
+      const handle = pitchforkHandle(p0, p1, p2, variant);
+      const target = pitchforkTarget(p0, p1, p2, variant);
+      const [tooth1, tooth2] = pitchforkTeethAnchors(p0, p1, p2, variant);
+      const hx = px(handle);
+      const hy = py(handle);
+      if (hx == null || hy == null) return;
+      ctx.save();
+      ctx.setLineDash([]);
+      const tx = px(target);
+      const ty = py(target);
+      if (tx != null && ty != null) {
+        const { x: ex, y: ey } = projectLineForward(hx, hy, tx, ty, host.clientWidth);
+        ctx.beginPath();
+        ctx.moveTo(hx, hy);
+        ctx.lineTo(ex, ey);
+        ctx.stroke();
+      }
+      const dt = target.time - handle.time;
+      const dp = target.price - handle.price;
+      for (const tooth of [tooth1, tooth2]) {
+        const ref = { time: tooth.time + dt, price: tooth.price + dp };
+        const tx1 = px(tooth);
+        const ty1 = py(tooth);
+        const tx2 = px(ref);
+        const ty2 = py(ref);
+        if (tx1 == null || ty1 == null || tx2 == null || ty2 == null) continue;
+        const { x: ex, y: ey } = projectLineForward(tx1, ty1, tx2, ty2, host.clientWidth);
+        ctx.beginPath();
+        ctx.moveTo(tx1, ty1);
+        ctx.lineTo(ex, ey);
+        ctx.stroke();
+      }
+      ctx.restore();
+    };
+
+    /** Flat Top/Bottom (Phase 3D-5): the SAME sloped-rail-plus-offset-rail
+     * shape as Parallel Channel's own render code just below in the main
+     * loop, except the second rail is forced HORIZONTAL at p3's price
+     * (`y3`) instead of a perpendicular-parallel offset — its one genuine
+     * geometric difference from Parallel Channel. */
+    const paintFlatChannel = (x1: number, y1: number, x2: number, y2: number, p3: MarketPoint | undefined) => {
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      if (!p3) return;
+      const y3 = py(p3);
+      if (y3 == null) return;
+      ctx.beginPath();
+      ctx.moveTo(x1, y3);
+      ctx.lineTo(x2, y3);
+      ctx.stroke();
+      ctx.save();
+      ctx.globalAlpha = 0.08;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.lineTo(x2, y3);
+      ctx.lineTo(x1, y3);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    };
+
+    /** Regression Trend (Phase 3D-5): genuine ordinary-least-squares
+     * regression (calc.ts's computeLinearRegression) over every bar's
+     * close price within [p1.time, p2.time] — NOT Parallel Channel's
+     * anchor-driven rails. The channel bounds are the fitted line offset
+     * by `deviations` multiples of the residual standard deviation, the
+     * conventional "regression channel" construction. Anchor HANDLES still
+     * sit at the raw p1/p2 drag points (drives the fitted TIME RANGE), not
+     * on the fitted line itself — dragging either one still correctly
+     * resizes the range and the regression regenerates fresh. */
+    const paintRegressionTrend = (p1: MarketPoint, p2: MarketPoint, deviations: number) => {
+      const lo = Math.min(p1.time, p2.time);
+      const hi = Math.max(p1.time, p2.time);
+      const inRange = stateRef.current.bars.filter((b) => b.time >= lo && b.time <= hi).map((b) => ({ time: b.time, value: b.close }));
+      if (inRange.length < 2) return;
+      const { slope, intercept, stdDev } = computeLinearRegression(inRange);
+      const yAt = (t: number) => slope * t + intercept;
+      const x1r = px({ time: lo, price: 0 });
+      const x2r = px({ time: hi, price: 0 });
+      const y1r = py({ time: lo, price: yAt(lo) });
+      const y2r = py({ time: hi, price: yAt(hi) });
+      if (x1r == null || x2r == null || y1r == null || y2r == null) return;
+      ctx.beginPath();
+      ctx.moveTo(x1r, y1r);
+      ctx.lineTo(x2r, y2r);
+      ctx.stroke();
+      const upperY1 = py({ time: lo, price: yAt(lo) + stdDev * deviations });
+      const upperY2 = py({ time: hi, price: yAt(hi) + stdDev * deviations });
+      const lowerY1 = py({ time: lo, price: yAt(lo) - stdDev * deviations });
+      const lowerY2 = py({ time: hi, price: yAt(hi) - stdDev * deviations });
+      if (upperY1 != null && upperY2 != null) {
+        ctx.beginPath();
+        ctx.moveTo(x1r, upperY1);
+        ctx.lineTo(x2r, upperY2);
+        ctx.stroke();
+      }
+      if (lowerY1 != null && lowerY2 != null) {
+        ctx.beginPath();
+        ctx.moveTo(x1r, lowerY1);
+        ctx.lineTo(x2r, lowerY2);
+        ctx.stroke();
+      }
+      if (upperY1 != null && upperY2 != null && lowerY1 != null && lowerY2 != null) {
+        ctx.save();
+        ctx.globalAlpha = 0.08;
+        ctx.beginPath();
+        ctx.moveTo(x1r, upperY1);
+        ctx.lineTo(x2r, upperY2);
+        ctx.lineTo(x2r, lowerY2);
+        ctx.lineTo(x1r, lowerY1);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+    };
+
     const all = draftRef.current ? [...draws, draftRef.current] : draws;
     const pending = pendingRef.current;
     const selected = stateRef.current.selectedId;
@@ -2461,10 +2621,21 @@ export function StudioChart({
           }
         } else {
           handles.push({ x: x1, y: y1 });
-          if (x2 != null && y2 != null && d.tool !== "hline" && d.tool !== "vline" && d.tool !== "hray" && d.tool !== "arrow-up" && d.tool !== "arrow-down")
+          if (x2 != null && y2 != null && d.tool !== "hline" && d.tool !== "vline" && d.tool !== "hray" && d.tool !== "crossline" && d.tool !== "arrow-up" && d.tool !== "arrow-down")
             handles.push({ x: x2, y: y2 });
           const p3 = d.points?.[0];
-          if (p3 && (d.tool === "channel" || d.tool === "triangle" || d.tool === "fib-ext" || d.tool === "fib-channel" || d.tool === "fib-wedge" || d.tool === "fib-time-trend" || d.tool === "pitchfan")) {
+          if (
+            p3 &&
+            (d.tool === "channel" ||
+              d.tool === "triangle" ||
+              d.tool === "fib-ext" ||
+              d.tool === "fib-channel" ||
+              d.tool === "fib-wedge" ||
+              d.tool === "fib-time-trend" ||
+              d.tool === "pitchfan" ||
+              d.tool === "flat-channel" ||
+              PITCHFORK_TOOLS.has(d.tool))
+          ) {
             const hx = px(p3);
             const hy = py(p3);
             if (hx != null && hy != null) handles.push({ x: hx, y: hy });
@@ -2476,6 +2647,19 @@ export function StudioChart({
         ctx.beginPath();
         ctx.moveTo(x1, 0);
         ctx.lineTo(x1, host.clientHeight);
+        ctx.stroke();
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "crossline") {
+        // Both a full horizontal AND full vertical line through the one
+        // anchor — Horizontal Line's and Vertical Line's own render code
+        // combined, not a third geometry.
+        ctx.beginPath();
+        ctx.moveTo(x1, 0);
+        ctx.lineTo(x1, host.clientHeight);
+        ctx.moveTo(0, y1);
+        ctx.lineTo(host.clientWidth, y1);
         ctx.stroke();
         ctx.restore();
         continue;
@@ -2790,6 +2974,18 @@ export function StudioChart({
         continue;
       }
 
+      if (PITCHFORK_TOOLS.has(d.tool)) {
+        const p3 = d.points?.[0];
+        if (p3) paintPitchfork(d.p1, d.p2, p3, pitchforkVariantOf(d.tool));
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "regression-trend") {
+        paintRegressionTrend(d.p1, d.p2, (d.settings?.regressionDeviations as number | undefined) ?? 2);
+        ctx.restore();
+        continue;
+      }
+
       if (d.tool === "cyclic-lines" || d.tool === "time-cycles" || d.tool === "sine-line") {
         // Phase 3D-3 Cycles: plain p1/p2 tools (no `points` array involved)
         // rendered through their own shared repeating-interval / parametric
@@ -2828,7 +3024,7 @@ export function StudioChart({
         ctx.fillStyle = withAlpha(col, alpha);
         ctx.fillText(fmt(d.p1.price), Math.max(6, fromX + 4), y1 - 4);
       } else if (x2 != null && y2 != null) {
-        if (d.tool === "trend" || d.tool === "ray" || d.tool === "extended" || d.tool === "measure" || d.tool === "price-range" || d.tool === "date-range") {
+        if (d.tool === "trend" || d.tool === "ray" || d.tool === "extended" || d.tool === "info-line" || d.tool === "trend-angle" || d.tool === "measure" || d.tool === "price-range" || d.tool === "date-range") {
           let sx = x1;
           let sy = y1;
           let ex = x2;
@@ -2858,6 +3054,22 @@ export function StudioChart({
                 : d.tool === "date-range"
                   ? `${Math.abs(barsSpan)} bars · ${fmtDuration(Math.abs(d.p2.time - d.p1.time))}`
                   : `${fmt(diff)} (${pct.toFixed(2)}%) · ${Math.abs(barsSpan)} bars`;
+            ctx.fillStyle = diff >= 0 ? "#22c55e" : "#ef4444";
+            ctx.fillText(label, x2 + 6, y2 - 6);
+          }
+          if (d.tool === "info-line" || d.tool === "trend-angle") {
+            // Genuine angle/slope, computed from the CURRENT pixel scale
+            // (not a fixed market-coordinate constant) — the same line at
+            // a different zoom level has a different on-screen angle,
+            // which is the correct, expected behavior for this tool (it
+            // describes what the line looks like right now, not an
+            // invariant property of the two anchors).
+            const angleDeg = Math.atan2(y1 - y2, x2 - x1) * (180 / Math.PI);
+            const diff = d.p2.price - d.p1.price;
+            const pct = d.p1.price !== 0 ? (diff / d.p1.price) * 100 : 0;
+            const barsSpan = Math.round(toLogicalD(d.p2.time) - toLogicalD(d.p1.time));
+            const label =
+              d.tool === "trend-angle" ? `${angleDeg.toFixed(2)}°` : `${fmt(diff)} (${pct.toFixed(2)}%) · ${Math.abs(barsSpan)} bars · ${angleDeg.toFixed(1)}°`;
             ctx.fillStyle = diff >= 0 ? "#22c55e" : "#ef4444";
             ctx.fillText(label, x2 + 6, y2 - 6);
           }
@@ -2924,6 +3136,8 @@ export function StudioChart({
               ctx.restore();
             }
           }
+        } else if (d.tool === "flat-channel") {
+          paintFlatChannel(x1, y1, x2, y2, d.points?.[0]);
         } else if (d.tool === "fib") {
           const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? DEFAULT_FIB_LEVELS;
           const computed = computeFibLevels(d.p1.price, d.p2.price, levels.filter((l) => l.enabled !== false));
@@ -3150,6 +3364,8 @@ export function StudioChart({
           paintFibTimeZone(cursorPt.time, second.time - first.time, defaultFibLevelsForTool("fib-time-trend"), true, previewColor);
         } else if (pending.tool === "pitchfan") {
           paintFibWedge(first, second, cursorPt, defaultFibLevelsForTool("pitchfan"), null, true, true, previewColor);
+        } else if (PITCHFORK_TOOLS.has(pending.tool)) {
+          paintPitchfork(first, second, cursorPt, pitchforkVariantOf(pending.tool));
         }
       }
     }
@@ -3190,7 +3406,7 @@ export function StudioChart({
   // Read by drawOverlay() to render the in-progress preview.
   const previewPointRef = useRef<MarketPoint | null>(null);
 
-  const NO_ANCHOR_2_TOOLS = new Set<DrawTool>(["hline", "vline", "hray", "text", "marker", "vwap", "vp-anchored", "arrow-up", "arrow-down"]);
+  const NO_ANCHOR_2_TOOLS = new Set<DrawTool>(["hline", "vline", "hray", "crossline", "text", "marker", "vwap", "vp-anchored", "arrow-up", "arrow-down"]);
 
   // Closest drawing to a screen point — used by Select/erase (inside the
   // pointer-interaction effect below) AND by the double-click-for-settings
@@ -3244,7 +3460,19 @@ export function StudioChart({
             hit = { d, anchor: "p2" };
           }
         }
-        if (x3 != null && y3 != null && (d.tool === "channel" || d.tool === "triangle" || d.tool === "fib-ext" || d.tool === "fib-channel" || d.tool === "fib-wedge" || d.tool === "fib-time-trend" || d.tool === "pitchfan")) {
+        if (
+          x3 != null &&
+          y3 != null &&
+          (d.tool === "channel" ||
+            d.tool === "triangle" ||
+            d.tool === "fib-ext" ||
+            d.tool === "fib-channel" ||
+            d.tool === "fib-wedge" ||
+            d.tool === "fib-time-trend" ||
+            d.tool === "pitchfan" ||
+            d.tool === "flat-channel" ||
+            PITCHFORK_TOOLS.has(d.tool))
+        ) {
           const dist = pixelDist(x3, y3, mx, my);
           if (dist < best) {
             best = dist;
@@ -3423,7 +3651,7 @@ export function StudioChart({
           hit = { d, anchor: "body" };
         }
         if (
-          (d.tool === "trend" || d.tool === "ray" || d.tool === "arrow" || d.tool === "measure" || d.tool === "price-range" || d.tool === "date-range") &&
+          (d.tool === "trend" || d.tool === "ray" || d.tool === "arrow" || d.tool === "info-line" || d.tool === "trend-angle" || d.tool === "measure" || d.tool === "price-range" || d.tool === "date-range") &&
           x1 != null && y1 != null && x2 != null && y2 != null
         ) {
           const dist = distToSegment(mx, my, x1, y1, x2, y2);
@@ -3445,11 +3673,85 @@ export function StudioChart({
             hit = { d, anchor: "body" };
           }
         }
-        if (d.tool === "channel" && x1 != null && y1 != null && x2 != null && y2 != null) {
+        if ((d.tool === "channel" || d.tool === "flat-channel") && x1 != null && y1 != null && x2 != null && y2 != null) {
+          // Same "only the sloped baseline rail is hit-tested, not the
+          // offset second rail" scope Parallel Channel already has (a
+          // pre-existing limitation, not something this phase changes).
           const dist = distToSegment(mx, my, x1, y1, x2, y2);
           if (dist < best) {
             best = dist;
             hit = { d, anchor: "body" };
+          }
+        }
+        if (PITCHFORK_TOOLS.has(d.tool) && x1 != null && y1 != null && x3 != null && p3 && !anchorAlreadyHitOnThisDrawing) {
+          // Hit-tests the median + both teeth (the ACTUAL rendered rays),
+          // same segment-distance convention as every other ray-fan tool.
+          const variant = pitchforkVariantOf(d.tool);
+          const handle = pitchforkHandle(d.p1, d.p2, p3, variant);
+          const target = pitchforkTarget(d.p1, d.p2, p3, variant);
+          const [tooth1, tooth2] = pitchforkTeethAnchors(d.p1, d.p2, p3, variant);
+          const canvasWidth = canvasRef.current?.clientWidth ?? 2000;
+          const hx = toPx(handle);
+          const hy = toPy(handle);
+          if (hx != null && hy != null) {
+            const tx = toPx(target);
+            const ty = toPy(target);
+            if (tx != null && ty != null) {
+              const { x: ex, y: ey } = projectLineForward(hx, hy, tx, ty, canvasWidth);
+              const dist = distToSegment(mx, my, hx, hy, ex, ey);
+              if (dist < best) {
+                best = dist;
+                hit = { d, anchor: "body" };
+              }
+            }
+            const dt = target.time - handle.time;
+            const dp = target.price - handle.price;
+            for (const tooth of [tooth1, tooth2]) {
+              const ref = { time: tooth.time + dt, price: tooth.price + dp };
+              const tx1 = toPx(tooth);
+              const ty1 = toPy(tooth);
+              const tx2 = toPx(ref);
+              const ty2 = toPy(ref);
+              if (tx1 == null || ty1 == null || tx2 == null || ty2 == null) continue;
+              const { x: ex, y: ey } = projectLineForward(tx1, ty1, tx2, ty2, canvasWidth);
+              const dist = distToSegment(mx, my, tx1, ty1, ex, ey);
+              if (dist < best) {
+                best = dist;
+                hit = { d, anchor: "body" };
+              }
+            }
+          }
+        }
+        if (d.tool === "crossline" && x1 != null && y1 != null) {
+          // Distance to whichever of the two crossing lines is closer —
+          // same convention as Horizontal/Vertical Line's own hit-tests.
+          const dist = Math.min(Math.abs(y1 - my), Math.abs(x1 - mx));
+          if (dist < best) {
+            best = dist;
+            hit = { d, anchor: "body" };
+          }
+        }
+        if (d.tool === "regression-trend" && !anchorAlreadyHitOnThisDrawing) {
+          // Hit-tests the ACTUAL fitted regression line (recomputed fresh,
+          // same as the renderer), not the raw p1->p2 drag diagonal.
+          const bars = stateRef.current.bars;
+          const lo = Math.min(d.p1.time, d.p2.time);
+          const hi = Math.max(d.p1.time, d.p2.time);
+          const inRange = bars.filter((b) => b.time >= lo && b.time <= hi).map((b) => ({ time: b.time, value: b.close }));
+          if (inRange.length >= 2) {
+            const { slope, intercept } = computeLinearRegression(inRange);
+            const yAt = (t: number) => slope * t + intercept;
+            const rx1 = toPx({ time: lo, price: 0 });
+            const rx2 = toPx({ time: hi, price: 0 });
+            const ry1 = toPy({ time: lo, price: yAt(lo) });
+            const ry2 = toPy({ time: hi, price: yAt(hi) });
+            if (rx1 != null && rx2 != null && ry1 != null && ry2 != null) {
+              const dist = distToSegment(mx, my, rx1, ry1, rx2, ry2);
+              if (dist < best) {
+                best = dist;
+                hit = { d, anchor: "body" };
+              }
+            }
           }
         }
         if (d.tool === "fib" && x1 != null && x2 != null && !anchorAlreadyHitOnThisDrawing) {
@@ -3886,20 +4188,23 @@ export function StudioChart({
         return;
       }
 
-      if (tool === "channel") {
+      if (tool === "channel" || tool === "flat-channel") {
+        // Flat Top/Bottom (Phase 3D-5) reuses this EXACT drag-then-click
+        // gesture — the only difference is which render/hit-test branch
+        // its own tool id resolves to afterward.
         const pend = pendingRef.current;
-        if (pend && pend.tool === "channel" && pend.anchors.length === 2) {
-          onAddDrawing(stampNew({ tool: "channel", p1: pend.anchors[0], p2: pend.anchors[1], points: [pt] }));
+        if (pend && pend.tool === tool && pend.anchors.length === 2) {
+          onAddDrawing(stampNew({ tool, p1: pend.anchors[0], p2: pend.anchors[1], points: [pt] }));
           pendingRef.current = null;
           previewPointRef.current = null;
           return;
         }
         canvas.setPointerCapture(e.pointerId);
-        draftRef.current = { id: "__draft__", tool: "channel", p1: pt, p2: pt };
+        draftRef.current = { id: "__draft__", tool, p1: pt, p2: pt };
         return;
       }
 
-      if (tool === "fib-ext" || tool === "fib-wedge" || tool === "fib-time-trend" || tool === "pitchfan") {
+      if (tool === "fib-ext" || tool === "fib-wedge" || tool === "fib-time-trend" || tool === "pitchfan" || PITCHFORK_TOOLS.has(tool)) {
         // Trend-Based Fib Extension (A->B->C), Fib Wedge (pivot->B->C),
         // Trend-Based Fib Time (A->B->C, Phase 3C-3), and Pitchfan
         // (pivot->B->C, Phase 3C-3) all use Triangle's exact 3-plain-click
@@ -3989,7 +4294,7 @@ export function StudioChart({
         return;
       }
 
-      if (tool === "hline" || tool === "vline" || tool === "hray") {
+      if (tool === "hline" || tool === "vline" || tool === "hray" || tool === "crossline") {
         onAddDrawing(stampNew({ tool, p1: pt, p2: pt }));
         return;
       }
@@ -4130,7 +4435,7 @@ export function StudioChart({
       const dl = Math.abs(timeToLogicalExtrapolated(bars, draft.p2.time) - timeToLogicalExtrapolated(bars, draft.p1.time));
       const negligible = dl < 0.5 && draft.p1.price === draft.p2.price;
 
-      if (draft.tool === "channel" || draft.tool === "fib-channel") {
+      if (draft.tool === "channel" || draft.tool === "fib-channel" || draft.tool === "flat-channel") {
         if (negligible) return;
         pendingRef.current = { tool: draft.tool, anchors: [draft.p1, draft.p2] };
         return;
