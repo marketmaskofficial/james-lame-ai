@@ -16,6 +16,7 @@ import {
   fibChannelLevelOffset,
   distToEllipseRing,
   fibSpiralPoints,
+  parallelChannelSecondRail,
 } from "@/lib/drawing/geometry";
 import {
   DEFAULT_FIB_LEVELS,
@@ -3111,17 +3112,10 @@ export function StudioChart({
             const x3 = px(p3);
             const y3 = py(p3);
             if (x3 != null && y3 != null) {
-              const dx = x2 - x1;
-              const dy = y2 - y1;
-              const len = Math.hypot(dx, dy) || 1;
-              const nx = -dy / len;
-              const ny = dx / len;
-              const offset = (x3 - x1) * nx + (y3 - y1) * ny;
-              const ox = nx * offset;
-              const oy = ny * offset;
+              const rail2 = parallelChannelSecondRail(x1, y1, x2, y2, x3, y3);
               ctx.beginPath();
-              ctx.moveTo(x1 + ox, y1 + oy);
-              ctx.lineTo(x2 + ox, y2 + oy);
+              ctx.moveTo(rail2.x1, rail2.y1);
+              ctx.lineTo(rail2.x2, rail2.y2);
               ctx.stroke();
               // subtle fill between the two rails
               ctx.save();
@@ -3129,8 +3123,8 @@ export function StudioChart({
               ctx.beginPath();
               ctx.moveTo(x1, y1);
               ctx.lineTo(x2, y2);
-              ctx.lineTo(x2 + ox, y2 + oy);
-              ctx.lineTo(x1 + ox, y1 + oy);
+              ctx.lineTo(rail2.x2, rail2.y2);
+              ctx.lineTo(rail2.x1, rail2.y1);
               ctx.closePath();
               ctx.fill();
               ctx.restore();
@@ -3674,13 +3668,42 @@ export function StudioChart({
           }
         }
         if ((d.tool === "channel" || d.tool === "flat-channel") && x1 != null && y1 != null && x2 != null && y2 != null) {
-          // Same "only the sloped baseline rail is hit-tested, not the
-          // offset second rail" scope Parallel Channel already has (a
-          // pre-existing limitation, not something this phase changes).
-          const dist = distToSegment(mx, my, x1, y1, x2, y2);
-          if (dist < best) {
-            best = dist;
+          // Hit-tests BOTH rendered rails — the sloped baseline (p1->p2)
+          // AND the offset second rail — computed identically to how each
+          // tool actually DRAWS that second rail (perpendicular-parallel
+          // offset for Parallel Channel, a horizontal line at p3's price
+          // for Flat Top/Bottom), so clicking either visible line selects
+          // the drawing. `best`/`hit` are shared across every check in
+          // this loop, so whichever rail is genuinely closer to the
+          // cursor naturally wins — no separate priority logic needed.
+          const dist1 = distToSegment(mx, my, x1, y1, x2, y2);
+          if (dist1 < best) {
+            best = dist1;
             hit = { d, anchor: "body" };
+          }
+          const p3 = d.points?.[0];
+          if (p3) {
+            if (d.tool === "channel") {
+              const x3 = toPx(p3);
+              const y3 = toPy(p3);
+              if (x3 != null && y3 != null) {
+                const rail2 = parallelChannelSecondRail(x1, y1, x2, y2, x3, y3);
+                const dist2 = distToSegment(mx, my, rail2.x1, rail2.y1, rail2.x2, rail2.y2);
+                if (dist2 < best) {
+                  best = dist2;
+                  hit = { d, anchor: "body" };
+                }
+              }
+            } else {
+              const y3 = toPy(p3);
+              if (y3 != null) {
+                const dist2 = distToSegment(mx, my, x1, y3, x2, y3);
+                if (dist2 < best) {
+                  best = dist2;
+                  hit = { d, anchor: "body" };
+                }
+              }
+            }
           }
         }
         if (PITCHFORK_TOOLS.has(d.tool) && x1 != null && y1 != null && x3 != null && p3 && !anchorAlreadyHitOnThisDrawing) {

@@ -37,7 +37,7 @@ import {
   pitchforkTarget,
   pitchforkTeethAnchors,
 } from "../../src/lib/drawing/calc.ts";
-import { distToEllipseRing, fibSpiralPoints } from "../../src/lib/drawing/geometry.ts";
+import { distToEllipseRing, fibSpiralPoints, parallelChannelSecondRail, distToSegment } from "../../src/lib/drawing/geometry.ts";
 
 let pass = 0;
 let fail = 0;
@@ -731,6 +731,46 @@ function bar(time, open, high, low, close, volume) {
   close("pitchforkTarget inside: target is the midpoint of P0/P2 (not P1/P2)", insideTarget.price, (p0.price + p2.price) / 2);
   const [insideT1, insideT2] = pitchforkTeethAnchors(p0, p1, p2, "inside");
   ok("pitchforkTeethAnchors inside: teeth pass through P0 and P2 (not P1/P2)", insideT1 === p0 && insideT2 === p2);
+}
+
+// ---- Phase 3D-5 closeout: Parallel Channel's second-rail hit-test fix -----
+// The bug: hit-testing only ever checked the p1->p2 baseline, never the
+// offset second rail StudioChart.tsx's renderer (and Flat Top/Bottom's own
+// renderer) actually draws — clicking squarely on that second, clearly
+// visible line silently missed. Both the renderer and the hit-test now call
+// this ONE shared function, so they can never drift apart again.
+
+{
+  // A horizontal baseline (p1->p2) offset straight up by p3: the second
+  // rail should be an identical horizontal line, shifted by exactly that
+  // perpendicular distance — the classic "drag out channel width" case.
+  const rail2 = parallelChannelSecondRail(0, 100, 200, 100, 0, 70);
+  close("parallelChannelSecondRail: horizontal baseline offsets straight up by p3's perpendicular distance (y1)", rail2.y1, 70);
+  close("parallelChannelSecondRail: horizontal baseline offsets straight up by p3's perpendicular distance (y2)", rail2.y2, 70);
+  close("parallelChannelSecondRail: offsetting a horizontal baseline never shifts it sideways", rail2.x1, 0);
+  ok("parallelChannelSecondRail: rail2 stays exactly as long as the baseline (still a parallel copy)", Math.abs(rail2.x2 - rail2.x1) === Math.abs(200 - 0));
+}
+
+{
+  // Degenerate p1===p2 (zero-length baseline) never divides by zero /
+  // produces NaN.
+  const rail2 = parallelChannelSecondRail(50, 50, 50, 50, 80, 50);
+  ok("parallelChannelSecondRail: degenerate zero-length baseline never produces NaN", Number.isFinite(rail2.x1) && Number.isFinite(rail2.y1) && Number.isFinite(rail2.x2) && Number.isFinite(rail2.y2));
+}
+
+{
+  // The actual regression this fix targets: a click sitting squarely ON
+  // the second rail (far from the baseline) must now report a SMALL
+  // hit-test distance — before the fix, only the baseline was checked, so
+  // this exact click would have scored a large (wrong) distance.
+  const x1 = 0, y1 = 100, x2 = 200, y2 = 100, x3 = 0, y3 = 60; // p3 40px above baseline
+  const rail2 = parallelChannelSecondRail(x1, y1, x2, y2, x3, y3);
+  const clickOnRail2 = { x: 100, y: 60 }; // dead center of the second rail
+  const distToBaseline = distToSegment(clickOnRail2.x, clickOnRail2.y, x1, y1, x2, y2);
+  const distToRail2 = distToSegment(clickOnRail2.x, clickOnRail2.y, rail2.x1, rail2.y1, rail2.x2, rail2.y2);
+  ok("regression: a click on the second rail is FAR from the baseline (would have missed pre-fix)", distToBaseline > 30);
+  close("regression: that SAME click is essentially ON the second rail post-fix", distToRail2, 0, 1e-9);
+  ok("regression: the second-rail distance is now what a 'best distance across both rails' check would correctly pick", distToRail2 < distToBaseline);
 }
 
 // ---- summary ----------------------------------------------------------------

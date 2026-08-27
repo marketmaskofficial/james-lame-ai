@@ -350,3 +350,31 @@ export function fibSpiralPoints(
   }
   return points;
 }
+
+/**
+ * Parallel Channel's SECOND rail, in pixel space: offsets the p1->p2
+ * baseline segment by the perpendicular component of the third anchor's own
+ * offset from p1 (a projection onto the baseline's unit normal). Shared by
+ * StudioChart.tsx's renderer AND its hit-test (Phase 3D-5 closeout) so the
+ * two can never drift apart — the bug this fixes was exactly that: the
+ * hit-test used to only ever check the baseline, never this second rail,
+ * even though it's clearly visible and clickable on screen.
+ */
+export function parallelChannelSecondRail(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  x3: number,
+  y3: number,
+): { x1: number; y1: number; x2: number; y2: number } {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len = Math.hypot(dx, dy) || 1;
+  const nx = -dy / len;
+  const ny = dx / len;
+  const offset = (x3 - x1) * nx + (y3 - y1) * ny;
+  const ox = nx * offset;
+  const oy = ny * offset;
+  return { x1: x1 + ox, y1: y1 + oy, x2: x2 + ox, y2: y2 + oy };
+}
