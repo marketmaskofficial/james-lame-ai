@@ -98,6 +98,33 @@ export const FIB_WEDGE_DEFAULT_LEVELS: FibLevel[] = [0, 0.382, 0.5, 0.618, 1, 1.
   enabled: true,
 }));
 
+// ---- Fibonacci: Time Zone / Speed Resistance Fan (Phase 3C-2) -----------
+//
+// Both reuse the same `FibLevel`/`FibComputedLevel`-shaped model above (the
+// per-level enable/disable/color/custom-value machinery every other Fib tool
+// already has via addFibLevel/removeFibLevel) — they only need their own
+// conventional default VALUE sets and their own projection math, exactly
+// like the three Phase 3C tools above.
+
+/** Fib Time Zone's conventional defaults: the actual Fibonacci SEQUENCE
+ * (0, 1, 2, 3, 5, 8, 13, ...), NOT the 0..1 ratio band every other Fib tool
+ * here uses — each value is a whole-number multiple of the base time
+ * interval measured between the tool's two anchors, matching the
+ * conventional Fib Time Zone tool (TradingView et al.), not a retracement- or
+ * extension-style ratio. */
+export const FIB_TIME_ZONE_DEFAULT_LEVELS: FibLevel[] = [0, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89].map((value) => ({
+  value,
+  enabled: true,
+}));
+
+/** Fib Speed Resistance Fan's conventional defaults: fractions of the
+ * measured move's vertical (price) extent, taken at the second anchor's
+ * time, that each fan ray from the first anchor passes through. */
+export const FIB_SPEED_FAN_DEFAULT_LEVELS: FibLevel[] = [0.25, 0.382, 0.5, 0.618, 0.75, 1].map((value) => ({
+  value,
+  enabled: true,
+}));
+
 /** The one place that knows which conventional default ratio set belongs to
  * which Fib tool — every render/hit-test/settings call site asks THIS
  * instead of carrying its own `?? SOME_DEFAULT` per tool id, so adding a
@@ -107,6 +134,8 @@ export function defaultFibLevelsForTool(tool: string): FibLevel[] {
   if (tool === "fib-ext") return FIB_EXTENSION_DEFAULT_LEVELS;
   if (tool === "fib-channel") return FIB_CHANNEL_DEFAULT_LEVELS;
   if (tool === "fib-wedge") return FIB_WEDGE_DEFAULT_LEVELS;
+  if (tool === "fib-time") return FIB_TIME_ZONE_DEFAULT_LEVELS;
+  if (tool === "fib-speed-fan") return FIB_SPEED_FAN_DEFAULT_LEVELS;
   return DEFAULT_FIB_LEVELS;
 }
 
@@ -145,6 +174,49 @@ export function lerpMarketPoint(
   t: number,
 ): { time: number; price: number } {
   return { time: from.time + (to.time - from.time) * t, price: from.price + (to.price - from.price) * t };
+}
+
+export type FibTimeComputedLevel = FibLevel & { time: number };
+
+/**
+ * Fib Time Zone: vertical time levels projected forward from the starting
+ * anchor (`startTime`) at whole-number Fibonacci-sequence multiples of the
+ * base interval measured between the tool's two anchors
+ * (`intervalSeconds = p2.time - p1.time`, kept SIGNED rather than coerced to
+ * its absolute value — level 0 always sits exactly on the start anchor,
+ * level 1 exactly on the second anchor, and if the second anchor is dragged
+ * to the other side of the start, every later level naturally projects in
+ * that same direction instead of silently reinterpreting the drag). Fresh
+ * from the two raw anchor times every call — same no-cached-state
+ * convention as `computeFibExtensionLevels`, so it's always correct the
+ * instant either anchor moves.
+ */
+export function computeFibTimeZoneLevels(
+  startTime: number,
+  intervalSeconds: number,
+  levels: FibLevel[] = FIB_TIME_ZONE_DEFAULT_LEVELS,
+): FibTimeComputedLevel[] {
+  return levels.map((lvl) => ({ ...lvl, time: startTime + intervalSeconds * lvl.value }));
+}
+
+/**
+ * Fib Speed Resistance Fan: each enabled ratio's fan-line target point — a
+ * fraction `ratio` of the way up the measured A->B price move, taken at B's
+ * OWN time (not a free third anchor the way Fib Wedge's B->C segment is).
+ * Expressed via the shared `lerpMarketPoint` primitive already used by Fib
+ * Wedge, not a bespoke price-only lerp: interpolating between a virtual
+ * point that shares B's time but A's price, and B itself, means the
+ * interpolated TIME is always exactly `b.time` (both endpoints already share
+ * it) while only price varies — exactly the classic Speed Resistance Fan
+ * convention of "fan lines from the first point through fractions of the
+ * vertical move, measured at the second point's time".
+ */
+export function computeFibSpeedFanTargets(
+  a: { time: number; price: number },
+  b: { time: number; price: number },
+  levels: FibLevel[] = FIB_SPEED_FAN_DEFAULT_LEVELS,
+): (FibLevel & { time: number; price: number })[] {
+  return levels.map((lvl) => ({ ...lvl, ...lerpMarketPoint({ time: b.time, price: a.price }, b, lvl.value) }));
 }
 
 // ---- Anchored VWAP ------------------------------------------------------

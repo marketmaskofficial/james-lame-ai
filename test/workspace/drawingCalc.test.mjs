@@ -15,8 +15,12 @@ import {
   FIB_EXTENSION_DEFAULT_LEVELS,
   FIB_CHANNEL_DEFAULT_LEVELS,
   FIB_WEDGE_DEFAULT_LEVELS,
+  FIB_TIME_ZONE_DEFAULT_LEVELS,
+  FIB_SPEED_FAN_DEFAULT_LEVELS,
   defaultFibLevelsForTool,
   computeFibExtensionLevels,
+  computeFibTimeZoneLevels,
+  computeFibSpeedFanTargets,
   lerpMarketPoint,
 } from "../../src/lib/drawing/calc.ts";
 
@@ -255,6 +259,119 @@ function bar(time, open, high, low, close, volume) {
   const mid = lerpMarketPoint(wideTime, narrowPriceMove, 0.5);
   close("lerpMarketPoint: independent-axis interpolation — time midpoint", mid.time, 1_700_001_800);
   close("lerpMarketPoint: independent-axis interpolation — price midpoint (unaffected by the huge time scale)", mid.price, 50.25);
+}
+
+// ---- Phase 3C-2: Fib Time Zone / Fib Speed Resistance Fan -----------------
+
+{
+  ok("defaultFibLevelsForTool('fib-time') returns the time-zone defaults", defaultFibLevelsForTool("fib-time") === FIB_TIME_ZONE_DEFAULT_LEVELS);
+  ok("defaultFibLevelsForTool('fib-speed-fan') returns the speed-fan defaults", defaultFibLevelsForTool("fib-speed-fan") === FIB_SPEED_FAN_DEFAULT_LEVELS);
+  ok(
+    "Fib Time Zone defaults are the actual Fibonacci SEQUENCE, not a 0..1 ratio band",
+    JSON.stringify(FIB_TIME_ZONE_DEFAULT_LEVELS.map((l) => l.value)) === JSON.stringify([0, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89]),
+  );
+  ok(
+    "Fib Speed Resistance Fan defaults match the spec's ratio set",
+    JSON.stringify(FIB_SPEED_FAN_DEFAULT_LEVELS.map((l) => l.value)) === JSON.stringify([0.25, 0.382, 0.5, 0.618, 0.75, 1]),
+  );
+}
+
+// ---- computeFibTimeZoneLevels: whole-sequence multiples of the base interval
+
+{
+  // Anchors 1000s apart -> base interval 1000; level 0 sits exactly on the
+  // start, level 1 exactly on the second anchor, level 2 twice as far, etc.
+  const levels = computeFibTimeZoneLevels(1000, 1000, [
+    { value: 0, enabled: true },
+    { value: 1, enabled: true },
+    { value: 2, enabled: true },
+    { value: 3, enabled: true },
+    { value: 5, enabled: true },
+  ]);
+  close("fib-time: level 0 sits exactly at the start anchor", levels.find((l) => l.value === 0).time, 1000);
+  close("fib-time: level 1 sits exactly at the second anchor", levels.find((l) => l.value === 1).time, 2000);
+  close("fib-time: level 2 is two full intervals out", levels.find((l) => l.value === 2).time, 3000);
+  close("fib-time: level 3 is three full intervals out", levels.find((l) => l.value === 3).time, 4000);
+  close("fib-time: level 5 (real Fibonacci sequence, not 0..1 ratios) is five intervals out", levels.find((l) => l.value === 5).time, 6000);
+}
+
+{
+  // Reversed anchors (second anchor placed BEFORE the start in time): the
+  // interval is negative, and every later level projects in that same
+  // (backward) direction rather than silently flipping to its absolute
+  // value — level 0 and level 1 still sit exactly on the two anchors.
+  const levels = computeFibTimeZoneLevels(2000, -1000, [
+    { value: 0, enabled: true },
+    { value: 1, enabled: true },
+    { value: 3, enabled: true },
+  ]);
+  close("fib-time reversed: level 0 still sits at the start anchor", levels.find((l) => l.value === 0).time, 2000);
+  close("fib-time reversed: level 1 still sits exactly at the second anchor", levels.find((l) => l.value === 1).time, 1000);
+  close("fib-time reversed: level 3 projects further in the SAME (backward) direction", levels.find((l) => l.value === 3).time, -1000);
+}
+
+{
+  // Custom (user-added) time levels apply exactly like any built-in one.
+  const levels = computeFibTimeZoneLevels(0, 100, [{ value: 144, enabled: true }]);
+  close("fib-time: a custom sequence value (e.g. 144) projects correctly", levels[0].time, 14400);
+}
+
+{
+  // Moving either anchor recalculates every level immediately (no cached
+  // interval/start).
+  const base = computeFibTimeZoneLevels(1000, 1000, [{ value: 2, enabled: true }])[0].time;
+  const movedStart = computeFibTimeZoneLevels(1500, 1000, [{ value: 2, enabled: true }])[0].time;
+  const movedInterval = computeFibTimeZoneLevels(1000, 2000, [{ value: 2, enabled: true }])[0].time;
+  ok("fib-time: moving the start anchor changes every level", movedStart !== base);
+  ok("fib-time: moving the second anchor (interval) changes every level", movedInterval !== base);
+}
+
+// ---- computeFibSpeedFanTargets: fan targets at B's time, fraction of A->B price move
+
+{
+  // A=(t:0, p:100), B=(t:1000, p:200) -> a +100 measured move. Every target
+  // shares B's time exactly; only price varies by ratio.
+  const a = { time: 0, price: 100 };
+  const b = { time: 1000, price: 200 };
+  const targets = computeFibSpeedFanTargets(a, b, [
+    { value: 0, enabled: true },
+    { value: 0.5, enabled: true },
+    { value: 1, enabled: true },
+  ]);
+  ok("fib-speed-fan: every target shares B's time exactly (fan measured at a fixed time slice)", targets.every((t) => t.time === 1000));
+  close("fib-speed-fan: ratio 0 sits at A's own price level (at B's time)", targets.find((t) => t.value === 0).price, 100);
+  close("fib-speed-fan: ratio 0.5 is the midpoint of the measured move", targets.find((t) => t.value === 0.5).price, 150);
+  close("fib-speed-fan: ratio 1 lands exactly on B", targets.find((t) => t.value === 1).price, 200);
+}
+
+{
+  // A downward measured move works identically (direction-agnostic).
+  const a = { time: 0, price: 200 };
+  const b = { time: 500, price: 100 };
+  const targets = computeFibSpeedFanTargets(a, b, [{ value: 0.25, enabled: true }, { value: 0.75, enabled: true }]);
+  close("fib-speed-fan downtrend: ratio 0.25 is a quarter of the way down", targets.find((t) => t.value === 0.25).price, 175);
+  close("fib-speed-fan downtrend: ratio 0.75 is three-quarters of the way down", targets.find((t) => t.value === 0.75).price, 125);
+}
+
+{
+  // Ratios beyond 1 extrapolate past B, same convention as every other Fib
+  // tool's beyond-1 ratios.
+  const a = { time: 0, price: 0 };
+  const b = { time: 100, price: 10 };
+  const targets = computeFibSpeedFanTargets(a, b, [{ value: 1.618, enabled: true }]);
+  close("fib-speed-fan: ratio > 1 extrapolates past B", targets[0].price, 16.18);
+  close("fib-speed-fan: ratio > 1 still shares B's exact time", targets[0].time, 100);
+}
+
+{
+  // Moving either anchor recalculates every target immediately.
+  const a = { time: 0, price: 100 };
+  const b = { time: 1000, price: 200 };
+  const base = computeFibSpeedFanTargets(a, b, [{ value: 0.5, enabled: true }])[0].price;
+  const movedA = computeFibSpeedFanTargets({ time: 0, price: 120 }, b, [{ value: 0.5, enabled: true }])[0].price;
+  const movedB = computeFibSpeedFanTargets(a, { time: 1000, price: 220 }, [{ value: 0.5, enabled: true }])[0].price;
+  ok("fib-speed-fan: moving A changes every target", movedA !== base);
+  ok("fib-speed-fan: moving B changes every target", movedB !== base);
 }
 
 // ---- summary ----------------------------------------------------------------

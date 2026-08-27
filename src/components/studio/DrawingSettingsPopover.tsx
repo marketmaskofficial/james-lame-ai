@@ -89,6 +89,15 @@ export function DrawingSettingsPopover({
   };
 
   const fibLevels = (drawing.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(drawing.tool);
+  // Fib Time Zone's levels are whole-number Fibonacci-SEQUENCE multiples
+  // (0, 1, 2, 3, 5, 8, ...), not ratios of a measured move — showing them as
+  // "800.0%" (8 * 100) the way every other Fib tool's ratio does here would
+  // be actively misleading, and there's no per-level PRICE to show either
+  // (a Time Zone level is a TIME). `levelValueKind` (registry.ts) is the one
+  // switch that keeps this single shared section honest for both shapes of
+  // level without forking a second Levels component.
+  const levelKind = TOOL_BY_ID[drawing.tool]?.capabilities.levelValueKind ?? "ratio";
+  const formatLevelValue = (v: number) => (levelKind === "sequence" ? String(v) : `${(v * 100).toFixed(1)}%`);
 
   // Clamp so the popover (fixed width, roughly-bounded height) never renders
   // partly off-screen — "must stay inside viewport" per the phase brief.
@@ -461,12 +470,14 @@ export function DrawingSettingsPopover({
               <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
                 <label className="flex items-center gap-1">
                   <input type="checkbox" checked={drawing.settings?.fibShowLabel !== false} onChange={(e) => setSetting("fibShowLabel", e.target.checked)} />
-                  % label
+                  {levelKind === "sequence" ? "Label" : "% label"}
                 </label>
-                <label className="flex items-center gap-1">
-                  <input type="checkbox" checked={drawing.settings?.fibShowPrice !== false} onChange={(e) => setSetting("fibShowPrice", e.target.checked)} />
-                  Price
-                </label>
+                {levelKind !== "sequence" && (
+                  <label className="flex items-center gap-1">
+                    <input type="checkbox" checked={drawing.settings?.fibShowPrice !== false} onChange={(e) => setSetting("fibShowPrice", e.target.checked)} />
+                    Price
+                  </label>
+                )}
               </div>
               <ul className="max-h-32 space-y-0.5 overflow-auto">
                 {fibLevels.map((lvl) => (
@@ -492,7 +503,7 @@ export function DrawingSettingsPopover({
                       }
                       className="h-4 w-6 shrink-0 rounded border border-border bg-card p-0"
                     />
-                    <span className="flex-1 font-mono">{(lvl.value * 100).toFixed(1)}%</span>
+                    <span className="flex-1 font-mono">{formatLevelValue(lvl.value)}</span>
                     <button
                       title="Remove level"
                       onClick={() => setSetting("fibLevels", removeFibLevel(fibLevels, lvl.value))}
@@ -507,7 +518,7 @@ export function DrawingSettingsPopover({
                 <input
                   value={customLevel}
                   onChange={(e) => setCustomLevel(e.target.value)}
-                  placeholder="e.g. 1.272"
+                  placeholder={levelKind === "sequence" ? "e.g. 144" : "e.g. 1.272"}
                   className="w-full rounded border border-border bg-background px-2 py-1 text-[11px] outline-none focus:border-brand"
                 />
                 <button

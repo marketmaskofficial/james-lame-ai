@@ -167,8 +167,19 @@ export type ToolCapabilities = {
    * (it flips which end the level set measures from). Explicitly false for
    * Fib Wedge: p1 there is the shared radial PIVOT, not a symmetric
    * endpoint — swapping it with p2 would relocate the pivot itself, not
-   * "reverse" anything. */
+   * "reverse" anything. Same reasoning for Fib Time Zone (p1 is the fixed
+   * starting anchor the whole sequence projects forward from) and Fib Speed
+   * Resistance Fan (p1 is the shared ray origin every fan line emanates
+   * from) — see their entries below. */
   reverseAnchors?: boolean;
+  /** How the settings popover's Levels list should DISPLAY each level's
+   * `value` — "ratio" (default) formats it as a percentage (Retracement/
+   * Extension/Channel/Wedge's 0..1-and-beyond ratios); "sequence" formats it
+   * as a plain whole number and hides the (price-only) "Price" toggle, for
+   * Fib Time Zone's actual-Fibonacci-sequence multiples (0, 1, 2, 3, 5, 8,
+   * ...), which aren't ratios of anything and have no per-level PRICE at
+   * all (each level is a TIME). */
+  levelValueKind?: "ratio" | "sequence";
 };
 
 export type ToolDefaultStyle = {
@@ -233,8 +244,22 @@ export const TOOL_DEFS: ToolDef[] = [
   // trend + width-anchor geometry, with Fibonacci-ratio-spaced parallel
   // rails instead of one single offset — see geometry.ts's fibChannelLevelOffset.
   { id: "fib-channel", name: "Fib Channel", category: "fib", icon: Ruler, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, fill: true, levels: true }, defaultStyle: { color: "#e6b800", width: 1, fillOpacity: 0.08 }, implemented: true },
-  { id: "fib-time", name: "Fib Time Zone", category: "fib", icon: Ruler, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: false, note: "Vertical time-interval fan not yet built." },
-  { id: "fib-speed-fan", name: "Fib Speed Resistance Fan", category: "fib", icon: Fan, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: false },
+  // Fib Time Zone (Phase 3C-2): first anchor is the fixed start (level 0),
+  // second anchor establishes the base time interval (level 1 sits exactly
+  // on it) — every other enabled level is a whole Fibonacci-sequence
+  // multiple of that interval, rendered as a full-height vertical line (see
+  // calc.ts's computeFibTimeZoneLevels / StudioChart.tsx's paintFibTimeZone).
+  // `levelValueKind: "sequence"` and `reverseAnchors: false` per their doc
+  // comments above — a time-zone level is a whole-number multiple, not a
+  // ratio, and p1 is a fixed origin, not a symmetric endpoint.
+  { id: "fib-time", name: "Fib Time Zone", category: "fib", icon: Ruler, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true, levels: true, reverseAnchors: false, levelValueKind: "sequence" }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: true },
+  // Fib Speed Resistance Fan (Phase 3C-2): p1 is the shared ray origin (like
+  // Fib Wedge's pivot), p2 measures the trend move — each enabled ratio's
+  // ray passes through a fraction of that move's PRICE extent taken at p2's
+  // own TIME (see calc.ts's computeFibSpeedFanTargets), not a free third
+  // anchor the way Fib Wedge's B->C segment is. `reverseAnchors: false`
+  // because p1 is that fixed ray origin, not a symmetric endpoint.
+  { id: "fib-speed-fan", name: "Fib Speed Resistance Fan", category: "fib", icon: Fan, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true, levels: true, reverseAnchors: false }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: true },
   { id: "fib-time-trend", name: "Trend-Based Fib Time", category: "fib", icon: Ruler, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: false },
   { id: "fib-circles", name: "Fib Circles", category: "fib", icon: Circle, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: false },
   { id: "fib-spiral", name: "Fib Spiral", category: "fib", icon: RotateCw, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: false },

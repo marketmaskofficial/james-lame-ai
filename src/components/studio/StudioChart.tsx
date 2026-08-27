@@ -19,6 +19,8 @@ import {
   DEFAULT_FIB_LEVELS,
   computeFibLevels,
   computeFibExtensionLevels,
+  computeFibTimeZoneLevels,
+  computeFibSpeedFanTargets,
   defaultFibLevelsForTool,
   lerpMarketPoint,
   anchoredVwap,
@@ -1967,6 +1969,71 @@ export function StudioChart({
       ctx.restore();
     };
 
+    /** Fib Time Zone: full-height vertical lines at whole-Fibonacci-sequence
+     * multiples of the base interval between the two anchors (see calc.ts's
+     * computeFibTimeZoneLevels) — the same vertical-line convention the
+     * pre-existing `vline` tool already uses, one line per enabled level
+     * instead of a single line at one fixed time. Labels show the raw
+     * sequence VALUE (0, 1, 2, 3, 5, ...), never a percentage — these levels
+     * aren't ratios of anything. */
+    const paintFibTimeZone = (p1: MarketPoint, p2: MarketPoint, levels: FibLevel[], showLabel: boolean, col: string) => {
+      const interval = p2.time - p1.time;
+      const computed = computeFibTimeZoneLevels(p1.time, interval, levels.filter((l) => l.enabled !== false));
+      ctx.save();
+      ctx.setLineDash([]);
+      for (const lvl of computed) {
+        const lx = geometryReady ? logicalToPixel(ts, toLogicalD(lvl.time), host.clientWidth) : null;
+        if (lx == null) continue;
+        ctx.strokeStyle = withAlpha(lvl.color ?? col, 0.55);
+        ctx.beginPath();
+        ctx.moveTo(lx, 0);
+        ctx.lineTo(lx, host.clientHeight);
+        ctx.stroke();
+        if (showLabel) {
+          ctx.fillStyle = withAlpha(lvl.color ?? col, 0.9);
+          ctx.fillText(String(lvl.value), lx + 3, 12);
+        }
+      }
+      ctx.restore();
+    };
+
+    /** Fib Speed Resistance Fan: fan rays from the first anchor (the shared
+     * ray origin, Wedge-pivot-style) through points a Fibonacci-ratio
+     * fraction of the measured A->B price move, taken at B's OWN time (see
+     * calc.ts's computeFibSpeedFanTargets) — every ray's "far" point shares
+     * the exact same time, only price varies, giving the classic Speed
+     * Resistance Fan look (one measured vertical move fanned out from a
+     * single origin), unlike Fib Wedge's fully free third anchor. Rendered
+     * with the same pixel-space `projectLineForward` extension every other
+     * ray-based Fib tool already uses. */
+    const paintFibSpeedFan = (p1: MarketPoint, p2: MarketPoint, levels: FibLevel[], showLabel: boolean, showPrice: boolean, col: string) => {
+      const ax = px(p1);
+      const ay = py(p1);
+      if (ax == null || ay == null) return;
+      const enabled = [...levels.filter((l) => l.enabled !== false)].sort((l1, l2) => l1.value - l2.value);
+      if (enabled.length === 0) return;
+      const targets = computeFibSpeedFanTargets(p1, p2, enabled);
+      ctx.save();
+      ctx.setLineDash([]);
+      for (const target of targets) {
+        const tx = px(target);
+        const ty = py(target);
+        if (tx == null || ty == null) continue;
+        const { x: ex, y: ey } = projectLineForward(ax, ay, tx, ty, host.clientWidth);
+        ctx.strokeStyle = withAlpha(target.color ?? col, 0.75);
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(ex, ey);
+        ctx.stroke();
+        const label = levelLabelText(target.value, showLabel, showPrice, target.price);
+        if (label) {
+          ctx.fillStyle = withAlpha(target.color ?? col, 0.9);
+          ctx.fillText(label, ex + 4, ey - 2);
+        }
+      }
+      ctx.restore();
+    };
+
     const all = draftRef.current ? [...draws, draftRef.current] : draws;
     const pending = pendingRef.current;
     const selected = stateRef.current.selectedId;
@@ -2498,6 +2565,12 @@ export function StudioChart({
               col,
             );
           }
+        } else if (d.tool === "fib-time") {
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+          paintFibTimeZone(d.p1, d.p2, levels, d.settings?.fibShowLabel !== false, col);
+        } else if (d.tool === "fib-speed-fan") {
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+          paintFibSpeedFan(d.p1, d.p2, levels, d.settings?.fibShowLabel !== false, d.settings?.fibShowPrice !== false, col);
         } else if (d.tool === "long" || d.tool === "short") {
           const entry = d.p1.price;
           const target = d.p2.price;
@@ -2874,6 +2947,44 @@ export function StudioChart({
           const canvasWidth = canvasRef.current?.clientWidth ?? 2000;
           for (const lvl of enabled) {
             const target = lerpMarketPoint(d.p2, p3, lvl.value);
+            const tx = toPx(target);
+            const ty = toPy(target);
+            if (tx == null || ty == null) continue;
+            const { x: ex, y: ey } = projectLineForward(x1, y1, tx, ty, canvasWidth);
+            const dist = distToSegment(mx, my, x1, y1, ex, ey);
+            if (dist < best) {
+              best = dist;
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
+        if (d.tool === "fib-time" && x1 != null && !anchorAlreadyHitOnThisDrawing) {
+          // Hit-tests each rendered VERTICAL level line (matches
+          // paintFibTimeZone exactly), not a diagonal between the two
+          // anchors — a Fib Time Zone is visually its vertical lines, same
+          // "click what's actually drawn" convention as Retracement's
+          // horizontal levels above. No y-bound check, matching `vline`'s
+          // own hit-test just above (both render full chart height).
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+          const computed = computeFibTimeZoneLevels(d.p1.time, d.p2.time - d.p1.time, levels.filter((l) => l.enabled !== false));
+          for (const lvl of computed) {
+            const lx = toPx({ time: lvl.time, price: d.p1.price });
+            if (lx == null) continue;
+            if (Math.abs(lx - mx) < best) {
+              best = Math.abs(lx - mx);
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
+        if (d.tool === "fib-speed-fan" && x1 != null && y1 != null && !anchorAlreadyHitOnThisDrawing) {
+          // Hit-tests each drawn RAY (origin -> extended fan target), matching
+          // paintFibSpeedFan's own geometry — same segment-distance
+          // convention Fib Wedge's ray fan already uses above.
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+          const enabled = levels.filter((l) => l.enabled !== false);
+          const canvasWidth = canvasRef.current?.clientWidth ?? 2000;
+          const targets = computeFibSpeedFanTargets(d.p1, d.p2, enabled);
+          for (const target of targets) {
             const tx = toPx(target);
             const ty = toPy(target);
             if (tx == null || ty == null) continue;

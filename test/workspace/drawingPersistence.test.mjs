@@ -431,6 +431,89 @@ function d(id) {
   ok("chart B only sees its wedge, not chart A's extension", b.length === 1 && b[0].tool === "fib-wedge" && b[0].points[0].price === 1.5);
 }
 
+// ---- Phase 3C-2: Fib Time Zone / Fib Speed Resistance Fan round-trip ------
+// Both are plain 2-anchor tools (no third `points` anchor) — the regression
+// this guards against is their tool-specific `settings.fibLevels` (a real
+// Fibonacci-sequence set for Time Zone, a ratio set for Speed Fan) silently
+// getting dropped or coerced into the wrong shape somewhere in the save/load
+// path.
+
+{
+  fakeStorage.clear();
+
+  const fibTime = {
+    id: "ft1",
+    tool: "fib-time",
+    chartInstanceId: "chart-1",
+    p1: { time: 100, price: 10 }, // start
+    p2: { time: 200, price: 20 }, // establishes the base interval
+    color: "#e6b800",
+    settings: {
+      fibShowLabel: true,
+      fibLevels: [
+        { value: 0, enabled: true },
+        { value: 1, enabled: true, color: "#22c55e" },
+        { value: 3, enabled: false },
+        { value: 5, enabled: true },
+      ],
+    },
+  };
+
+  const fibSpeedFan = {
+    id: "fs1",
+    tool: "fib-speed-fan",
+    chartInstanceId: "chart-1",
+    p1: { time: 50, price: 5 }, // ray origin
+    p2: { time: 150, price: 15 }, // measured move
+    color: "#4da3ff",
+    settings: {
+      fibShowLabel: true,
+      fibShowPrice: true,
+      fibLevels: [{ value: 0.382, enabled: true }, { value: 0.618, enabled: true, color: "#ef4444" }, { value: 1, enabled: false }],
+    },
+  };
+
+  saveDrawingsFor("chart-1", "ETHUSDT", "15m", [fibTime, fibSpeedFan]);
+  const loaded = loadDrawingsFor("chart-1", "ETHUSDT", "15m");
+
+  ok("Phase 3C-2 round trip: both new Fib drawings come back", loaded.length === 2);
+
+  const loadedTime = loaded.find((x) => x.id === "ft1");
+  ok("Fib Time Zone: start/interval anchors (p1/p2) survive intact", loadedTime.p1.time === 100 && loadedTime.p2.time === 200);
+  ok(
+    "Fib Time Zone: the Fibonacci-SEQUENCE level set (enable/disable/custom color) survives intact",
+    loadedTime.settings.fibLevels.length === 4 &&
+      loadedTime.settings.fibLevels.find((l) => l.value === 1).color === "#22c55e" &&
+      loadedTime.settings.fibLevels.find((l) => l.value === 3).enabled === false &&
+      loadedTime.settings.fibLevels.some((l) => l.value === 5),
+  );
+
+  const loadedFan = loaded.find((x) => x.id === "fs1");
+  ok("Fib Speed Resistance Fan: origin/move anchors (p1/p2) survive intact", loadedFan.p1.price === 5 && loadedFan.p2.price === 15);
+  ok(
+    "Fib Speed Resistance Fan: ratio level set survives intact",
+    loadedFan.settings.fibLevels.length === 3 &&
+      loadedFan.settings.fibLevels.find((l) => l.value === 0.618).color === "#ef4444" &&
+      loadedFan.settings.fibLevels.find((l) => l.value === 1).enabled === false,
+  );
+}
+
+// ---- Phase 3C-2: chartInstanceId isolation for the two new tools ----------
+
+{
+  fakeStorage.clear();
+  const chartATime = { id: "a-ft", tool: "fib-time", chartInstanceId: "chart-A", p1: { time: 1, price: 1 }, p2: { time: 2, price: 2 } };
+  const chartBFan = { id: "b-fs", tool: "fib-speed-fan", chartInstanceId: "chart-B", p1: { time: 1, price: 1 }, p2: { time: 2, price: 2.5 } };
+
+  saveDrawingsFor("chart-A", "DOGEUSDT", "1h", [chartATime]);
+  saveDrawingsFor("chart-B", "DOGEUSDT", "1h", [chartBFan]);
+
+  const a = loadDrawingsFor("chart-A", "DOGEUSDT", "1h");
+  const b = loadDrawingsFor("chart-B", "DOGEUSDT", "1h");
+  ok("Fib Time Zone/Speed Fan respect chartInstanceId isolation: chart A only sees its time zone", a.length === 1 && a[0].tool === "fib-time");
+  ok("chart B only sees its speed fan, not chart A's time zone", b.length === 1 && b[0].tool === "fib-speed-fan" && b[0].p2.price === 2.5);
+}
+
 // ---- summary ----------------------------------------------------------------
 
 console.log(`\n${pass}/${pass + fail} passed`);
