@@ -26,6 +26,12 @@ import {
   cyclicLineTimes,
   timeCyclesTimes,
   sineLinePoints,
+  gannGridFractions,
+  gannSquareFixedCorner,
+  gannFanSlope,
+  gannFanRatioLabel,
+  GANN_FAN_RATIOS,
+  GANN_FAN_DEFAULT_LEVELS,
 } from "../../src/lib/drawing/calc.ts";
 import { distToEllipseRing, fibSpiralPoints } from "../../src/lib/drawing/geometry.ts";
 
@@ -585,6 +591,72 @@ function bar(time, open, high, low, close, volume) {
   ok("sineLinePoints: extending adds samples before AND after the defining pair", pts[0].time < p1.time && pts[pts.length - 1].time > p2.time);
   ok("sineLinePoints: deterministic — identical inputs produce identical output", JSON.stringify(pts) === JSON.stringify(pts2));
   ok("sineLinePoints: time strictly increases sample to sample", pts.every((p, i) => i === 0 || p.time > pts[i - 1].time));
+}
+
+// ---- Phase 3D-4: Gann Box / Square Fixed / Square / Fan -------------------
+
+{
+  // Gann grid: N+1 evenly-spaced fractions including the box's own 0/1
+  // border — shared by Box/Square Fixed/Square.
+  const fracs = gannGridFractions(4);
+  ok("gannGridFractions: default 4 divisions produces 5 fractions (0, .25, .5, .75, 1)", fracs.length === 5);
+  ok("gannGridFractions: includes both box-border fractions (0 and 1)", fracs[0] === 0 && fracs[fracs.length - 1] === 1);
+  ok("gannGridFractions: evenly spaced", fracs.every((f, i) => i === 0 || Math.abs(f - fracs[i - 1] - 0.25) < 1e-9));
+  const fracs8 = gannGridFractions(8);
+  ok("gannGridFractions: a different division count produces a different (still evenly-spaced) set", fracs8.length === 9 && fracs8[1] === 0.125);
+  ok("gannGridFractions: degenerate (non-positive) divisions degrades to just the box border", gannGridFractions(0).length === 2);
+}
+
+{
+  // Gann Square Fixed: pure addition of already-computed market-unit
+  // extents onto the anchor — StudioChart.tsx does the pixel-ratio work,
+  // this just needs to place the corner correctly (including negative
+  // extents, e.g. a price axis where "down" is a lower price).
+  const anchor = { time: 1000, price: 100 };
+  const corner = gannSquareFixedCorner(anchor, 500, 20);
+  ok("gannSquareFixedCorner: places the corner time/price extent forward from the anchor", corner.time === 1500 && corner.price === 120);
+  const cornerNegative = gannSquareFixedCorner(anchor, 500, -20);
+  ok("gannSquareFixedCorner: handles a negative price extent (axis pointing the other way)", cornerNegative.price === 80);
+}
+
+{
+  // Gann Fan ratios: the nine conventional angles, base rate multiples.
+  ok("GANN_FAN_RATIOS: has all nine conventional Gann angles", GANN_FAN_RATIOS.length === 9);
+  ok("GANN_FAN_RATIOS: includes the base 1x1 angle at multiplier 1", GANN_FAN_RATIOS.some((r) => r.label === "1x1" && r.value === 1));
+  ok("GANN_FAN_RATIOS: includes 2x1 (multiplier 2) and 1x2 (multiplier 0.5)", GANN_FAN_RATIOS.some((r) => r.label === "2x1" && r.value === 2) && GANN_FAN_RATIOS.some((r) => r.label === "1x2" && r.value === 0.5));
+  ok("GANN_FAN_DEFAULT_LEVELS: one enabled FibLevel per ratio", GANN_FAN_DEFAULT_LEVELS.length === 9 && GANN_FAN_DEFAULT_LEVELS.every((l) => l.enabled === true));
+  ok("defaultFibLevelsForTool('gann-fan') resolves to GANN_FAN_DEFAULT_LEVELS (same array reference)", defaultFibLevelsForTool("gann-fan") === GANN_FAN_DEFAULT_LEVELS);
+}
+
+{
+  // Gann Fan slope: baseRate (from the tool's own p1->p2 drag) times each
+  // ratio multiplier — 2x1 must be exactly twice as steep as 1x1, 1x2 half.
+  const baseRate = 0.5; // price units per time unit, as if p1->p2 defined this
+  close("gannFanSlope: 1x1 equals the base rate exactly", gannFanSlope(baseRate, 1), 0.5);
+  close("gannFanSlope: 2x1 is exactly double the base rate", gannFanSlope(baseRate, 2), 1.0);
+  close("gannFanSlope: 1x2 is exactly half the base rate", gannFanSlope(baseRate, 0.5), 0.25);
+  close("gannFanSlope: 8x1 is eight times steeper than 1x8", gannFanSlope(baseRate, 8), gannFanSlope(baseRate, 1 / 8) * 64, 1e-9);
+}
+
+{
+  // Reversed anchors: the CALLER computes baseRate as (p2.price-p1.price)/
+  // (p2.time-p1.time) — reversing which anchor is p1/p2 flips the sign of
+  // BOTH numerator and denominator, so the resulting rate (and therefore
+  // every ray's slope) is IDENTICAL either way; only gannFanSlope's pure
+  // multiplication is under test here, so this checks that invariant
+  // directly rather than re-deriving the division in the test itself.
+  const forwardRate = (200 - 100) / (500 - 0); // p1=(0,100), p2=(500,200)
+  const reversedRate = (100 - 200) / (0 - 500); // p1=(500,200), p2=(0,100)
+  ok("gannFanSlope inputs: reversed anchors produce the identical base rate", Math.abs(forwardRate - reversedRate) < 1e-12);
+  ok("gannFanSlope: identical base rate produces identical slopes for every ratio", GANN_FAN_RATIOS.every((r) => gannFanSlope(forwardRate, r.value) === gannFanSlope(reversedRate, r.value)));
+}
+
+{
+  // Ratio labels: looked up from GANN_FAN_RATIOS by value, not
+  // reconstructed — an unrecognized custom value degrades to a plain
+  // decimal string instead of a wrong label.
+  ok("gannFanRatioLabel: known ratio resolves to its conventional 'AxB' label", gannFanRatioLabel(2) === "2x1" && gannFanRatioLabel(0.25) === "1x4");
+  ok("gannFanRatioLabel: unrecognized custom value degrades to a plain decimal string", gannFanRatioLabel(1.5) === "1.5");
 }
 
 // ---- summary ----------------------------------------------------------------

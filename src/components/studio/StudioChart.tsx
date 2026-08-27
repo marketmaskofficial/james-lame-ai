@@ -30,6 +30,11 @@ import {
   cyclicLineTimes,
   timeCyclesTimes,
   sineLinePoints,
+  gannGridFractions,
+  gannSquareFixedCorner,
+  gannFanSlope,
+  gannFanRatioLabel,
+  GANN_FAN_DEFAULT_LEVELS,
   type FibLevel,
 } from "@/lib/drawing/calc";
 import { getToolStyleDefaults } from "@/lib/drawing/styleDefaults";
@@ -2349,6 +2354,73 @@ export function StudioChart({
       if (started) ctx.stroke();
     };
 
+    /** Shared grid render primitive for Gann Box / Square / Square Fixed
+     * (Phase 3D-4) — an N-division grid (calc.ts's gannGridFractions, whose
+     * 0/1 fractions already draw the box's own outer border) plus the
+     * box's two corner-to-corner diagonals. Divisions default to 4
+     * (TradingView's own default) — no dedicated settings-popover control
+     * for changing it this phase, matching every prior "reuse `stroke`,
+     * don't build a bespoke settings UI" precedent in this file. */
+    const paintGannGrid = (p1: MarketPoint, p2: MarketPoint, divisions = 4) => {
+      const x1 = px(p1);
+      const y1 = py(p1);
+      const x2 = px(p2);
+      const y2 = py(p2);
+      if (x1 == null || y1 == null || x2 == null || y2 == null) return;
+      const fracs = gannGridFractions(divisions);
+      ctx.beginPath();
+      for (const f of fracs) {
+        const vx = x1 + (x2 - x1) * f;
+        ctx.moveTo(vx, y1);
+        ctx.lineTo(vx, y2);
+        const hy = y1 + (y2 - y1) * f;
+        ctx.moveTo(x1, hy);
+        ctx.lineTo(x2, hy);
+      }
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.moveTo(x1, y2);
+      ctx.lineTo(x2, y1);
+      ctx.stroke();
+    };
+
+    /** Gann Fan (Phase 3D-4): real sloped rays from the pivot p1, each at
+     * `gannFanSlope(baseRate, ratio)` where `baseRate` is the tool's own
+     * p1->p2 rate (its user-drawn "1x1" angle) — mathematically distinct
+     * from Fib Speed Resistance Fan's fixed-fractional-target rays (see
+     * gannFanSlope's own doc comment). Extended to the canvas edge via the
+     * SAME projectLineForward every Fib Wedge/Pitchfan ray already uses —
+     * reused verbatim, not reimplemented. */
+    const paintGannFan = (p1: MarketPoint, p2: MarketPoint, levels: FibLevel[], showLabel: boolean, col: string) => {
+      const x1 = px(p1);
+      const y1 = py(p1);
+      if (x1 == null || y1 == null) return;
+      const dt = p2.time - p1.time;
+      if (dt === 0) return;
+      const baseRate = (p2.price - p1.price) / dt;
+      const enabled = [...levels.filter((l) => l.enabled !== false)].sort((a, b) => a.value - b.value);
+      ctx.save();
+      ctx.setLineDash([]);
+      for (const lvl of enabled) {
+        const slope = gannFanSlope(baseRate, lvl.value);
+        const ref = { time: p1.time + dt, price: p1.price + slope * dt };
+        const x2 = px(ref);
+        const y2 = py(ref);
+        if (x2 == null || y2 == null) continue;
+        const { x: ex, y: ey } = projectLineForward(x1, y1, x2, y2, host.clientWidth);
+        ctx.strokeStyle = withAlpha(lvl.color ?? col, 0.8);
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(ex, ey);
+        ctx.stroke();
+        if (showLabel) {
+          ctx.fillStyle = withAlpha(lvl.color ?? col, 0.9);
+          ctx.fillText(gannFanRatioLabel(lvl.value), ex + 4, ey - 2);
+        }
+      }
+      ctx.restore();
+    };
+
     const all = draftRef.current ? [...draws, draftRef.current] : draws;
     const pending = pendingRef.current;
     const selected = stateRef.current.selectedId;
@@ -2728,6 +2800,21 @@ export function StudioChart({
         if (d.tool === "cyclic-lines") paintCyclicLines(d.p1, d.p2);
         else if (d.tool === "time-cycles") paintTimeCycles(d.p1, d.p2);
         else paintSineLine(d.p1, d.p2);
+        ctx.restore();
+        continue;
+      }
+
+      if (d.tool === "gann-box" || d.tool === "gann-square" || d.tool === "gann-square-fixed") {
+        // Phase 3D-4 Gann grid tools: same "early continue, own renderer"
+        // shape as the Cycles branch above — a multi-line grid isn't the
+        // generic `x2 != null` single-segment shape chain below.
+        paintGannGrid(d.p1, d.p2);
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "gann-fan") {
+        const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? GANN_FAN_DEFAULT_LEVELS;
+        paintGannFan(d.p1, d.p2, levels, d.settings?.fibShowLabel !== false, col);
         ctx.restore();
         continue;
       }
@@ -3250,6 +3337,64 @@ export function StudioChart({
             if (dist < best) {
               best = dist;
               hit = { d, anchor: "body" };
+            }
+          }
+        }
+        if (
+          (d.tool === "gann-box" || d.tool === "gann-square" || d.tool === "gann-square-fixed") &&
+          x1 != null && y1 != null && x2 != null && y2 != null && !anchorAlreadyHitOnThisDrawing
+        ) {
+          // Hit-tests the exact GRID lines paintGannGrid renders (bounded
+          // segments, not full-chart lines) plus the two diagonals — same
+          // shared gannGridFractions the renderer reads, so a click on any
+          // division line selects the drawing, not just its outer border.
+          const fracs = gannGridFractions(4);
+          for (const f of fracs) {
+            const vx = x1 + (x2 - x1) * f;
+            const distV = distToSegment(mx, my, vx, y1, vx, y2);
+            if (distV < best) {
+              best = distV;
+              hit = { d, anchor: "body" };
+            }
+            const hy = y1 + (y2 - y1) * f;
+            const distH = distToSegment(mx, my, x1, hy, x2, hy);
+            if (distH < best) {
+              best = distH;
+              hit = { d, anchor: "body" };
+            }
+          }
+          const distD1 = distToSegment(mx, my, x1, y1, x2, y2);
+          if (distD1 < best) {
+            best = distD1;
+            hit = { d, anchor: "body" };
+          }
+          const distD2 = distToSegment(mx, my, x1, y2, x2, y1);
+          if (distD2 < best) {
+            best = distD2;
+            hit = { d, anchor: "body" };
+          }
+        }
+        if (d.tool === "gann-fan" && x1 != null && y1 != null && !anchorAlreadyHitOnThisDrawing) {
+          // Hit-tests each drawn RAY (pivot -> extended Gann-angle point),
+          // same segment-distance convention as Fib Wedge/Pitchfan above.
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? GANN_FAN_DEFAULT_LEVELS;
+          const enabled = levels.filter((l) => l.enabled !== false);
+          const dt = d.p2.time - d.p1.time;
+          if (dt !== 0) {
+            const baseRate = (d.p2.price - d.p1.price) / dt;
+            const canvasWidth = canvasRef.current?.clientWidth ?? 2000;
+            for (const lvl of enabled) {
+              const slope = gannFanSlope(baseRate, lvl.value);
+              const ref = { time: d.p1.time + dt, price: d.p1.price + slope * dt };
+              const tx = toPx(ref);
+              const ty = toPy(ref);
+              if (tx == null || ty == null) continue;
+              const { x: ex, y: ey } = projectLineForward(x1, y1, tx, ty, canvasWidth);
+              const dist = distToSegment(mx, my, x1, y1, ex, ey);
+              if (dist < best) {
+                best = dist;
+                hit = { d, anchor: "body" };
+              }
             }
           }
         }
@@ -3865,6 +4010,38 @@ export function StudioChart({
         // resolves a sane position. The actual profile range (anchor -> most
         // recent loaded bar) is recomputed fresh every render, never stored.
         onAddDrawing(stampNew({ tool: "vp-anchored", p1: pt, p2: pt }));
+        return;
+      }
+      if (tool === "gann-square-fixed") {
+        // Single click (registry's own `point`/anchorCount 1) — unlike Gann
+        // Square below, there's no drag to define a size, so one is
+        // computed here from the CURRENT pixel-per-bar/price-per-pixel
+        // scale (so the box reads as roughly square in screen space at the
+        // moment of creation), converted to market time/price extents, and
+        // handed to calc.ts's gannSquareFixedCorner. From here on it's
+        // stored as an ordinary fixed p1/p2 pair — independently editable
+        // exactly like Gann Square afterward.
+        const bars = stateRef.current.bars;
+        const barInterval = bars.length >= 2 ? bars[1].time - bars[0].time : 900;
+        const sizePx = 160;
+        let timeExtent = barInterval * 20;
+        let priceExtent = (Math.abs(pt.price) || 1) * 0.05;
+        const chart = chartRef.current;
+        const price = priceSeriesRef.current;
+        if (chart && price) {
+          const baseLogical = timeToLogicalExtrapolated(bars, pt.time);
+          const x0 = chart.timeScale().logicalToCoordinate(baseLogical);
+          const x1c = chart.timeScale().logicalToCoordinate(baseLogical + 1);
+          const y0 = price.priceToCoordinate(pt.price);
+          if (x0 != null && x1c != null && y0 != null) {
+            const pixelsPerBar = Math.abs(x1c - x0) || 10;
+            timeExtent = (sizePx / pixelsPerBar) * barInterval;
+            const priceAtOffset = price.coordinateToPrice(y0 + sizePx);
+            if (priceAtOffset != null) priceExtent = priceAtOffset - pt.price;
+          }
+        }
+        const p2 = gannSquareFixedCorner(pt, timeExtent, priceExtent);
+        onAddDrawing(stampNew({ tool: "gann-square-fixed", p1: pt, p2 }));
         return;
       }
       if (tool === "arrow-up" || tool === "arrow-down") {

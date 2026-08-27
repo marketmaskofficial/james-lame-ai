@@ -141,11 +141,12 @@ for (const t of TOOL_DEFS) {
 // them), so they move out of this list and into their own dedicated block
 // below, mirroring exactly how Ellipse/Polyline/Path graduated out of this
 // same list in Phase 3A. "xabcd" graduated out in Phase 3D-1,
-// "elliott-impulse" in Phase 3D-2, and "cyclic-lines" in Phase 3D-3 (see
-// their own dedicated blocks further below).
+// "elliott-impulse" in Phase 3D-2, "cyclic-lines" in Phase 3D-3, and
+// "gann-box"/"gann-fan" in Phase 3D-4 (see their own dedicated blocks
+// further below).
 
 {
-  const DEFERRED_SAMPLE = ["gann-box", "gann-fan", "rotated-rect", "ruler", "image"];
+  const DEFERRED_SAMPLE = ["rotated-rect", "ruler", "image"];
   const wronglyImplemented = DEFERRED_SAMPLE.filter((id) => TOOL_BY_ID[id]?.implemented);
   ok(`deferred tools stay implemented:false (wrongly true: ${wronglyImplemented.join(",") || "none"})`, wronglyImplemented.length === 0);
 }
@@ -397,6 +398,49 @@ for (const t of TOOL_DEFS) {
   ok(
     "every Phase 3D-3 tool is three distinct tool ids",
     new Set(PHASE3D3_NEW_TOOLS.map((id) => TOOL_BY_ID[id]?.id)).size === 3,
+  );
+}
+
+// ---- Phase 3D-4 additions this phase claims as "fully implemented" --------
+// Gann Box / Gann Square Fixed / Gann Square / Gann Fan — Box/Square
+// Fixed/Square share one grid primitive; Fan reuses the fan-tool `levels`
+// capability every prior phase's fan tools already have.
+
+{
+  const GANN_GRID_TOOLS = ["gann-box", "gann-square-fixed", "gann-square"];
+  const EXPECTED_INTERACTION = { "gann-box": "drag", "gann-square-fixed": "point", "gann-square": "drag" };
+  const EXPECTED_ANCHOR_COUNT = { "gann-box": 2, "gann-square-fixed": 1, "gann-square": 2 };
+  const missing = GANN_GRID_TOOLS.filter((id) => !TOOL_BY_ID[id]?.implemented);
+  ok(`every Gann grid tool is implemented:true (missing: ${missing.join(",") || "none"})`, missing.length === 0);
+  for (const id of GANN_GRID_TOOLS) {
+    ok(`${id} is in IMPLEMENTED_TOOLS`, IMPLEMENTED_TOOLS.some((t) => t.id === id));
+    ok(`${id} resolves to the "gann" category`, TOOL_BY_ID[id]?.category === "gann");
+    ok(`${id} declares its expected anchor count (${EXPECTED_ANCHOR_COUNT[id]})`, TOOL_BY_ID[id]?.anchorCount === EXPECTED_ANCHOR_COUNT[id]);
+    ok(`${id} declares its expected interaction type (${EXPECTED_INTERACTION[id]})`, TOOL_BY_ID[id]?.interactionType === EXPECTED_INTERACTION[id]);
+    ok(`${id} declares stroke capability`, TOOL_BY_ID[id]?.capabilities.stroke === true);
+  }
+  ok(
+    "Gann Square Fixed is a single-click point tool while Gann Square is a drag — genuinely distinct creation gestures, not an alias",
+    TOOL_BY_ID["gann-square-fixed"]?.interactionType !== TOOL_BY_ID["gann-square"]?.interactionType,
+  );
+  ok(
+    "Gann Box is a distinct tool id from both Square tools despite sharing the same grid primitive",
+    TOOL_BY_ID["gann-box"]?.id !== TOOL_BY_ID["gann-square"]?.id && TOOL_BY_ID["gann-box"]?.id !== TOOL_BY_ID["gann-square-fixed"]?.id,
+  );
+
+  ok("Gann Fan is in IMPLEMENTED_TOOLS", IMPLEMENTED_TOOLS.some((t) => t.id === "gann-fan"));
+  ok("Gann Fan resolves to the \"gann\" category", TOOL_BY_ID["gann-fan"]?.category === "gann");
+  ok("Gann Fan is a 2-anchor drag tool", TOOL_BY_ID["gann-fan"]?.interactionType === "drag" && TOOL_BY_ID["gann-fan"]?.anchorCount === 2);
+  ok("Gann Fan declares levels capability (per-ray enable/color/custom-value)", TOOL_BY_ID["gann-fan"]?.capabilities.levels === true);
+  ok(
+    "Gann Fan explicitly opts OUT of reverse-anchors (p1 is the shared ray pivot, not a symmetric endpoint) — same as Fib Speed Resistance Fan",
+    TOOL_BY_ID["gann-fan"]?.capabilities.reverseAnchors === false,
+  );
+  ok("Gann Fan is distinct from Fib Speed Resistance Fan (own id, not an alias)", TOOL_BY_ID["gann-fan"]?.id !== TOOL_BY_ID["fib-speed-fan"]?.id);
+
+  ok(
+    "all four Phase 3D-4 tools are four distinct tool ids",
+    new Set([...GANN_GRID_TOOLS, "gann-fan"].map((id) => TOOL_BY_ID[id]?.id)).size === 4,
   );
 }
 

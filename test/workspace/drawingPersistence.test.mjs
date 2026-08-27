@@ -1052,6 +1052,96 @@ function d(id) {
   ok("chart B only sees its sine line, not chart A's time cycles", b.length === 1 && b[0].tool === "sine-line" && b[0].p2.price === 5);
 }
 
+// ---- Phase 3D-4: Gann tools' round trip ------------------------------------
+// All four are plain p1/p2 tools (Box/Square Fixed/Square share a grid
+// generated fresh from p1/p2; Fan carries an additional `fibLevels` set
+// like every other fan tool) — canonical state is only ever the two
+// anchors (+ level set for Fan), never a persisted grid/ray list.
+
+{
+  fakeStorage.clear();
+
+  const gannBox = {
+    id: "gb1",
+    tool: "gann-box",
+    chartInstanceId: "chart-1",
+    p1: { time: 0, price: 100 },
+    p2: { time: 500, price: 150 },
+    color: "#e6b800",
+  };
+
+  const gannSquareFixed = {
+    id: "gsf1",
+    tool: "gann-square-fixed",
+    chartInstanceId: "chart-1",
+    p1: { time: 1000, price: 50 },
+    p2: { time: 1300, price: 65 },
+    color: "#4da3ff",
+  };
+
+  const gannFan = {
+    id: "gf1",
+    tool: "gann-fan",
+    chartInstanceId: "chart-1",
+    p1: { time: 0, price: 100 },
+    p2: { time: 500, price: 200 },
+    color: "#a855f7",
+    settings: {
+      fibShowLabel: true,
+      fibLevels: [{ value: 1, enabled: true }, { value: 2, enabled: true, color: "#22c55e" }, { value: 0.125, enabled: false }],
+    },
+  };
+
+  saveDrawingsFor("chart-1", "BCHUSDT", "1h", [gannBox, gannSquareFixed, gannFan]);
+  const loaded = loadDrawingsFor("chart-1", "BCHUSDT", "1h");
+
+  ok("Phase 3D-4 round trip: all three Gann drawings come back", loaded.length === 3);
+
+  const loadedBox = loaded.find((x) => x.id === "gb1");
+  ok("Gann Box: p1/p2 survive intact — canonical state is the two anchors, not a persisted grid", loadedBox.p1.price === 100 && loadedBox.p2.price === 150);
+  ok("Gann Box: no stray grid-line `points` array was persisted", loadedBox.points === undefined);
+
+  const loadedSquareFixed = loaded.find((x) => x.id === "gsf1");
+  ok("Gann Square Fixed: p1/p2 (anchor + computed corner) survive intact", loadedSquareFixed.p1.time === 1000 && loadedSquareFixed.p2.time === 1300);
+
+  const loadedFan = loaded.find((x) => x.id === "gf1");
+  ok("Gann Fan: p1/p2 survive intact", loadedFan.p1.price === 100 && loadedFan.p2.price === 200);
+  ok(
+    "Gann Fan: the per-ray level set (enable/color/custom-value) survives intact",
+    loadedFan.settings.fibLevels.length === 3 &&
+      loadedFan.settings.fibLevels.find((l) => l.value === 2).color === "#22c55e" &&
+      loadedFan.settings.fibLevels.find((l) => l.value === 0.125).enabled === false,
+  );
+}
+
+// ---- Phase 3D-4: chartInstanceId isolation for the Gann tools -------------
+
+{
+  fakeStorage.clear();
+  const chartAGannSquare = {
+    id: "a-gs",
+    tool: "gann-square",
+    chartInstanceId: "chart-A",
+    p1: { time: 0, price: 1 },
+    p2: { time: 300, price: 2 },
+  };
+  const chartBGannFan = {
+    id: "b-gf",
+    tool: "gann-fan",
+    chartInstanceId: "chart-B",
+    p1: { time: 0, price: 1 },
+    p2: { time: 300, price: 6 },
+  };
+
+  saveDrawingsFor("chart-A", "ATOMUSDT", "1h", [chartAGannSquare]);
+  saveDrawingsFor("chart-B", "ATOMUSDT", "1h", [chartBGannFan]);
+
+  const a = loadDrawingsFor("chart-A", "ATOMUSDT", "1h");
+  const b = loadDrawingsFor("chart-B", "ATOMUSDT", "1h");
+  ok("Gann Square/Gann Fan respect chartInstanceId isolation: chart A only sees its square", a.length === 1 && a[0].tool === "gann-square");
+  ok("chart B only sees its fan, not chart A's square", b.length === 1 && b[0].tool === "gann-fan" && b[0].p2.price === 6);
+}
+
 // ---- summary ----------------------------------------------------------------
 
 console.log(`\n${pass}/${pass + fail} passed`);

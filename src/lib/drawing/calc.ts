@@ -157,6 +157,11 @@ export function defaultFibLevelsForTool(tool: string): FibLevel[] {
   // Fib Circles / Fib Speed Resistance Arcs (Phase 3C-4): concentric-ring
   // tools share one default ratio set (see FIB_CIRCLE_DEFAULT_LEVELS above).
   if (tool === "fib-circles" || tool === "fib-speed-arcs") return FIB_CIRCLE_DEFAULT_LEVELS;
+  // Gann Fan (Phase 3D-4): reuses the exact same enable/color/custom-value
+  // `levels` machinery as every fan tool above — see GANN_FAN_DEFAULT_LEVELS
+  // below for why its values are angle-ratio multipliers, not Fibonacci
+  // ratios.
+  if (tool === "gann-fan") return GANN_FAN_DEFAULT_LEVELS;
   return DEFAULT_FIB_LEVELS;
 }
 
@@ -387,4 +392,95 @@ export function sineLinePoints(
     points.push({ time: t, price });
   }
   return points;
+}
+
+// ---- Gann: Box / Square Fixed / Square / Fan (Phase 3D-4) -----------------
+//
+// Gann Box, Gann Square Fixed, and Gann Square are all "a box divided into
+// N equal parts on each axis, plus its two corner-to-corner diagonals" —
+// ONE shared grid primitive (gannGridFractions) backs all three; they only
+// differ in how their defining p1/p2 anchors get established (a drag for
+// Box/Square, a single click with an auto-computed default size for Square
+// Fixed — see gannSquareFixedCorner). Gann Fan is mathematically distinct
+// (real sloped rays, not a grid) but reuses the exact same `FibLevel`
+// enable/color/custom-value model every other fan tool already has.
+
+/** Evenly-spaced fractional grid lines (0..1 inclusive) for Gann Box/Square
+ * Fixed/Square's internal division grid — shared by all three since they're
+ * all the same "box divided into N equal parts" geometry. `divisions`
+ * defaults to 4 (TradingView's own default: quarters). The 0 and 1
+ * fractions ARE the box's own outer border, so callers never need a
+ * separate "stroke the box outline" step. */
+export function gannGridFractions(divisions = 4): number[] {
+  if (!(divisions > 0)) return [0, 1];
+  const fractions: number[] = [];
+  for (let i = 0; i <= divisions; i++) fractions.push(i / divisions);
+  return fractions;
+}
+
+/** Gann Square Fixed's default second corner. Unlike Gann Square/Gann Box
+ * (dragged, so p2 comes directly from the user), Gann Square Fixed is a
+ * single-click tool — its box size has to come from somewhere.
+ * StudioChart.tsx's onDown computes `timeExtent`/`priceExtent` from the
+ * CURRENT pixel-per-bar/price-per-pixel scale (so the box reads as roughly
+ * square in screen space at the moment of creation) and passes them in
+ * already converted to market units — this function just adds them to the
+ * anchor. The result is then stored as an ordinary, fixed, independently
+ * editable market-coordinate p1/p2 pair afterward, exactly like Gann
+ * Square — "Fixed" describes CREATION behavior (no drag needed), not an
+ * ongoing pixel-space exception to canonical market-coordinate storage. */
+export function gannSquareFixedCorner(
+  anchor: { time: number; price: number },
+  timeExtent: number,
+  priceExtent: number,
+): { time: number; price: number } {
+  return { time: anchor.time + timeExtent, price: anchor.price + priceExtent };
+}
+
+export type GannFanRatio = { value: number; label: string };
+
+/** The nine conventional Gann Fan angle ratios, expressed as multipliers of
+ * the tool's own p1->p2 "1x1" rate (see gannFanSlope) — "2x1" is twice as
+ * steep as the user's own drawn angle, "1x2" is half as steep, and so on.
+ * `value` doubles as the FibLevel-compatible value this tool's `levels`
+ * capability reads/writes (enable/color/custom-value all reuse the exact
+ * same machinery every other fan tool already has); `label` is only for
+ * the canvas ray label (see StudioChart.tsx's paintGannFan and
+ * gannFanRatioLabel below) — the generic Levels settings list formats
+ * `value` as a plain ratio/percentage like every other fan tool, same as
+ * every prior phase's fan tools. */
+export const GANN_FAN_RATIOS: GannFanRatio[] = [
+  { value: 1 / 8, label: "1x8" },
+  { value: 1 / 4, label: "1x4" },
+  { value: 1 / 3, label: "1x3" },
+  { value: 1 / 2, label: "1x2" },
+  { value: 1, label: "1x1" },
+  { value: 2, label: "2x1" },
+  { value: 3, label: "3x1" },
+  { value: 4, label: "4x1" },
+  { value: 8, label: "8x1" },
+];
+
+/** Default `FibLevel[]` for Gann Fan — one enabled level per ratio above. */
+export const GANN_FAN_DEFAULT_LEVELS: FibLevel[] = GANN_FAN_RATIOS.map((r) => ({ value: r.value, enabled: true }));
+
+/** One Gann Fan ray's slope (price-per-time), given the base "1x1" rate
+ * defined by the tool's own two anchors (dp/dt from p1 to p2) and one
+ * ratio multiplier. This is the fundamental thing that makes a Gann Fan
+ * mathematically distinct from Fib Speed Resistance Fan: each ray here is
+ * a real sloped line continuing indefinitely from p1 at `baseRate *
+ * multiplier`, never a ray toward one fixed fractional target price at
+ * p2's fixed time. */
+export function gannFanSlope(baseRate: number, multiplier: number): number {
+  return baseRate * multiplier;
+}
+
+/** Canvas label for a Gann Fan ratio value (e.g. 2 -> "2x1", 0.25 ->
+ * "1x4") — looked up from GANN_FAN_RATIOS by value rather than
+ * reconstructed from scratch, so a custom/unrecognized level (added via
+ * the generic "add level" input) degrades to a plain decimal instead of a
+ * wrong label. */
+export function gannFanRatioLabel(value: number): string {
+  const known = GANN_FAN_RATIOS.find((r) => Math.abs(r.value - value) < 1e-9);
+  return known ? known.label : String(value);
 }

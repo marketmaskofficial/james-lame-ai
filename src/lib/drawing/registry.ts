@@ -308,13 +308,25 @@ export const TOOL_DEFS: ToolDef[] = [
   // Wedge: p1 here is the pivot, not a symmetric endpoint.
   { id: "pitchfan", name: "Pitchfan", category: "fib", icon: Fan, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, levels: true, reverseAnchors: false }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: true },
 
-  // ---- Gann Tools -------------------------------------------------------
-  // Would share one geometry primitive (fixed-angle grid from an anchor) —
-  // none built yet.
-  { id: "gann-box", name: "Gann Box", category: "gann", icon: Hash, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: false },
-  { id: "gann-square-fixed", name: "Gann Square Fixed", category: "gann", icon: Hash, interactionType: "point", anchorCount: 1, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: false },
-  { id: "gann-square", name: "Gann Square", category: "gann", icon: Hash, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: false },
-  { id: "gann-fan", name: "Gann Fan", category: "gann", icon: Fan, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: false },
+  // ---- Gann Tools (Phase 3D-4) ----------------------------------------------
+  // Box/Square Fixed/Square share ONE grid primitive (calc.ts's
+  // gannGridFractions — an N-division grid plus the box's own two
+  // diagonals, see StudioChart.tsx's paintGannGrid) — only their CREATION
+  // gesture differs (drag vs. a single click with an auto-computed default
+  // size, see gannSquareFixedCorner). Gann Fan is mathematically distinct
+  // (real sloped rays, not a grid) but reuses the exact same `levels`
+  // capability/settings UI every prior fan tool already has — no new
+  // capability flag, no custom settings UI for any of the four.
+  { id: "gann-box", name: "Gann Box", category: "gann", icon: Hash, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  // Gann Square Fixed: a single click (registry's own `point`/anchorCount
+  // 1) — distinct CREATION gesture from Gann Square's drag below, even
+  // though both render/hit-test through the identical shared grid.
+  { id: "gann-square-fixed", name: "Gann Square Fixed", category: "gann", icon: Hash, interactionType: "point", anchorCount: 1, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "gann-square", name: "Gann Square", category: "gann", icon: Hash, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  // Gann Fan: p1 is the shared ray pivot (not a symmetric endpoint), same
+  // `reverseAnchors: false` reasoning as Fib Speed Resistance Fan/Fib
+  // Wedge above.
+  { id: "gann-fan", name: "Gann Fan", category: "gann", icon: Fan, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true, levels: true, reverseAnchors: false }, defaultStyle: LINE_DEFAULT, implemented: true },
 
   // ---- Pattern Tools (Phase 3D-1) ------------------------------------------
   // Manual anchor-placement tools (NOT automatic detection) built on ONE
