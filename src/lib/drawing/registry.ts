@@ -268,9 +268,29 @@ export const TOOL_DEFS: ToolDef[] = [
   // same reason as Fib Time Zone: these levels are whole-number multiples,
   // never a ratio/percentage.
   { id: "fib-time-trend", name: "Trend-Based Fib Time", category: "fib", icon: Ruler, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, levels: true, levelValueKind: "sequence" }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: true },
-  { id: "fib-circles", name: "Fib Circles", category: "fib", icon: Circle, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: false },
-  { id: "fib-spiral", name: "Fib Spiral", category: "fib", icon: RotateCw, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: false },
-  { id: "fib-speed-arcs", name: "Fib Speed Resistance Arcs", category: "fib", icon: Compass, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: false },
+  // Fib Circles (Phase 3C-4): concentric Fibonacci-ratio ellipse rings
+  // centered on p1, radii scaled by the p1->p2 pixel extent on each axis
+  // independently (see StudioChart.tsx's paintFibCircles) — correct under
+  // non-uniform time/price screen scaling since it derives rx/ry separately
+  // rather than a single Euclidean radius. Hit-tests via geometry.ts's new
+  // distToEllipseRing (ring edge, not filled interior). `levels: true`
+  // reuses the exact same per-level enable/color/custom-value UI as every
+  // other Fib tool with zero popover changes.
+  { id: "fib-circles", name: "Fib Circles", category: "fib", icon: Circle, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true, levels: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: true },
+  // Fib Spiral (Phase 3C-4): a genuine logarithmic (golden-ratio) spiral —
+  // see geometry.ts's new fibSpiralPoints, a deterministic parametric point
+  // sequence sampled at a fixed angular step, rendered as one continuous
+  // stroked path (StudioChart.tsx's paintFibSpiral) and hit-tested as
+  // per-segment distToSegment over that same point sequence. No `levels`
+  // capability: unlike the ring/ray Fib tools, a spiral has no discrete
+  // Fibonacci-ratio levels to toggle/color independently.
+  { id: "fib-spiral", name: "Fib Spiral", category: "fib", icon: RotateCw, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: true },
+  // Fib Speed Resistance Arcs (Phase 3C-4): the same concentric-ring
+  // geometry as Fib Circles just above, but each ring is drawn (and
+  // hit-tested) as only the half-arc on the side of p1 that p2 sits on
+  // (see paintFibSpeedArcs's upperHalf convention) — genuine arc geometry,
+  // not full circles with a fake mask.
+  { id: "fib-speed-arcs", name: "Fib Speed Resistance Arcs", category: "fib", icon: Compass, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true, levels: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: true },
   // Fib Wedge (Phase 3C): a real radial ray fan from a shared pivot (A),
   // Pitchfan-style — each ray passes through a Fibonacci-ratio point along
   // the B->C segment (see calc.ts's lerpMarketPoint). NOT parallel horizontal

@@ -293,3 +293,60 @@ export function pointInPolygon(px: number, py: number, pts: { x: number; y: numb
   }
   return inside;
 }
+
+/**
+ * Pixel distance from (px,py) to the EDGE of an axis-aligned ellipse ring
+ * (center cx,cy, radii rx,ry) — Phase 3C-4's shared hit-test primitive for
+ * Fib Circles/Fib Speed Resistance Arcs, both of which render several
+ * concentric un-filled Fibonacci-ratio rings rather than one filled shape
+ * (so `pointInEllipse`'s interior test above is the wrong tool here — a
+ * click well inside the smallest ring must NOT select it). Normalizes the
+ * point into the ellipse's own coordinate space (nx,ny — 1.0 exactly ON the
+ * ring), then converts that normalized distance back to an approximate
+ * pixel distance using the ring's own average radius, matching every other
+ * hit-test in this file's convention of returning a real pixel distance
+ * comparable across candidate drawings, not a boolean.
+ */
+export function distToEllipseRing(px: number, py: number, cx: number, cy: number, rx: number, ry: number): number {
+  const safeRx = Math.max(1e-9, rx);
+  const safeRy = Math.max(1e-9, ry);
+  const nx = (px - cx) / safeRx;
+  const ny = (py - cy) / safeRy;
+  const normDist = Math.sqrt(nx * nx + ny * ny);
+  return Math.abs(normDist - 1) * ((safeRx + safeRy) / 2);
+}
+
+/**
+ * Deterministic parametric points for a logarithmic Fibonacci spiral (Phase
+ * 3C-4), in PIXEL space, radiating outward from (cx,cy). `r0`/`angle0` are
+ * the pixel-space distance/angle from the spiral's center anchor to its
+ * second anchor (computed fresh from market coordinates at render time by
+ * the caller, exactly like every other Fib tool's `px`/`py` conversion) —
+ * this function itself is pure pixel-space math with no persisted-state
+ * concerns of its own. Growth follows the golden ratio (phi ≈ 1.618) per a
+ * quarter turn, the standard Fibonacci-spiral convention, sampled at a
+ * fixed angular step so both the renderer and the hit-test below walk the
+ * IDENTICAL point sequence (never two slightly-different approximations of
+ * "the same" curve). `turns` bounds the spiral's total sweep (and therefore
+ * point count) so it can never grow unbounded/expensive regardless of how
+ * far apart the two anchors are dragged.
+ */
+export function fibSpiralPoints(
+  cx: number,
+  cy: number,
+  r0: number,
+  angle0: number,
+  turns = 2.5,
+): { x: number; y: number }[] {
+  const PHI = 1.6180339887498949;
+  const stepDeg = 6; // 60 points per full turn - smooth without being expensive
+  const stepRad = (stepDeg * Math.PI) / 180;
+  const totalSteps = Math.max(1, Math.round((turns * 2 * Math.PI) / stepRad));
+  const points: { x: number; y: number }[] = [];
+  for (let i = 0; i <= totalSteps; i++) {
+    const theta = i * stepRad;
+    const r = r0 * Math.pow(PHI, theta / (Math.PI / 2));
+    points.push({ x: cx + r * Math.cos(angle0 + theta), y: cy + r * Math.sin(angle0 + theta) });
+  }
+  return points;
+}

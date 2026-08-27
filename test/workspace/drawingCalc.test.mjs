@@ -17,12 +17,14 @@ import {
   FIB_WEDGE_DEFAULT_LEVELS,
   FIB_TIME_ZONE_DEFAULT_LEVELS,
   FIB_SPEED_FAN_DEFAULT_LEVELS,
+  FIB_CIRCLE_DEFAULT_LEVELS,
   defaultFibLevelsForTool,
   computeFibExtensionLevels,
   computeFibTimeZoneLevels,
   computeFibSpeedFanTargets,
   lerpMarketPoint,
 } from "../../src/lib/drawing/calc.ts";
+import { distToEllipseRing, fibSpiralPoints } from "../../src/lib/drawing/geometry.ts";
 
 let pass = 0;
 let fail = 0;
@@ -449,6 +451,53 @@ function bar(time, open, high, low, close, volume) {
   close("pitchfan: ratio 1 ray target sits exactly on C", ray1.price, 250);
   close("pitchfan: ratio 0.5 ray target is the B->C midpoint", rayHalf.price, 200);
   ok("pitchfan: the pivot itself never moves — only ray TARGETS vary by ratio", pivot.price === 100);
+}
+
+// ---- Phase 3C-4: Fib Circles / Fib Speed Resistance Arcs / Fib Spiral -----
+// Circles/Arcs reuse the shared FibLevel model with new geometry primitives
+// (distToEllipseRing); Spiral introduces one new deterministic parametric
+// primitive (fibSpiralPoints) since no existing math approximates a
+// logarithmic spiral.
+
+{
+  ok(
+    "defaultFibLevelsForTool('fib-circles') resolves to FIB_CIRCLE_DEFAULT_LEVELS (same array reference)",
+    defaultFibLevelsForTool("fib-circles") === FIB_CIRCLE_DEFAULT_LEVELS,
+  );
+  ok(
+    "defaultFibLevelsForTool('fib-speed-arcs') reuses the identical Fib Circles default set (same array reference)",
+    defaultFibLevelsForTool("fib-speed-arcs") === FIB_CIRCLE_DEFAULT_LEVELS,
+  );
+}
+
+{
+  // distToEllipseRing: a point exactly ON the ring is distance 0; a point
+  // well inside the smallest ring is NOT (unlike a filled-interior test).
+  close("distToEllipseRing: point on the ring edge (right vertex)", distToEllipseRing(110, 100, 100, 100, 10, 20), 0);
+  close("distToEllipseRing: point on the ring edge (top vertex)", distToEllipseRing(100, 80, 100, 100, 10, 20), 0);
+  ok("distToEllipseRing: center point is far from a ring (not a false interior hit)", distToEllipseRing(100, 100, 100, 100, 10, 20) > 5);
+  ok(
+    "distToEllipseRing: handles non-uniform rx/ry (elliptical, not circular) scaling correctly",
+    distToEllipseRing(100, 121, 100, 100, 10, 20) > distToEllipseRing(100, 120, 100, 100, 10, 20),
+  );
+}
+
+{
+  // fibSpiralPoints: deterministic, starts at radius r0 from center, and
+  // strictly increases in radius as theta advances (logarithmic spiral,
+  // never contracts).
+  const pts = fibSpiralPoints(0, 0, 10, 0, 1);
+  ok("fibSpiralPoints: produces multiple sampled points", pts.length > 10);
+  close("fibSpiralPoints: first point sits at radius r0 on the starting angle", Math.hypot(pts[0].x, pts[0].y), 10);
+  let monotonic = true;
+  for (let i = 1; i < pts.length; i++) {
+    const rPrev = Math.hypot(pts[i - 1].x, pts[i - 1].y);
+    const rCur = Math.hypot(pts[i].x, pts[i].y);
+    if (rCur <= rPrev) monotonic = false;
+  }
+  ok("fibSpiralPoints: radius strictly increases along the spiral (golden-ratio growth, never contracts)", monotonic);
+  const pts2 = fibSpiralPoints(5, -5, 10, Math.PI / 2, 1);
+  ok("fibSpiralPoints: deterministic — identical inputs produce identical output", JSON.stringify(pts) !== JSON.stringify(pts2) && pts2.length === fibSpiralPoints(5, -5, 10, Math.PI / 2, 1).length);
 }
 
 // ---- summary ----------------------------------------------------------------

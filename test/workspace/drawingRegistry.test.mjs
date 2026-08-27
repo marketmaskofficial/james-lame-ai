@@ -148,18 +148,15 @@ for (const t of TOOL_DEFS) {
   ok(`deferred tools stay implemented:false (wrongly true: ${wronglyImplemented.join(",") || "none"})`, wronglyImplemented.length === 0);
 }
 
-// ---- other still-unimplemented Fibonacci tools stay hidden (Phase 3C/3C-2/3C-3)
-// Phase 3C implemented Trend-Based Fib Extension / Fib Channel / Fib Wedge;
-// Phase 3C-2 added Fib Time Zone / Fib Speed Resistance Fan; Phase 3C-3
-// (below) adds Trend-Based Fib Time / Pitchfan. Every OTHER still-unbuilt
-// member of the Fibonacci family (Circles, Spiral, Speed Resistance Arcs)
-// must stay implemented:false alongside them — each phase's brief is
-// deliberately narrow to exactly its own tools, nothing else in the family.
+// ---- Fibonacci family audit: no member left deferred (Phase 3C-4) ---------
+// Phase 3C-4 (Fib Circles / Fib Speed Resistance Arcs / Fib Spiral) was the
+// last specialized Fib tool batch — the DEFERRED_FIB_FAMILY list every prior
+// phase asserted against is now empty by design, so it's replaced by an
+// explicit "no Fib tool is still implemented:false" audit instead.
 
 {
-  const DEFERRED_FIB_FAMILY = ["fib-circles", "fib-spiral", "fib-speed-arcs"];
-  const wronglyImplemented = DEFERRED_FIB_FAMILY.filter((id) => TOOL_BY_ID[id]?.implemented);
-  ok(`deferred Fibonacci tools stay implemented:false (wrongly true: ${wronglyImplemented.join(",") || "none"})`, wronglyImplemented.length === 0);
+  const stillDeferred = TOOL_DEFS.filter((t) => t.category === "fib" && !t.implemented).map((t) => t.id);
+  ok(`no Fibonacci-family tool remains implemented:false (still deferred: ${stillDeferred.join(",") || "none"})`, stillDeferred.length === 0);
 }
 
 // ---- Phase 3B additions this phase claims as "fully implemented" ----------
@@ -288,6 +285,25 @@ for (const t of TOOL_DEFS) {
   ok("Fib Wedge and Pitchfan are distinct tool ids despite sharing render code", TOOL_BY_ID["fib-wedge"]?.id !== TOOL_BY_ID["pitchfan"]?.id);
   ok("Fib Time Zone and Trend-Based Fib Time are distinct tool ids despite sharing render code", TOOL_BY_ID["fib-time"]?.id !== TOOL_BY_ID["fib-time-trend"]?.id);
   ok("fib-time-trend/pitchfan are two distinct tool ids", new Set(PHASE3C3_NEW_TOOLS.map((id) => TOOL_BY_ID[id]?.id)).size === 2);
+}
+
+// ---- Phase 3C-4 additions this phase claims as "fully implemented" --------
+// Fib Circles / Fib Speed Resistance Arcs / Fib Spiral — the final
+// specialized Fibonacci tools before the family audit above.
+
+{
+  const PHASE3C4_NEW_TOOLS = ["fib-circles", "fib-speed-arcs", "fib-spiral"];
+  const missing = PHASE3C4_NEW_TOOLS.filter((id) => !TOOL_BY_ID[id]?.implemented);
+  ok(`every Phase 3C-4 new tool is implemented:true (missing: ${missing.join(",") || "none"})`, missing.length === 0);
+  for (const id of PHASE3C4_NEW_TOOLS) {
+    ok(`${id} is in IMPLEMENTED_TOOLS`, IMPLEMENTED_TOOLS.some((t) => t.id === id));
+    ok(`${id} resolves to the "fib" category`, TOOL_BY_ID[id]?.category === "fib");
+    ok(`${id} is a 2-anchor drag tool`, TOOL_BY_ID[id]?.interactionType === "drag" && TOOL_BY_ID[id]?.anchorCount === 2);
+  }
+  ok("Fib Circles declares levels capability (concentric Fibonacci-ratio rings)", TOOL_BY_ID["fib-circles"]?.capabilities.levels === true);
+  ok("Fib Speed Resistance Arcs declares levels capability (concentric Fibonacci-ratio half-arcs)", TOOL_BY_ID["fib-speed-arcs"]?.capabilities.levels === true);
+  ok("Fib Spiral does NOT declare levels capability (no discrete ratio levels on a continuous spiral)", !TOOL_BY_ID["fib-spiral"]?.capabilities.levels);
+  ok("fib-circles/fib-speed-arcs/fib-spiral are three distinct tool ids", new Set(PHASE3C4_NEW_TOOLS.map((id) => TOOL_BY_ID[id]?.id)).size === 3);
 }
 
 // ---- capability-gated settings sections have a real reason to exist -------

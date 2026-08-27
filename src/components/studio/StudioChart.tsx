@@ -14,6 +14,8 @@ import {
   pointInEllipse,
   pointInPolygon,
   fibChannelLevelOffset,
+  distToEllipseRing,
+  fibSpiralPoints,
 } from "@/lib/drawing/geometry";
 import {
   DEFAULT_FIB_LEVELS,
@@ -2049,6 +2051,113 @@ export function StudioChart({
       ctx.restore();
     };
 
+    /** Fib Circles: concentric un-filled ellipse rings at Fibonacci-ratio
+     * fractions of the p1->p2 pixel distance, centered on p1. Radii are
+     * derived independently per axis (rx0 = pixel dx, ry0 = pixel dy)
+     * exactly like Ellipse/Circle's own rendering — this is what "accounts
+     * for non-uniform time/price screen scaling" means in practice: a
+     * "circle" that's proportionally correct in MARKET terms will generally
+     * render as a visual ellipse, since price and time never share a pixel
+     * scale. Recomputed fresh from p1/p2 every call, same no-cached-state
+     * convention as every other Fib tool here. */
+    const paintFibCircles = (p1: MarketPoint, p2: MarketPoint, levels: FibLevel[], showLabel: boolean, showPrice: boolean, col: string) => {
+      const cx = px(p1);
+      const cy = py(p1);
+      const cx2 = px(p2);
+      const cy2 = py(p2);
+      if (cx == null || cy == null || cx2 == null || cy2 == null) return;
+      const rx0 = Math.abs(cx2 - cx);
+      const ry0 = Math.abs(cy2 - cy);
+      const enabled = [...levels.filter((l) => l.enabled !== false)].sort((l1, l2) => l1.value - l2.value);
+      ctx.save();
+      ctx.setLineDash([]);
+      for (const lvl of enabled) {
+        if (lvl.value <= 0) continue;
+        const rx = rx0 * lvl.value;
+        const ry = ry0 * lvl.value;
+        if (rx <= 0 && ry <= 0) continue;
+        ctx.strokeStyle = withAlpha(lvl.color ?? col, 0.7);
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        const levelPrice = p1.price + (p2.price - p1.price) * lvl.value;
+        const label = levelLabelText(lvl.value, showLabel, showPrice, levelPrice);
+        if (label) {
+          ctx.fillStyle = withAlpha(lvl.color ?? col, 0.9);
+          ctx.fillText(label, cx + rx + 4, cy - 2);
+        }
+      }
+      ctx.restore();
+    };
+
+    /** Fib Speed Resistance Arcs: the SAME concentric ellipse-ring geometry
+     * as Fib Circles above (shared rx0/ry0 derivation), but drawing only the
+     * half-ellipse arc facing the direction of the measured p1->p2 move —
+     * "real arc geometry, not full circles" per the phase brief. Canvas
+     * ellipse angles run clockwise from 0 at 3 o'clock: 0->π is the LOWER
+     * half, π->2π is the UPPER half, so which half to draw is a plain sign
+     * check on the pixel-space vertical delta (screen y grows downward, so
+     * p2 being visually ABOVE p1 - i.e. a price increase - means cy2 < cy). */
+    const paintFibSpeedArcs = (p1: MarketPoint, p2: MarketPoint, levels: FibLevel[], showLabel: boolean, showPrice: boolean, col: string) => {
+      const cx = px(p1);
+      const cy = py(p1);
+      const cx2 = px(p2);
+      const cy2 = py(p2);
+      if (cx == null || cy == null || cx2 == null || cy2 == null) return;
+      const rx0 = Math.abs(cx2 - cx);
+      const ry0 = Math.abs(cy2 - cy);
+      const upperHalf = cy2 <= cy;
+      const [startAngle, endAngle] = upperHalf ? [Math.PI, Math.PI * 2] : [0, Math.PI];
+      const enabled = [...levels.filter((l) => l.enabled !== false)].sort((l1, l2) => l1.value - l2.value);
+      ctx.save();
+      ctx.setLineDash([]);
+      for (const lvl of enabled) {
+        if (lvl.value <= 0) continue;
+        const rx = rx0 * lvl.value;
+        const ry = ry0 * lvl.value;
+        if (rx <= 0 && ry <= 0) continue;
+        ctx.strokeStyle = withAlpha(lvl.color ?? col, 0.7);
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, rx, ry, 0, startAngle, endAngle);
+        ctx.stroke();
+        const levelPrice = p1.price + (p2.price - p1.price) * lvl.value;
+        const label = levelLabelText(lvl.value, showLabel, showPrice, levelPrice);
+        if (label) {
+          const labelY = upperHalf ? cy - ry - 4 : cy + ry + 10;
+          ctx.fillStyle = withAlpha(lvl.color ?? col, 0.9);
+          ctx.fillText(label, cx + 4, labelY);
+        }
+      }
+      ctx.restore();
+    };
+
+    /** Fib Spiral: a single continuous logarithmic-growth curve (see
+     * geometry.ts's fibSpiralPoints) radiating from p1, with p2 fixing the
+     * spiral's initial radius/rotation — NOT multiple discrete Fibonacci
+     * levels (no `levels` capability; a spiral is one curve, not a set of
+     * rings), so unlike Circles/Arcs above this does NOT reset the dash
+     * pattern - a simple single-stroke object respects `d.style` exactly
+     * like Trend Line/Ray already do. Renders as one connected polyline,
+     * same convention as Polyline/Brush's own point-array rendering. */
+    const paintFibSpiral = (p1: MarketPoint, p2: MarketPoint, col: string) => {
+      const cx = px(p1);
+      const cy = py(p1);
+      const cx2 = px(p2);
+      const cy2 = py(p2);
+      if (cx == null || cy == null || cx2 == null || cy2 == null) return;
+      const r0 = pixelDist(cx, cy, cx2, cy2);
+      if (r0 < 1) return;
+      const angle0 = Math.atan2(cy2 - cy, cx2 - cx);
+      const pts = fibSpiralPoints(cx, cy, r0, angle0);
+      ctx.save();
+      ctx.strokeStyle = withAlpha(col, 0.85);
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (const p of pts.slice(1)) ctx.lineTo(p.x, p.y);
+      ctx.stroke();
+      ctx.restore();
+    };
+
     const all = draftRef.current ? [...draws, draftRef.current] : draws;
     const pending = pendingRef.current;
     const selected = stateRef.current.selectedId;
@@ -2598,6 +2707,14 @@ export function StudioChart({
             const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
             paintFibWedge(d.p1, d.p2, p3, levels, null, d.settings?.fibShowLabel !== false, d.settings?.fibShowPrice !== false, col);
           }
+        } else if (d.tool === "fib-circles") {
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+          paintFibCircles(d.p1, d.p2, levels, d.settings?.fibShowLabel !== false, d.settings?.fibShowPrice !== false, col);
+        } else if (d.tool === "fib-speed-arcs") {
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+          paintFibSpeedArcs(d.p1, d.p2, levels, d.settings?.fibShowLabel !== false, d.settings?.fibShowPrice !== false, col);
+        } else if (d.tool === "fib-spiral") {
+          paintFibSpiral(d.p1, d.p2, col);
         } else if (d.tool === "long" || d.tool === "short") {
           const entry = d.p1.price;
           const target = d.p2.price;
@@ -3041,6 +3158,49 @@ export function StudioChart({
             if (Math.abs(lx - mx) < best) {
               best = Math.abs(lx - mx);
               hit = { d, anchor: "body" };
+            }
+          }
+        }
+        if ((d.tool === "fib-circles" || d.tool === "fib-speed-arcs") && x1 != null && y1 != null && x2 != null && y2 != null && !anchorAlreadyHitOnThisDrawing) {
+          // Ring-edge hit-test (see geometry.ts's distToEllipseRing) —
+          // clicking well INSIDE the smallest ring must miss, unlike a
+          // filled-shape interior test.
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+          const enabled = levels.filter((l) => l.enabled !== false && l.value > 0);
+          const rx0 = Math.abs(x2 - x1);
+          const ry0 = Math.abs(y2 - y1);
+          const upperHalf = y2 <= y1;
+          for (const lvl of enabled) {
+            const rx = rx0 * lvl.value;
+            const ry = ry0 * lvl.value;
+            if (rx <= 0 && ry <= 0) continue;
+            if (d.tool === "fib-speed-arcs") {
+              // Only the rendered half-arc is clickable, matching
+              // paintFibSpeedArcs's own geometry exactly.
+              const onUpperSide = my <= y1;
+              if (onUpperSide !== upperHalf) continue;
+            }
+            const dist = distToEllipseRing(mx, my, x1, y1, rx, ry);
+            if (dist < best) {
+              best = dist;
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
+        if (d.tool === "fib-spiral" && x1 != null && y1 != null && x2 != null && y2 != null && !anchorAlreadyHitOnThisDrawing) {
+          // Segment-distance hit-test against the exact same sampled point
+          // sequence paintFibSpiral renders — same convention as
+          // Polyline/Brush's own multi-segment hit-testing.
+          const r0 = pixelDist(x1, y1, x2, y2);
+          if (r0 >= 1) {
+            const angle0 = Math.atan2(y2 - y1, x2 - x1);
+            const pts = fibSpiralPoints(x1, y1, r0, angle0);
+            for (let i = 0; i < pts.length - 1; i++) {
+              const dist = distToSegment(mx, my, pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y);
+              if (dist < best) {
+                best = dist;
+                hit = { d, anchor: "body" };
+              }
             }
           }
         }

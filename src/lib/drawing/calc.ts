@@ -125,6 +125,15 @@ export const FIB_SPEED_FAN_DEFAULT_LEVELS: FibLevel[] = [0.25, 0.382, 0.5, 0.618
   enabled: true,
 }));
 
+/** Fib Circles / Fib Speed Resistance Arcs (Phase 3C-4) conventional
+ * defaults: the same 0.382/0.5/0.618/1/1.618/2.618-style ratio set already
+ * used by Fib Wedge/Pitchfan, applied as concentric ring radii (as fractions
+ * of the p1->p2 distance) instead of ray positions. */
+export const FIB_CIRCLE_DEFAULT_LEVELS: FibLevel[] = [0.382, 0.5, 0.618, 1, 1.618, 2.618].map((value) => ({
+  value,
+  enabled: true,
+}));
+
 /** The one place that knows which conventional default ratio set belongs to
  * which Fib tool — every render/hit-test/settings call site asks THIS
  * instead of carrying its own `?? SOME_DEFAULT` per tool id, so adding a
@@ -145,6 +154,9 @@ export function defaultFibLevelsForTool(tool: string): FibLevel[] {
   // Wedge (see StudioChart.tsx's paintFibWedge, shared verbatim) — reuses
   // Wedge's own default ratio set for the same reason.
   if (tool === "pitchfan") return FIB_WEDGE_DEFAULT_LEVELS;
+  // Fib Circles / Fib Speed Resistance Arcs (Phase 3C-4): concentric-ring
+  // tools share one default ratio set (see FIB_CIRCLE_DEFAULT_LEVELS above).
+  if (tool === "fib-circles" || tool === "fib-speed-arcs") return FIB_CIRCLE_DEFAULT_LEVELS;
   return DEFAULT_FIB_LEVELS;
 }
 

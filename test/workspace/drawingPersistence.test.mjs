@@ -618,6 +618,91 @@ function d(id) {
   ok("chart B only sees its pitchfan, not chart A's time projection", b.length === 1 && b[0].tool === "pitchfan" && b[0].points[0].price === 2.5);
 }
 
+// ---- Phase 3C-4: Fib Circles / Fib Speed Resistance Arcs / Fib Spiral -----
+// All three are plain 2-anchor drag tools (like Fib Time Zone/Speed Fan
+// above) — the regression this guards against is the same: the per-level
+// ring/arc style set (Circles/Arcs) or the bare 2-anchor shape (Spiral,
+// which carries no `fibLevels` at all) getting dropped/coerced on save/load.
+
+{
+  fakeStorage.clear();
+
+  const fibCircles = {
+    id: "fc1",
+    tool: "fib-circles",
+    chartInstanceId: "chart-1",
+    p1: { time: 0, price: 100 },
+    p2: { time: 500, price: 150 },
+    color: "#e6b800",
+    settings: {
+      fibShowLabel: true,
+      fibLevels: [{ value: 0.382, enabled: true }, { value: 0.618, enabled: true, color: "#22c55e" }, { value: 1.618, enabled: false }],
+    },
+  };
+
+  const fibSpeedArcs = {
+    id: "fa1",
+    tool: "fib-speed-arcs",
+    chartInstanceId: "chart-1",
+    p1: { time: 0, price: 100 },
+    p2: { time: 500, price: 50 },
+    color: "#4da3ff",
+    settings: {
+      fibShowPrice: true,
+      fibLevels: [{ value: 0.5, enabled: true }, { value: 1, enabled: true, color: "#ef4444" }],
+    },
+  };
+
+  const fibSpiral = {
+    id: "fsp1",
+    tool: "fib-spiral",
+    chartInstanceId: "chart-1",
+    p1: { time: 0, price: 100 },
+    p2: { time: 200, price: 120 },
+    color: "#a855f7",
+  };
+
+  saveDrawingsFor("chart-1", "ADAUSDT", "5m", [fibCircles, fibSpeedArcs, fibSpiral]);
+  const loaded = loadDrawingsFor("chart-1", "ADAUSDT", "5m");
+
+  ok("Phase 3C-4 round trip: all three new Fib drawings come back", loaded.length === 3);
+
+  const loadedCircles = loaded.find((x) => x.id === "fc1");
+  ok("Fib Circles: p1/p2 anchors survive intact", loadedCircles.p1.price === 100 && loadedCircles.p2.price === 150);
+  ok(
+    "Fib Circles: the ring level set (with per-level enable/color) survives intact",
+    loadedCircles.settings.fibLevels.length === 3 &&
+      loadedCircles.settings.fibLevels.find((l) => l.value === 0.618).color === "#22c55e" &&
+      loadedCircles.settings.fibLevels.find((l) => l.value === 1.618).enabled === false,
+  );
+
+  const loadedArcs = loaded.find((x) => x.id === "fa1");
+  ok("Fib Speed Resistance Arcs: p1/p2 anchors survive intact", loadedArcs.p1.price === 100 && loadedArcs.p2.price === 50);
+  ok(
+    "Fib Speed Resistance Arcs: the arc level set survives intact",
+    loadedArcs.settings.fibLevels.length === 2 && loadedArcs.settings.fibLevels.find((l) => l.value === 1).color === "#ef4444",
+  );
+
+  const loadedSpiral = loaded.find((x) => x.id === "fsp1");
+  ok("Fib Spiral: p1/p2 anchors survive intact (no levels to carry)", loadedSpiral.p1.time === 0 && loadedSpiral.p2.time === 200);
+}
+
+// ---- Phase 3C-4: chartInstanceId isolation for the three new tools --------
+
+{
+  fakeStorage.clear();
+  const chartACircles = { id: "a-fc", tool: "fib-circles", chartInstanceId: "chart-A", p1: { time: 0, price: 1 }, p2: { time: 100, price: 2 } };
+  const chartBSpiral = { id: "b-fsp", tool: "fib-spiral", chartInstanceId: "chart-B", p1: { time: 0, price: 1 }, p2: { time: 100, price: 2.5 } };
+
+  saveDrawingsFor("chart-A", "SOLUSDT", "1h", [chartACircles]);
+  saveDrawingsFor("chart-B", "SOLUSDT", "1h", [chartBSpiral]);
+
+  const a = loadDrawingsFor("chart-A", "SOLUSDT", "1h");
+  const b = loadDrawingsFor("chart-B", "SOLUSDT", "1h");
+  ok("Fib Circles/Spiral respect chartInstanceId isolation: chart A only sees its circles", a.length === 1 && a[0].tool === "fib-circles");
+  ok("chart B only sees its spiral, not chart A's circles", b.length === 1 && b[0].tool === "fib-spiral" && b[0].p2.price === 2.5);
+}
+
 // ---- summary ----------------------------------------------------------------
 
 console.log(`\n${pass}/${pass + fail} passed`);
