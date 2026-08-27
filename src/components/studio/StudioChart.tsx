@@ -20,6 +20,7 @@ import {
   quadraticBezierPoints,
   cubicBezierPoints,
   directionalArrowGlyph,
+  pointInSector,
 } from "@/lib/drawing/geometry";
 import {
   DEFAULT_FIB_LEVELS,
@@ -43,6 +44,7 @@ import {
   pitchforkHandle,
   pitchforkTarget,
   pitchforkTeethAnchors,
+  captureRelativePattern,
   type PitchforkVariant,
   type FibLevel,
 } from "@/lib/drawing/calc";
@@ -151,6 +153,7 @@ export type DrawTool =
   | "forecast"
   | "bars-pattern"
   | "ghost-feed"
+  | "sector"
   // Volume-based
   | "vwap"
   | "vp-fixed"
@@ -2668,6 +2671,125 @@ export function StudioChart({
       }
     };
 
+    /** Position Forecast (Phase 3D-8): a genuine 3-anchor projection
+     * sketch — a dashed zigzag through all three anchors with an
+     * arrowhead at the end (reusing directionalArrowGlyph), deliberately
+     * NOT Long/Short's entry/stop/target risk box. */
+    const paintForecast = (p1: MarketPoint, p2: MarketPoint, p3: MarketPoint) => {
+      const x1 = px(p1);
+      const y1 = py(p1);
+      const x2 = px(p2);
+      const y2 = py(p2);
+      const x3 = px(p3);
+      const y3 = py(p3);
+      if (x1 == null || y1 == null || x2 == null || y2 == null || x3 == null || y3 == null) return;
+      ctx.save();
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.lineTo(x3, y3);
+      ctx.stroke();
+      const angle = Math.atan2(y3 - y2, x3 - x2);
+      const glyph = directionalArrowGlyph(x3, y3, angle, 8);
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(glyph.tip.x, glyph.tip.y);
+      ctx.lineTo(glyph.base1.x, glyph.base1.y);
+      ctx.lineTo(glyph.base2.x, glyph.base2.y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    };
+
+    /** Bars Pattern (Phase 3D-8): draws a faint dotted box over the
+     * captured SOURCE range (p1->p2), then projects the actual captured
+     * relative pattern (calc.ts's captureRelativePattern — real close-price
+     * deltas from the loaded bars, computed once at creation time and
+     * stored in settings, never regenerated from live data) forward from
+     * p2 using the source's own bar spacing. */
+    const paintBarsPattern = (p1: MarketPoint, p2: MarketPoint, deltas: number[], barInterval: number) => {
+      const x1 = px(p1);
+      const y1 = py(p1);
+      const x2 = px(p2);
+      const y2 = py(p2);
+      if (x1 != null && y1 != null && x2 != null && y2 != null) {
+        ctx.save();
+        ctx.setLineDash([2, 3]);
+        ctx.globalAlpha = 0.5;
+        ctx.strokeRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
+        ctx.restore();
+      }
+      if (deltas.length < 2 || !(barInterval > 0) || x2 == null || y2 == null) return;
+      ctx.save();
+      ctx.setLineDash([4, 2]);
+      ctx.beginPath();
+      let started = false;
+      for (let i = 0; i < deltas.length; i++) {
+        const sx = px({ time: p2.time + i * barInterval, price: p2.price + deltas[i] });
+        const sy = py({ time: p2.time + i * barInterval, price: p2.price + deltas[i] });
+        if (sx == null || sy == null) continue;
+        if (!started) {
+          ctx.moveTo(sx, sy);
+          started = true;
+        } else ctx.lineTo(sx, sy);
+      }
+      if (started) ctx.stroke();
+      ctx.restore();
+    };
+
+    /** Ghost Feed (Phase 3D-8): a deterministic, low-opacity/dashed
+     * extension of the tool's own p1->p2 trend rate — reuses the exact
+     * same projectLineForward every Ray/Extended Line/ray-fan tool already
+     * uses. No live/future data — purely a function of p1/p2, which is
+     * what makes its "ghost" (faded) look the honest visual cue that this
+     * is a projection, not real price action. */
+    const paintGhostFeed = (p1: MarketPoint, p2: MarketPoint) => {
+      const x1 = px(p1);
+      const y1 = py(p1);
+      const x2 = px(p2);
+      const y2 = py(p2);
+      if (x1 == null || y1 == null || x2 == null || y2 == null) return;
+      const { x: ex, y: ey } = projectLineForward(x1, y1, x2, y2, host.clientWidth);
+      ctx.save();
+      ctx.setLineDash([2, 4]);
+      ctx.globalAlpha = 0.4;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(ex, ey);
+      ctx.stroke();
+      ctx.restore();
+    };
+
+    /** Sector (Phase 3D-8): a genuine pie-slice — p1 is the origin/pivot,
+     * p2 and p3 are the two radial boundary endpoints, and the arc
+     * boundary is the native canvas arc primitive between their two
+     * angles (exact geometry, not a bezier approximation). Returns the
+     * computed pixel-space sector (used by the hit-test below) so the two
+     * can never drift apart. */
+    const paintSector = (p1: MarketPoint, p2: MarketPoint, p3: MarketPoint) => {
+      const ox = px(p1);
+      const oy = py(p1);
+      const x2 = px(p2);
+      const y2 = py(p2);
+      const x3 = px(p3);
+      const y3 = py(p3);
+      if (ox == null || oy == null || x2 == null || y2 == null || x3 == null || y3 == null) return;
+      const r1 = pixelDist(ox, oy, x2, y2);
+      const r2 = pixelDist(ox, oy, x3, y3);
+      const radius = (r1 + r2) / 2;
+      const a1 = Math.atan2(y2 - oy, x2 - ox);
+      const a2 = Math.atan2(y3 - oy, x3 - ox);
+      ctx.beginPath();
+      ctx.moveTo(ox, oy);
+      ctx.lineTo(ox + radius * Math.cos(a1), oy + radius * Math.sin(a1));
+      ctx.arc(ox, oy, radius, a1, a2);
+      ctx.lineTo(ox, oy);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    };
+
     const all = draftRef.current ? [...draws, draftRef.current] : draws;
     const pending = pendingRef.current;
     const selected = stateRef.current.selectedId;
@@ -2723,6 +2845,8 @@ export function StudioChart({
               d.tool === "flat-channel" ||
               d.tool === "rotated-rect" ||
               d.tool === "curve" ||
+              d.tool === "forecast" ||
+              d.tool === "sector" ||
               PITCHFORK_TOOLS.has(d.tool))
           ) {
             const hx = px(p3);
@@ -3183,6 +3307,30 @@ export function StudioChart({
       }
       if (d.tool === "regression-trend") {
         paintRegressionTrend(d.p1, d.p2, (d.settings?.regressionDeviations as number | undefined) ?? 2);
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "forecast") {
+        const p3 = d.points?.[0];
+        if (p3) paintForecast(d.p1, d.p2, p3);
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "bars-pattern") {
+        const pattern = (d.settings?.pattern as number[] | undefined) ?? [];
+        const barInterval = (d.settings?.barInterval as number | undefined) ?? 0;
+        paintBarsPattern(d.p1, d.p2, pattern, barInterval);
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "ghost-feed") {
+        paintGhostFeed(d.p1, d.p2);
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "sector") {
+        const p3 = d.points?.[0];
+        if (p3) paintSector(d.p1, d.p2, p3);
         ctx.restore();
         continue;
       }
@@ -3751,6 +3899,8 @@ export function StudioChart({
             d.tool === "flat-channel" ||
             d.tool === "rotated-rect" ||
             d.tool === "curve" ||
+            d.tool === "forecast" ||
+            d.tool === "sector" ||
             PITCHFORK_TOOLS.has(d.tool))
         ) {
           const dist = pixelDist(x3, y3, mx, my);
@@ -4071,6 +4221,51 @@ export function StudioChart({
                 hit = { d, anchor: "body" };
               }
             }
+          }
+        }
+        if (d.tool === "forecast" && x1 != null && y1 != null && x2 != null && y2 != null && x3 != null && y3 != null && !anchorAlreadyHitOnThisDrawing) {
+          // Hit-tests the ACTUAL rendered zigzag (p1->p2->p3), matching
+          // paintForecast exactly.
+          const dist1 = distToSegment(mx, my, x1, y1, x2, y2);
+          if (dist1 < best) {
+            best = dist1;
+            hit = { d, anchor: "body" };
+          }
+          const dist2 = distToSegment(mx, my, x2, y2, x3, y3);
+          if (dist2 < best) {
+            best = dist2;
+            hit = { d, anchor: "body" };
+          }
+        }
+        if (d.tool === "bars-pattern" && x1 != null && y1 != null && x2 != null && y2 != null && !hit) {
+          // Hit-tests the drawn SOURCE-range box (the one bounded, always-
+          // on-screen part of this tool) — the projected pattern beyond it
+          // can extend arbitrarily far and isn't a reliable click target.
+          if (mx >= Math.min(x1, x2) && mx <= Math.max(x1, x2) && my >= Math.min(y1, y2) && my <= Math.max(y1, y2)) {
+            hit = { d, anchor: "body" };
+          }
+        }
+        if (d.tool === "ghost-feed" && x1 != null && y1 != null && x2 != null && y2 != null && !anchorAlreadyHitOnThisDrawing) {
+          // Hit-tests the full VISIBLE extended projection, same convention
+          // as Extended Line/Ray above.
+          const canvasWidth = canvasRef.current?.clientWidth ?? 2000;
+          const { x: ex, y: ey } = projectLineForward(x1, y1, x2, y2, canvasWidth);
+          const dist = distToSegment(mx, my, x1, y1, ex, ey);
+          if (dist < best) {
+            best = dist;
+            hit = { d, anchor: "body" };
+          }
+        }
+        if (d.tool === "sector" && x1 != null && y1 != null && x2 != null && y2 != null && x3 != null && y3 != null && !anchorAlreadyHitOnThisDrawing && !hit) {
+          // Real sector-interior test (geometry.ts's pointInSector) — the
+          // ACTUAL rendered pie-slice, not a bounding box.
+          const r1 = pixelDist(x1, y1, x2, y2);
+          const r2 = pixelDist(x1, y1, x3, y3);
+          const radius = (r1 + r2) / 2;
+          const a1 = Math.atan2(y2 - y1, x2 - x1);
+          const a2 = Math.atan2(y3 - y1, x3 - x1);
+          if (pointInSector(mx, my, x1, y1, radius, a1, a2)) {
+            hit = { d, anchor: "body" };
           }
         }
         if (PITCHFORK_TOOLS.has(d.tool) && x1 != null && y1 != null && x3 != null && p3 && !anchorAlreadyHitOnThisDrawing) {
@@ -4615,7 +4810,7 @@ export function StudioChart({
         return;
       }
 
-      if (tool === "fib-ext" || tool === "fib-wedge" || tool === "fib-time-trend" || tool === "pitchfan" || tool === "curve" || PITCHFORK_TOOLS.has(tool)) {
+      if (tool === "fib-ext" || tool === "fib-wedge" || tool === "fib-time-trend" || tool === "pitchfan" || tool === "curve" || tool === "forecast" || tool === "sector" || PITCHFORK_TOOLS.has(tool)) {
         // Trend-Based Fib Extension (A->B->C), Fib Wedge (pivot->B->C),
         // Trend-Based Fib Time (A->B->C, Phase 3C-3), and Pitchfan
         // (pivot->B->C, Phase 3C-3) all use Triangle's exact 3-plain-click
@@ -4895,6 +5090,15 @@ export function StudioChart({
         const entry = draft.p1.price;
         const target = draft.p2.price;
         onAddDrawing(stampNew({ ...draft, stop: entry - (target - entry) * 0.5 }));
+        return;
+      }
+      if (draft.tool === "bars-pattern") {
+        // Captures the REAL relative price pattern from the actual loaded
+        // bars within the drawn source range, once, right now — never
+        // regenerated from live data afterward (see calc.ts's
+        // captureRelativePattern and paintBarsPattern's own doc comment).
+        const { deltas, barInterval } = captureRelativePattern(bars, draft.p1.time, draft.p2.time);
+        onAddDrawing(stampNew({ ...draft, settings: { pattern: deltas, barInterval } }));
         return;
       }
       onAddDrawing(stampNew(draft));

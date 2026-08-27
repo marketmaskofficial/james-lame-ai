@@ -1459,6 +1459,105 @@ function d(id) {
   ok("chart B only sees its flag mark, not chart A's pin", b.length === 1 && b[0].tool === "flag-mark" && b[0].p1.price === 5);
 }
 
+// ---- Phase 3D-8: Forecasting round trip ------------------------------------
+// Position Forecast/Sector are p1/p2/points[0]; Bars Pattern/Ghost Feed are
+// plain p1/p2. Bars Pattern's key property: the captured pattern (real
+// relative deltas + barInterval) lives in `settings`, computed ONCE at
+// creation — never full OHLC, never regenerated from live data on load.
+
+{
+  fakeStorage.clear();
+
+  const forecast = {
+    id: "fc1",
+    tool: "forecast",
+    chartInstanceId: "chart-1",
+    p1: { time: 0, price: 100 },
+    p2: { time: 100, price: 120 },
+    points: [{ time: 200, price: 90 }],
+    color: "#e6b800",
+  };
+
+  const barsPattern = {
+    id: "bp1",
+    tool: "bars-pattern",
+    chartInstanceId: "chart-1",
+    p1: { time: 0, price: 100 },
+    p2: { time: 180, price: 105 },
+    settings: { pattern: [0, 10, -5, 5], barInterval: 60 },
+    color: "#4da3ff",
+  };
+
+  const sector = {
+    id: "sc1",
+    tool: "sector",
+    chartInstanceId: "chart-1",
+    p1: { time: 0, price: 100 }, // origin
+    p2: { time: 100, price: 150 }, // radial boundary 1
+    points: [{ time: 100, price: 50 }], // radial boundary 2
+    color: "#a855f7",
+  };
+
+  saveDrawingsFor("chart-1", "TRXUSDT", "1h", [forecast, barsPattern, sector]);
+  const loaded = loadDrawingsFor("chart-1", "TRXUSDT", "1h");
+
+  ok("Phase 3D-8 round trip: all three drawings come back", loaded.length === 3);
+
+  const loadedForecast = loaded.find((x) => x.id === "fc1");
+  ok(
+    "Position Forecast: all THREE anchors survive intact, the third in `points` (not collapsed into an entry/stop/target risk box like Long/Short)",
+    loadedForecast.p1.price === 100 && loadedForecast.p2.price === 120 && loadedForecast.points?.[0]?.price === 90 && loadedForecast.stop === undefined,
+  );
+
+  const loadedBarsPattern = loaded.find((x) => x.id === "bp1");
+  ok(
+    "Bars Pattern: the captured relative pattern (deltas + barInterval) survives intact in settings, not full OHLC",
+    Array.isArray(loadedBarsPattern.settings.pattern) &&
+      loadedBarsPattern.settings.pattern.length === 4 &&
+      loadedBarsPattern.settings.pattern[1] === 10 &&
+      loadedBarsPattern.settings.barInterval === 60,
+  );
+  ok("Bars Pattern: the source-range anchors (p1/p2) survive intact", loadedBarsPattern.p1.time === 0 && loadedBarsPattern.p2.time === 180);
+
+  const loadedSector = loaded.find((x) => x.id === "sc1");
+  ok(
+    "Sector: origin (p1) and both radial boundary anchors (p2, points[0]) survive intact",
+    loadedSector.p1.price === 100 && loadedSector.p2.price === 150 && loadedSector.points?.[0]?.price === 50,
+  );
+}
+
+// ---- Phase 3D-8: chartInstanceId isolation for the new tools --------------
+
+{
+  fakeStorage.clear();
+  const chartAGhostFeed = {
+    id: "a-gf",
+    tool: "ghost-feed",
+    chartInstanceId: "chart-A",
+    p1: { time: 0, price: 1 },
+    p2: { time: 100, price: 2 },
+  };
+  const chartBSector = {
+    id: "b-sec",
+    tool: "sector",
+    chartInstanceId: "chart-B",
+    p1: { time: 0, price: 1 },
+    p2: { time: 100, price: 6 },
+    points: [{ time: 100, price: 3 }],
+  };
+
+  saveDrawingsFor("chart-A", "XLMUSDT", "1h", [chartAGhostFeed]);
+  saveDrawingsFor("chart-B", "XLMUSDT", "1h", [chartBSector]);
+
+  const a = loadDrawingsFor("chart-A", "XLMUSDT", "1h");
+  const b = loadDrawingsFor("chart-B", "XLMUSDT", "1h");
+  ok("Ghost Feed/Sector respect chartInstanceId isolation: chart A only sees its ghost feed", a.length === 1 && a[0].tool === "ghost-feed");
+  ok(
+    "chart B only sees its sector (radial anchor intact), not chart A's ghost feed",
+    b.length === 1 && b[0].tool === "sector" && b[0].points?.[0]?.price === 3,
+  );
+}
+
 // ---- summary ----------------------------------------------------------------
 
 console.log(`\n${pass}/${pass + fail} passed`);

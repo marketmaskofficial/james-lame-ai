@@ -459,3 +459,25 @@ export function directionalArrowGlyph(
     base2: { x: cx + Math.cos(angleRad - spread) * size * 0.7, y: cy + Math.sin(angleRad - spread) * size * 0.7 },
   };
 }
+
+/**
+ * True if (px,py) lies within the pie-slice SECTOR centered at (ox,oy) —
+ * inside the radius AND between the two boundary angles (Phase 3D-8's
+ * Sector tool) — a real interior test following the ACTUAL rendered
+ * geometry (radial lines + arc boundary), not a loose bounding box.
+ * `startAngle`/`endAngle` are in radians (`Math.atan2` convention) and may
+ * be given in either order / any wraparound — normalized internally.
+ */
+export function pointInSector(px: number, py: number, ox: number, oy: number, radius: number, startAngle: number, endAngle: number): boolean {
+  const dx = px - ox;
+  const dy = py - oy;
+  const dist = Math.hypot(dx, dy);
+  if (dist > radius) return false;
+  const twoPi = Math.PI * 2;
+  let lo = startAngle;
+  let hi = endAngle;
+  while (hi < lo) hi += twoPi;
+  let a = Math.atan2(dy, dx);
+  while (a < lo) a += twoPi;
+  return a >= lo && a <= hi;
+}

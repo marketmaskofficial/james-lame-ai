@@ -36,6 +36,7 @@ import {
   pitchforkHandle,
   pitchforkTarget,
   pitchforkTeethAnchors,
+  captureRelativePattern,
 } from "../../src/lib/drawing/calc.ts";
 import {
   distToEllipseRing,
@@ -45,6 +46,7 @@ import {
   quadraticBezierPoints,
   cubicBezierPoints,
   directionalArrowGlyph,
+  pointInSector,
 } from "../../src/lib/drawing/geometry.ts";
 
 let pass = 0;
@@ -839,6 +841,70 @@ function bar(time, open, high, low, close, volume) {
   const base2Dist = Math.hypot(glyph.base2.x, glyph.base2.y);
   close("directionalArrowGlyph: both base points sit the same distance from the anchor (symmetric, isosceles)", base1Dist, base2Dist);
   ok("directionalArrowGlyph: a different orientation angle moves the tip to a genuinely different position", directionalArrowGlyph(0, 0, 0, size).tip.x !== glyph.tip.x);
+}
+
+// ---- Phase 3D-8: Forecasting (Bars Pattern / Sector) -----------------------
+
+{
+  // Bars Pattern: captures REAL relative close-price deltas from the actual
+  // bars in range — deltas[0] is always 0 (the first bar is its own base).
+  const bars = [
+    { time: 0, close: 100 },
+    { time: 60, close: 110 },
+    { time: 120, close: 95 },
+    { time: 180, close: 105 },
+    { time: 1000, close: 999 }, // well outside the range — must be excluded
+  ];
+  const { deltas, barInterval } = captureRelativePattern(bars, 0, 180);
+  ok("captureRelativePattern: captures exactly the bars within [start,end], excluding ones outside it", deltas.length === 4);
+  close("captureRelativePattern: first delta is always 0 (the base bar)", deltas[0], 0);
+  close("captureRelativePattern: second delta is the real close-price difference from the base", deltas[1], 10);
+  close("captureRelativePattern: third delta correctly goes negative (a real down move)", deltas[2], -5);
+  close("captureRelativePattern: barInterval matches the actual spacing between the first two captured bars", barInterval, 60);
+}
+
+{
+  // Reversed range (end time given before start time) must capture the
+  // identical pattern — a user can drag either direction.
+  const bars = [
+    { time: 0, close: 50 },
+    { time: 60, close: 55 },
+    { time: 120, close: 45 },
+  ];
+  const forward = captureRelativePattern(bars, 0, 120);
+  const reversed = captureRelativePattern(bars, 120, 0);
+  ok("captureRelativePattern: reversed start/end times capture the identical pattern", JSON.stringify(forward) === JSON.stringify(reversed));
+}
+
+{
+  // Degenerate inputs never throw.
+  ok("captureRelativePattern: empty bars array degrades to an empty pattern", captureRelativePattern([], 0, 100).deltas.length === 0);
+  const single = captureRelativePattern([{ time: 0, close: 42 }], 0, 100);
+  ok("captureRelativePattern: a single in-range bar produces one zero delta and no interval", single.deltas.length === 1 && single.deltas[0] === 0 && single.barInterval === 0);
+}
+
+{
+  // Sector: a real interior test — inside the radius AND between the two
+  // boundary angles, following the ACTUAL rendered pie-slice.
+  const ox = 0, oy = 0, radius = 10;
+  const startAngle = 0; // pointing along +x
+  const endAngle = Math.PI / 2; // pointing along +y (a quarter-circle sector)
+  ok("pointInSector: a point inside the radius AND between the two angles is inside", pointInSector(5, 5, ox, oy, radius, startAngle, endAngle));
+  ok("pointInSector: a point beyond the radius (even at the right angle) is outside", pointInSector(20, 20, ox, oy, radius, startAngle, endAngle) === false);
+  ok("pointInSector: a point within the radius but OUTSIDE the angular range is outside", pointInSector(-5, -5, ox, oy, radius, startAngle, endAngle) === false);
+  ok("pointInSector: the origin itself is always inside (distance 0)", pointInSector(0, 0, ox, oy, radius, startAngle, endAngle));
+}
+
+{
+  // Sector angle wraparound: boundary angles given in either order/sign
+  // must still produce a consistent, correctly-oriented sector.
+  const ox = 0, oy = 0, radius = 10;
+  // A sector from 170° to -170° (i.e. wrapping through 180°) should
+  // include a point at exactly 180°.
+  const startAngle = (170 * Math.PI) / 180;
+  const endAngle = (-170 * Math.PI) / 180;
+  const pointAt180 = { x: -8, y: 0 };
+  ok("pointInSector: handles angle wraparound across +/-180 degrees correctly", pointInSector(pointAt180.x, pointAt180.y, ox, oy, radius, startAngle, endAngle));
 }
 
 // ---- summary ----------------------------------------------------------------

@@ -587,6 +587,40 @@ for (const t of TOOL_DEFS) {
   ok("Text and Note (marker) were already complete and remain implemented:true (untouched)", TOOL_BY_ID["text"]?.implemented === true && TOOL_BY_ID["marker"]?.implemented === true);
 }
 
+// ---- Phase 3D-8: Forecasting audit + completion ----------------------------
+// Long Position and Short Position were already genuinely complete (real
+// entry/stop/target + positionMetrics risk/reward math, correctly mirrored
+// via one shared formula) and are deliberately NOT touched or re-tested
+// here. Position Forecast, Bars Pattern, Ghost Feed, and Sector were the
+// four found missing/registry-hidden.
+
+{
+  const PHASE3D8_NEW_TOOLS = ["forecast", "bars-pattern", "ghost-feed", "sector"];
+  const missing = PHASE3D8_NEW_TOOLS.filter((id) => !TOOL_BY_ID[id]?.implemented);
+  ok(`every Phase 3D-8 new tool is implemented:true (missing: ${missing.join(",") || "none"})`, missing.length === 0);
+  for (const id of PHASE3D8_NEW_TOOLS) {
+    ok(`${id} is in IMPLEMENTED_TOOLS`, IMPLEMENTED_TOOLS.some((t) => t.id === id));
+    ok(`${id} resolves to the "forecast" category`, TOOL_BY_ID[id]?.category === "forecast");
+  }
+  ok(
+    "all four Phase 3D-8 tools are four distinct tool ids",
+    new Set(PHASE3D8_NEW_TOOLS.map((id) => TOOL_BY_ID[id]?.id)).size === 4,
+  );
+
+  ok("Position Forecast is a 3-anchor multi-click tool, DISTINCT from Long/Short's 2-anchor drag risk box", TOOL_BY_ID["forecast"]?.interactionType === "multi-click" && TOOL_BY_ID["forecast"]?.anchorCount === 3);
+  ok("Position Forecast does NOT declare positionMetrics (it's a projection sketch, not a risk/reward tool)", !TOOL_BY_ID["forecast"]?.capabilities.positionMetrics);
+
+  ok("Bars Pattern is a 2-anchor drag tool (selects the source bar range)", TOOL_BY_ID["bars-pattern"]?.interactionType === "drag" && TOOL_BY_ID["bars-pattern"]?.anchorCount === 2);
+  ok("Ghost Feed is a 2-anchor drag tool", TOOL_BY_ID["ghost-feed"]?.interactionType === "drag" && TOOL_BY_ID["ghost-feed"]?.anchorCount === 2);
+  ok("Bars Pattern and Ghost Feed are distinct tool ids despite both being 2-anchor drag tools", TOOL_BY_ID["bars-pattern"]?.id !== TOOL_BY_ID["ghost-feed"]?.id);
+
+  ok("Sector is a 3-anchor multi-click tool (origin + two radial boundary points)", TOOL_BY_ID["sector"]?.interactionType === "multi-click" && TOOL_BY_ID["sector"]?.anchorCount === 3);
+  ok("Sector declares fill capability (a real filled pie-slice)", TOOL_BY_ID["sector"]?.capabilities.fill === true);
+
+  ok("Long/Short Position were already complete and remain implemented:true (untouched)", TOOL_BY_ID["long"]?.implemented === true && TOOL_BY_ID["short"]?.implemented === true);
+  ok("Long/Short Position both declare positionMetrics — the real shared risk/reward model", TOOL_BY_ID["long"]?.capabilities.positionMetrics === true && TOOL_BY_ID["short"]?.capabilities.positionMetrics === true);
+}
+
 // ---- capability-gated settings sections have a real reason to exist -------
 
 {

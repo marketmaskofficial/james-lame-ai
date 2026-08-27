@@ -575,3 +575,31 @@ export function pitchforkTeethAnchors(
 ): [{ time: number; price: number }, { time: number; price: number }] {
   return variant === "inside" ? [p0, p2] : [p1, p2];
 }
+
+// ---- Bars Pattern (Phase 3D-8) ---------------------------------------------
+
+export type CapturedPattern = { deltas: number[]; barInterval: number };
+
+/** Captures a genuine RELATIVE price pattern from the actual loaded bars
+ * within [startTime, endTime] — close-price deltas from the first bar in
+ * range, not full OHLC (keeps the persisted drawing lightweight per the
+ * phase brief's "avoid duplicating full market data unnecessarily", while
+ * still being a real captured pattern, not a generic polyline). `deltas[0]`
+ * is always 0 (the first bar IS the base). Capped at `maxPoints` so an
+ * accidentally huge drag never balloons the drawing's persisted size.
+ * StudioChart.tsx projects this forward from the tool's own p2 anchor using
+ * `barInterval` for even time-spacing — see paintBarsPattern. */
+export function captureRelativePattern(
+  bars: { time: number; close: number }[],
+  startTime: number,
+  endTime: number,
+  maxPoints = 200,
+): CapturedPattern {
+  const lo = Math.min(startTime, endTime);
+  const hi = Math.max(startTime, endTime);
+  const inRange = bars.filter((b) => b.time >= lo && b.time <= hi).slice(0, maxPoints);
+  if (inRange.length === 0) return { deltas: [], barInterval: 0 };
+  const base = inRange[0].close;
+  const barInterval = inRange.length > 1 ? inRange[1].time - inRange[0].time : 0;
+  return { deltas: inRange.map((b) => b.close - base), barInterval };
+}

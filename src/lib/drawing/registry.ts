@@ -462,9 +462,35 @@ export const TOOL_DEFS: ToolDef[] = [
   // Chart planning/measurement only — never wired to broker execution.
   { id: "long", name: "Long Position", category: "forecast", icon: TrendingUp, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true, fill: true, positionMetrics: true }, defaultStyle: LINE_DEFAULT, implemented: true },
   { id: "short", name: "Short Position", category: "forecast", icon: TrendingDown, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true, fill: true, positionMetrics: true }, defaultStyle: LINE_DEFAULT, implemented: true },
-  { id: "forecast", name: "Position Forecast", category: "forecast", icon: CandlestickChart, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: false },
-  { id: "bars-pattern", name: "Bars Pattern", category: "forecast", icon: Rows, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: false },
-  { id: "ghost-feed", name: "Ghost Feed", category: "forecast", icon: Ghost, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: false },
+  // Position Forecast (Phase 3D-8): a genuine 3-anchor projection sketch —
+  // NOT Long/Short's entry/stop/target risk box. Reuses the same 3-anchor
+  // multi-click gesture Fib Wedge/Curve/Sector below already use; its own
+  // distinct dashed-zigzag-plus-arrowhead render (see StudioChart.tsx's
+  // paintForecast) is what gives it a real, separate identity.
+  { id: "forecast", name: "Position Forecast", category: "forecast", icon: CandlestickChart, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  // Bars Pattern (Phase 3D-8): p1->p2 selects the SOURCE bar range; at
+  // creation time, calc.ts's captureRelativePattern reads the actual loaded
+  // `bars` prop and stores real relative close-price deltas (never full
+  // OHLC, never raw future market data) — the projection is then drawn
+  // forward from p2 using that captured, deterministic pattern. See
+  // StudioChart.tsx's onUp/paintBarsPattern and this phase's completion
+  // report for the one interaction-model gap (repositioning the projection
+  // to an independent third location needs a second "paste" anchor this
+  // tool doesn't have yet — a real limitation, not something faked here).
+  { id: "bars-pattern", name: "Bars Pattern", category: "forecast", icon: Rows, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  // Ghost Feed (Phase 3D-8): a deterministic, low-opacity/dashed projection
+  // of the tool's own p1->p2 trend rate extended forward — visually
+  // distinct from Path/Polyline (solid, normal opacity) and from Bars
+  // Pattern (a repeated captured zigzag) via its literal "ghost" (faded)
+  // rendering. No live/future market data — purely a function of p1/p2.
+  { id: "ghost-feed", name: "Ghost Feed", category: "forecast", icon: Ghost, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  // Sector (Phase 3D-8): genuine pie-slice geometry — p1 is the origin/
+  // pivot, p2 and points[0] are the two radial boundary endpoints, and the
+  // arc boundary is drawn with the native canvas arc primitive between
+  // their two angles (see StudioChart.tsx's paintSector). Hit-tests the
+  // ACTUAL sector interior (geometry.ts's pointInSector: inside the radius
+  // AND between the two angles), not a bounding box.
+  { id: "sector", name: "Sector", category: "forecast", icon: Compass, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, fill: true }, defaultStyle: { ...LINE_DEFAULT, fillOpacity: 0.14 }, implemented: true },
 
   // ---- Volume-Based Tools ---------------------------------------------------
   // Real loaded OHLCV only — never fabricates volume (see calc.ts anchoredVwap).
