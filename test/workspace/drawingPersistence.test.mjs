@@ -1482,8 +1482,9 @@ function d(id) {
     id: "bp1",
     tool: "bars-pattern",
     chartInstanceId: "chart-1",
-    p1: { time: 0, price: 100 },
-    p2: { time: 180, price: 105 },
+    p1: { time: 0, price: 100 }, // source range start
+    p2: { time: 180, price: 105 }, // source range end
+    points: [{ time: 500, price: 200 }], // independent destination anchor
     settings: { pattern: [0, 10, -5, 5], barInterval: 60 },
     color: "#4da3ff",
   };
@@ -1518,12 +1519,47 @@ function d(id) {
       loadedBarsPattern.settings.barInterval === 60,
   );
   ok("Bars Pattern: the source-range anchors (p1/p2) survive intact", loadedBarsPattern.p1.time === 0 && loadedBarsPattern.p2.time === 180);
+  ok(
+    "Bars Pattern: the INDEPENDENT destination anchor (points[0], the third click) survives intact and separately from the source range",
+    Array.isArray(loadedBarsPattern.points) && loadedBarsPattern.points.length === 1 && loadedBarsPattern.points[0].time === 500 && loadedBarsPattern.points[0].price === 200,
+  );
 
   const loadedSector = loaded.find((x) => x.id === "sc1");
   ok(
     "Sector: origin (p1) and both radial boundary anchors (p2, points[0]) survive intact",
     loadedSector.p1.price === 100 && loadedSector.p2.price === 150 && loadedSector.points?.[0]?.price === 50,
   );
+}
+
+{
+  // Bars Pattern destination movement must NEVER alter the already-captured
+  // source pattern — they're stored in entirely separate fields
+  // (points[0] vs settings.pattern), so "moving" the destination (as a
+  // real anchor edit would) and re-saving must leave settings.pattern
+  // byte-identical while points[0] changes.
+  fakeStorage.clear();
+  const original = {
+    id: "bp2",
+    tool: "bars-pattern",
+    chartInstanceId: "chart-1",
+    p1: { time: 0, price: 100 },
+    p2: { time: 180, price: 105 },
+    points: [{ time: 500, price: 200 }],
+    settings: { pattern: [0, 8, -3, 6], barInterval: 60 },
+  };
+  saveDrawingsFor("chart-1", "CHZUSDT", "15m", [original]);
+
+  // Simulate the generic "p3" anchor-drag edit: only points[0] changes.
+  const moved = { ...original, points: [{ time: 700, price: 260 }] };
+  saveDrawingsFor("chart-1", "CHZUSDT", "15m", [moved]);
+
+  const loaded = loadDrawingsFor("chart-1", "CHZUSDT", "15m");
+  ok("Bars Pattern destination move: the destination anchor actually changed", loaded[0].points[0].time === 700 && loaded[0].points[0].price === 260);
+  ok(
+    "Bars Pattern destination move: the captured source pattern is COMPLETELY untouched by moving the destination",
+    JSON.stringify(loaded[0].settings.pattern) === JSON.stringify(original.settings.pattern) && loaded[0].settings.barInterval === original.settings.barInterval,
+  );
+  ok("Bars Pattern destination move: the source-range anchors (p1/p2) are also untouched", loaded[0].p1.time === 0 && loaded[0].p2.time === 180);
 }
 
 // ---- Phase 3D-8: chartInstanceId isolation for the new tools --------------

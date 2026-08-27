@@ -461,6 +461,33 @@ export function directionalArrowGlyph(
 }
 
 /**
+ * Deterministic sweep-orientation fix (Phase 3D-8 closeout): Sector is
+ * defined by TWO raw radial angles (pivot -> each boundary anchor), and a
+ * naive `ctx.arc(ox, oy, radius, angleA, angleB)` sweeps whichever
+ * direction is "increasing" from angleA to angleB — which flips to the
+ * REFLEX (>180°) side of the pivot depending purely on which anchor the
+ * user happened to place first/second, even though it's logically the
+ * same sector. This picks whichever of the two possible sweep directions
+ * between the pair is <= 180°, independent of argument order — swapping
+ * angleA/angleB always returns the identical (startAngle, endAngle) pair
+ * (mod the pair's own natural degenerate case: exactly 180° apart, where
+ * either half is an equally valid "short way"). Both paintSector and its
+ * hit-test read this SAME function, so they can never disagree.
+ */
+export function normalizeSectorSweep(angleA: number, angleB: number): { startAngle: number; endAngle: number } {
+  const twoPi = Math.PI * 2;
+  const norm = (a: number) => ((a % twoPi) + twoPi) % twoPi;
+  const a = norm(angleA);
+  const b = norm(angleB);
+  let forward = b - a;
+  if (forward < 0) forward += twoPi;
+  if (forward <= Math.PI) return { startAngle: a, endAngle: a + forward };
+  let backward = a - b;
+  if (backward < 0) backward += twoPi;
+  return { startAngle: b, endAngle: b + backward };
+}
+
+/**
  * True if (px,py) lies within the pie-slice SECTOR centered at (ox,oy) —
  * inside the radius AND between the two boundary angles (Phase 3D-8's
  * Sector tool) — a real interior test following the ACTUAL rendered

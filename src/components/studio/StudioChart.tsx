@@ -21,6 +21,7 @@ import {
   cubicBezierPoints,
   directionalArrowGlyph,
   pointInSector,
+  normalizeSectorSweep,
 } from "@/lib/drawing/geometry";
 import {
   DEFAULT_FIB_LEVELS,
@@ -2702,32 +2703,45 @@ export function StudioChart({
       ctx.restore();
     };
 
-    /** Bars Pattern (Phase 3D-8): draws a faint dotted box over the
-     * captured SOURCE range (p1->p2), then projects the actual captured
-     * relative pattern (calc.ts's captureRelativePattern — real close-price
-     * deltas from the loaded bars, computed once at creation time and
-     * stored in settings, never regenerated from live data) forward from
-     * p2 using the source's own bar spacing. */
-    const paintBarsPattern = (p1: MarketPoint, p2: MarketPoint, deltas: number[], barInterval: number) => {
+    /** Bars Pattern (Phase 3D-8, closeout-upgraded to a real three-stage
+     * gesture): draws a faint dotted box over the captured SOURCE range
+     * (p1->p2), a thin connector to the independent DESTINATION anchor
+     * (points[0] — the third click, editable/movable on its own afterward
+     * via the generic "p3" anchor machinery), then projects the actual
+     * captured relative pattern (calc.ts's captureRelativePattern — real
+     * close-price deltas from the loaded bars, computed once at creation
+     * time and stored in settings, never regenerated from live data)
+     * forward from that destination using the source's own bar spacing.
+     * Moving the destination only ever changes WHERE the projection is
+     * drawn — it never touches the already-captured settings.pattern. */
+    const paintBarsPattern = (p1: MarketPoint, p2: MarketPoint, destination: MarketPoint, deltas: number[], barInterval: number) => {
       const x1 = px(p1);
       const y1 = py(p1);
       const x2 = px(p2);
       const y2 = py(p2);
+      const dx = px(destination);
+      const dy = py(destination);
       if (x1 != null && y1 != null && x2 != null && y2 != null) {
         ctx.save();
         ctx.setLineDash([2, 3]);
         ctx.globalAlpha = 0.5;
         ctx.strokeRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
+        if (dx != null && dy != null) {
+          ctx.beginPath();
+          ctx.moveTo(x2, y2);
+          ctx.lineTo(dx, dy);
+          ctx.stroke();
+        }
         ctx.restore();
       }
-      if (deltas.length < 2 || !(barInterval > 0) || x2 == null || y2 == null) return;
+      if (deltas.length < 2 || !(barInterval > 0) || dx == null || dy == null) return;
       ctx.save();
       ctx.setLineDash([4, 2]);
       ctx.beginPath();
       let started = false;
       for (let i = 0; i < deltas.length; i++) {
-        const sx = px({ time: p2.time + i * barInterval, price: p2.price + deltas[i] });
-        const sy = py({ time: p2.time + i * barInterval, price: p2.price + deltas[i] });
+        const sx = px({ time: destination.time + i * barInterval, price: destination.price + deltas[i] });
+        const sy = py({ time: destination.time + i * barInterval, price: destination.price + deltas[i] });
         if (sx == null || sy == null) continue;
         if (!started) {
           ctx.moveTo(sx, sy);
@@ -2778,12 +2792,16 @@ export function StudioChart({
       const r1 = pixelDist(ox, oy, x2, y2);
       const r2 = pixelDist(ox, oy, x3, y3);
       const radius = (r1 + r2) / 2;
-      const a1 = Math.atan2(y2 - oy, x2 - ox);
-      const a2 = Math.atan2(y3 - oy, x3 - ox);
+      const rawA1 = Math.atan2(y2 - oy, x2 - ox);
+      const rawA2 = Math.atan2(y3 - oy, x3 - ox);
+      // Deterministic sweep (Phase 3D-8 closeout): always the <=180° side
+      // between the two raw boundary angles, regardless of which anchor
+      // was placed first — see normalizeSectorSweep's own doc comment.
+      const { startAngle, endAngle } = normalizeSectorSweep(rawA1, rawA2);
       ctx.beginPath();
       ctx.moveTo(ox, oy);
-      ctx.lineTo(ox + radius * Math.cos(a1), oy + radius * Math.sin(a1));
-      ctx.arc(ox, oy, radius, a1, a2);
+      ctx.lineTo(ox + radius * Math.cos(startAngle), oy + radius * Math.sin(startAngle));
+      ctx.arc(ox, oy, radius, startAngle, endAngle);
       ctx.lineTo(ox, oy);
       ctx.closePath();
       ctx.fill();
@@ -2847,6 +2865,7 @@ export function StudioChart({
               d.tool === "curve" ||
               d.tool === "forecast" ||
               d.tool === "sector" ||
+              d.tool === "bars-pattern" ||
               PITCHFORK_TOOLS.has(d.tool))
           ) {
             const hx = px(p3);
@@ -3319,7 +3338,8 @@ export function StudioChart({
       if (d.tool === "bars-pattern") {
         const pattern = (d.settings?.pattern as number[] | undefined) ?? [];
         const barInterval = (d.settings?.barInterval as number | undefined) ?? 0;
-        paintBarsPattern(d.p1, d.p2, pattern, barInterval);
+        const destination = d.points?.[0] ?? d.p2;
+        paintBarsPattern(d.p1, d.p2, destination, pattern, barInterval);
         ctx.restore();
         continue;
       }
@@ -3901,6 +3921,7 @@ export function StudioChart({
             d.tool === "curve" ||
             d.tool === "forecast" ||
             d.tool === "sector" ||
+            d.tool === "bars-pattern" ||
             PITCHFORK_TOOLS.has(d.tool))
         ) {
           const dist = pixelDist(x3, y3, mx, my);
@@ -4262,9 +4283,10 @@ export function StudioChart({
           const r1 = pixelDist(x1, y1, x2, y2);
           const r2 = pixelDist(x1, y1, x3, y3);
           const radius = (r1 + r2) / 2;
-          const a1 = Math.atan2(y2 - y1, x2 - x1);
-          const a2 = Math.atan2(y3 - y1, x3 - x1);
-          if (pointInSector(mx, my, x1, y1, radius, a1, a2)) {
+          const rawA1 = Math.atan2(y2 - y1, x2 - x1);
+          const rawA2 = Math.atan2(y3 - y1, x3 - x1);
+          const { startAngle, endAngle } = normalizeSectorSweep(rawA1, rawA2);
+          if (pointInSector(mx, my, x1, y1, radius, startAngle, endAngle)) {
             hit = { d, anchor: "body" };
           }
         }
@@ -4810,6 +4832,38 @@ export function StudioChart({
         return;
       }
 
+      if (tool === "bars-pattern") {
+        // Same drag-then-click gesture as Parallel Channel/Rotated
+        // Rectangle above, but the FINAL click's commit is different: it
+        // captures the real relative price pattern from the actual loaded
+        // bars within the drawn source range (p1->p2) ONCE, right now, and
+        // stores `pt` as its own independent destination anchor
+        // (points[0]) — never regenerated from live data afterward (see
+        // calc.ts's captureRelativePattern / paintBarsPattern's own doc
+        // comment). One click sequence, one onAddDrawing call, one
+        // creation-history transaction.
+        const pend = pendingRef.current;
+        if (pend && pend.tool === "bars-pattern" && pend.anchors.length === 2) {
+          const { deltas, barInterval } = captureRelativePattern(stateRef.current.bars, pend.anchors[0].time, pend.anchors[1].time);
+          onAddDrawing(
+            stampNew({
+              tool: "bars-pattern",
+              p1: pend.anchors[0],
+              p2: pend.anchors[1],
+              points: [pt],
+              settings: { pattern: deltas, barInterval },
+            }),
+          );
+          pendingRef.current = null;
+          previewPointRef.current = null;
+          onSelectDrawing?.(null);
+          return;
+        }
+        canvas.setPointerCapture(e.pointerId);
+        draftRef.current = { id: "__draft__", tool: "bars-pattern", p1: pt, p2: pt };
+        return;
+      }
+
       if (tool === "fib-ext" || tool === "fib-wedge" || tool === "fib-time-trend" || tool === "pitchfan" || tool === "curve" || tool === "forecast" || tool === "sector" || PITCHFORK_TOOLS.has(tool)) {
         // Trend-Based Fib Extension (A->B->C), Fib Wedge (pivot->B->C),
         // Trend-Based Fib Time (A->B->C, Phase 3C-3), and Pitchfan
@@ -5074,7 +5128,7 @@ export function StudioChart({
       const dl = Math.abs(timeToLogicalExtrapolated(bars, draft.p2.time) - timeToLogicalExtrapolated(bars, draft.p1.time));
       const negligible = dl < 0.5 && draft.p1.price === draft.p2.price;
 
-      if (draft.tool === "channel" || draft.tool === "fib-channel" || draft.tool === "flat-channel" || draft.tool === "rotated-rect") {
+      if (draft.tool === "channel" || draft.tool === "fib-channel" || draft.tool === "flat-channel" || draft.tool === "rotated-rect" || draft.tool === "bars-pattern") {
         if (negligible) return;
         pendingRef.current = { tool: draft.tool, anchors: [draft.p1, draft.p2] };
         return;
@@ -5090,15 +5144,6 @@ export function StudioChart({
         const entry = draft.p1.price;
         const target = draft.p2.price;
         onAddDrawing(stampNew({ ...draft, stop: entry - (target - entry) * 0.5 }));
-        return;
-      }
-      if (draft.tool === "bars-pattern") {
-        // Captures the REAL relative price pattern from the actual loaded
-        // bars within the drawn source range, once, right now — never
-        // regenerated from live data afterward (see calc.ts's
-        // captureRelativePattern and paintBarsPattern's own doc comment).
-        const { deltas, barInterval } = captureRelativePattern(bars, draft.p1.time, draft.p2.time);
-        onAddDrawing(stampNew({ ...draft, settings: { pattern: deltas, barInterval } }));
         return;
       }
       onAddDrawing(stampNew(draft));

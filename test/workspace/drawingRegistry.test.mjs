@@ -610,9 +610,13 @@ for (const t of TOOL_DEFS) {
   ok("Position Forecast is a 3-anchor multi-click tool, DISTINCT from Long/Short's 2-anchor drag risk box", TOOL_BY_ID["forecast"]?.interactionType === "multi-click" && TOOL_BY_ID["forecast"]?.anchorCount === 3);
   ok("Position Forecast does NOT declare positionMetrics (it's a projection sketch, not a risk/reward tool)", !TOOL_BY_ID["forecast"]?.capabilities.positionMetrics);
 
-  ok("Bars Pattern is a 2-anchor drag tool (selects the source bar range)", TOOL_BY_ID["bars-pattern"]?.interactionType === "drag" && TOOL_BY_ID["bars-pattern"]?.anchorCount === 2);
+  // Bars Pattern (Phase 3D-8 closeout): upgraded from a 2-anchor drag to a
+  // genuine 3-stage multi-click gesture — drag the source range (p1/p2),
+  // then one more independent click for the destination anchor
+  // (points[0]).
+  ok("Bars Pattern is a 3-anchor multi-click tool (source range + independent destination)", TOOL_BY_ID["bars-pattern"]?.interactionType === "multi-click" && TOOL_BY_ID["bars-pattern"]?.anchorCount === 3);
   ok("Ghost Feed is a 2-anchor drag tool", TOOL_BY_ID["ghost-feed"]?.interactionType === "drag" && TOOL_BY_ID["ghost-feed"]?.anchorCount === 2);
-  ok("Bars Pattern and Ghost Feed are distinct tool ids despite both being 2-anchor drag tools", TOOL_BY_ID["bars-pattern"]?.id !== TOOL_BY_ID["ghost-feed"]?.id);
+  ok("Bars Pattern and Ghost Feed are distinct tool ids despite Ghost Feed also being a simple 2-anchor projection", TOOL_BY_ID["bars-pattern"]?.id !== TOOL_BY_ID["ghost-feed"]?.id);
 
   ok("Sector is a 3-anchor multi-click tool (origin + two radial boundary points)", TOOL_BY_ID["sector"]?.interactionType === "multi-click" && TOOL_BY_ID["sector"]?.anchorCount === 3);
   ok("Sector declares fill capability (a real filled pie-slice)", TOOL_BY_ID["sector"]?.capabilities.fill === true);

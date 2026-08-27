@@ -471,13 +471,16 @@ export const TOOL_DEFS: ToolDef[] = [
   // Bars Pattern (Phase 3D-8): p1->p2 selects the SOURCE bar range; at
   // creation time, calc.ts's captureRelativePattern reads the actual loaded
   // `bars` prop and stores real relative close-price deltas (never full
-  // OHLC, never raw future market data) — the projection is then drawn
-  // forward from p2 using that captured, deterministic pattern. See
-  // StudioChart.tsx's onUp/paintBarsPattern and this phase's completion
-  // report for the one interaction-model gap (repositioning the projection
-  // to an independent third location needs a second "paste" anchor this
-  // tool doesn't have yet — a real limitation, not something faked here).
-  { id: "bars-pattern", name: "Bars Pattern", category: "forecast", icon: Rows, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  // OHLC, never raw future market data). Phase 3D-8 closeout: a genuine
+  // TradingView-style THREE-stage gesture — drag p1->p2 to select/capture
+  // the source range (same drag-then-click primitive Parallel Channel/Flat
+  // Top-Bottom/Rotated Rectangle already use), then one more independent
+  // click places points[0] as the destination anchor the captured pattern
+  // projects from. The destination is its own ordinary, independently
+  // editable/movable anchor afterward (the existing generic "p3" anchor
+  // machinery) — moving it never touches the already-captured
+  // settings.pattern. See StudioChart.tsx's onDown/onUp/paintBarsPattern.
+  { id: "bars-pattern", name: "Bars Pattern", category: "forecast", icon: Rows, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
   // Ghost Feed (Phase 3D-8): a deterministic, low-opacity/dashed projection
   // of the tool's own p1->p2 trend rate extended forward — visually
   // distinct from Path/Polyline (solid, normal opacity) and from Bars

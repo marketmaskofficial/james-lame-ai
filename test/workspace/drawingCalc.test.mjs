@@ -47,6 +47,7 @@ import {
   cubicBezierPoints,
   directionalArrowGlyph,
   pointInSector,
+  normalizeSectorSweep,
 } from "../../src/lib/drawing/geometry.ts";
 
 let pass = 0;
@@ -905,6 +906,58 @@ function bar(time, open, high, low, close, volume) {
   const endAngle = (-170 * Math.PI) / 180;
   const pointAt180 = { x: -8, y: 0 };
   ok("pointInSector: handles angle wraparound across +/-180 degrees correctly", pointInSector(pointAt180.x, pointAt180.y, ox, oy, radius, startAngle, endAngle));
+}
+
+// ---- Phase 3D-8 closeout: Sector deterministic sweep ----------------------
+
+{
+  // The core fix: swapping which anchor is "first" (angleA vs angleB) must
+  // produce the IDENTICAL rendered sector — not flip to the reflex
+  // (>180°) side. 30° and 100° are 70° apart the short way.
+  const a = (30 * Math.PI) / 180;
+  const b = (100 * Math.PI) / 180;
+  const forward = normalizeSectorSweep(a, b);
+  const reversed = normalizeSectorSweep(b, a);
+  const close9 = (x, y) => Math.abs(x - y) < 1e-9;
+  ok(
+    "normalizeSectorSweep: reversing the two input angles produces the IDENTICAL (startAngle, endAngle) pair",
+    close9(forward.startAngle, reversed.startAngle) && close9(forward.endAngle, reversed.endAngle),
+  );
+  const sweep = forward.endAngle - forward.startAngle;
+  ok("normalizeSectorSweep: the chosen sweep is the SHORT way around (<=180°), not the 290° reflex side", sweep <= Math.PI + 1e-9);
+  close("normalizeSectorSweep: the short-way sweep between 30° and 100° is exactly 70°", sweep, (70 * Math.PI) / 180, 1e-9);
+}
+
+{
+  // A pair that wraps across 0°/360° (e.g. 350° and 20°, 30° apart the
+  // short way through 0°) must still resolve consistently either order.
+  const a = (350 * Math.PI) / 180;
+  const b = (20 * Math.PI) / 180;
+  const forward = normalizeSectorSweep(a, b);
+  const reversed = normalizeSectorSweep(b, a);
+  const close9 = (x, y) => Math.abs(x - y) < 1e-9;
+  ok(
+    "normalizeSectorSweep: wraparound pair (350°/20°) is also order-independent",
+    close9(forward.startAngle, reversed.startAngle) && close9(forward.endAngle, reversed.endAngle),
+  );
+  const sweep = forward.endAngle - forward.startAngle;
+  close("normalizeSectorSweep: the short way across the 0° wraparound is exactly 30°", sweep, (30 * Math.PI) / 180, 1e-9);
+}
+
+{
+  // Sanity: the normalized (startAngle, endAngle) pair still feeds
+  // pointInSector correctly — a point squarely inside the short-way wedge
+  // is inside regardless of input order, and the reflex-side point is not.
+  const ox = 0, oy = 0, radius = 10;
+  const a = 0;
+  const b = Math.PI / 2; // 90°
+  const insideShortWedge = { x: 7, y: 7 }; // ~45°, inside the 0-90 wedge
+  const insideReflexSide = { x: -7, y: -7 }; // ~225°, the OTHER (reflex) side
+  for (const [angleA, angleB] of [[a, b], [b, a]]) {
+    const { startAngle, endAngle } = normalizeSectorSweep(angleA, angleB);
+    ok(`pointInSector + normalizeSectorSweep(${angleA === a ? "a,b" : "b,a"}): the short-way wedge point is inside`, pointInSector(insideShortWedge.x, insideShortWedge.y, ox, oy, radius, startAngle, endAngle));
+    ok(`pointInSector + normalizeSectorSweep(${angleA === a ? "a,b" : "b,a"}): the reflex-side point stays outside`, !pointInSector(insideReflexSide.x, insideReflexSide.y, ox, oy, radius, startAngle, endAngle));
+  }
 }
 
 // ---- summary ----------------------------------------------------------------
