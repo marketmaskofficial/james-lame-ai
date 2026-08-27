@@ -8,7 +8,7 @@
  * selection `anchoredVwap` already does).
  */
 
-import type { Bar } from "./geometry";
+import { type Bar, timeToLogicalExtrapolated } from "./geometry";
 
 // ---- Fibonacci ---------------------------------------------------------
 
@@ -602,4 +602,65 @@ export function captureRelativePattern(
   const base = inRange[0].close;
   const barInterval = inRange.length > 1 ? inRange[1].time - inRange[0].time : 0;
   return { deltas: inRange.map((b) => b.close - base), barInterval };
+}
+
+// ---- Measurers: Price Range / Date Range / Date + Price Range (Phase 3D-10)
+//
+// Both Price Range and Date Range's own math were already inlined directly
+// in StudioChart.tsx's render loop (correct, but neither testable in
+// isolation nor reusable) — extracted here as pure functions so Date +
+// Price Range can call the SAME two, rather than a third copy of either
+// calculation.
+
+export type PriceRangeResult = {
+  startPrice: number;
+  endPrice: number;
+  /** Signed: positive for a price INCREASE from start to end. */
+  diff: number;
+  /** Signed percent, e.g. 12.34 for +12.34%. 0 when startPrice is 0 (never divides by zero). */
+  pct: number;
+  direction: 1 | -1 | 0;
+  /** Whole ticks the move represents, or null when no reliable tickSize was
+   * given — NEVER a fabricated default; the caller decides what "no tick
+   * data" should display. */
+  ticks: number | null;
+};
+
+/** Price Range's actual math: p1/p2 are taken exactly as drawn (never
+ * normalized/reordered) — dragging from a high down to a low vs. a low up
+ * to a high are DIFFERENT, meaningful measurements (the sign of `diff`/
+ * `direction` is the whole point), unlike Date Range's time span below. */
+export function computePriceRange(startPrice: number, endPrice: number, tickSize?: number): PriceRangeResult {
+  const diff = endPrice - startPrice;
+  const pct = startPrice !== 0 ? (diff / startPrice) * 100 : 0;
+  const direction: 1 | -1 | 0 = diff > 0 ? 1 : diff < 0 ? -1 : 0;
+  const ticks = tickSize != null && tickSize > 0 ? Math.round(Math.abs(diff) / tickSize) : null;
+  return { startPrice, endPrice, diff, pct, direction, ticks };
+}
+
+export type DateRangeResult = {
+  /** Always the EARLIER of the two anchor times — a duration/date range
+   * doesn't have a meaningful "sign" the way a price move does, so
+   * (unlike computePriceRange) these ARE normalized regardless of which
+   * anchor the user dragged first. */
+  startTime: number;
+  endTime: number;
+  /** Always >= 0. */
+  elapsedSeconds: number;
+  /** Bar-index distance via the SAME gap-aware logical-index math
+   * (timeToLogicalExtrapolated) every other pan/zoom-correct drawing tool
+   * in this codebase already uses — correctly reflects missing sessions/
+   * weekends/holidays rather than assuming uniform calendar spacing, and
+   * still returns a sensible value for anchors placed beyond the loaded
+   * history (extrapolated from the average bar interval). Null only when
+   * no bars are loaded at all yet. */
+  barCount: number | null;
+};
+
+export function computeDateRange(bars: Bar[], time1: number, time2: number): DateRangeResult {
+  const startTime = Math.min(time1, time2);
+  const endTime = Math.max(time1, time2);
+  const elapsedSeconds = endTime - startTime;
+  const barCount = bars.length > 0 ? Math.round(Math.abs(timeToLogicalExtrapolated(bars, endTime) - timeToLogicalExtrapolated(bars, startTime))) : null;
+  return { startTime, endTime, elapsedSeconds, barCount };
 }

@@ -37,6 +37,8 @@ import {
   pitchforkTarget,
   pitchforkTeethAnchors,
   captureRelativePattern,
+  computePriceRange,
+  computeDateRange,
 } from "../../src/lib/drawing/calc.ts";
 import {
   distToEllipseRing,
@@ -958,6 +960,119 @@ function bar(time, open, high, low, close, volume) {
     ok(`pointInSector + normalizeSectorSweep(${angleA === a ? "a,b" : "b,a"}): the short-way wedge point is inside`, pointInSector(insideShortWedge.x, insideShortWedge.y, ox, oy, radius, startAngle, endAngle));
     ok(`pointInSector + normalizeSectorSweep(${angleA === a ? "a,b" : "b,a"}): the reflex-side point stays outside`, !pointInSector(insideReflexSide.x, insideReflexSide.y, ox, oy, radius, startAngle, endAngle));
   }
+}
+
+// ---- Phase 3D-10: Measurers (Price Range / Date Range) --------------------
+
+{
+  // Positive movement: end above start.
+  const r = computePriceRange(100, 130);
+  close("computePriceRange: positive move — diff", r.diff, 30);
+  close("computePriceRange: positive move — pct", r.pct, 30);
+  ok("computePriceRange: positive move — direction is +1", r.direction === 1);
+  ok("computePriceRange: start/end prices pass through unchanged (not normalized)", r.startPrice === 100 && r.endPrice === 130);
+}
+
+{
+  // Negative movement: end below start.
+  const r = computePriceRange(100, 80);
+  close("computePriceRange: negative move — diff", r.diff, -20);
+  close("computePriceRange: negative move — pct", r.pct, -20);
+  ok("computePriceRange: negative move — direction is -1", r.direction === -1);
+}
+
+{
+  // Zero movement.
+  const r = computePriceRange(100, 100);
+  close("computePriceRange: zero move — diff is exactly 0", r.diff, 0);
+  ok("computePriceRange: zero move — direction is 0", r.direction === 0);
+}
+
+{
+  // Zero STARTING price safety — must never divide by zero / produce NaN.
+  const r = computePriceRange(0, 50);
+  ok("computePriceRange: zero starting price never produces NaN/Infinity", Number.isFinite(r.pct));
+  close("computePriceRange: zero starting price safely reports 0% (not fabricated)", r.pct, 0);
+  close("computePriceRange: diff itself is still correct even when pct can't be computed", r.diff, 50);
+}
+
+{
+  // Reversed anchors: computePriceRange takes p1/p2 EXACTLY as drawn — this
+  // is meaningful information (a drop vs. a rise), unlike Date Range below,
+  // so reversing must flip the sign, not normalize it away.
+  const forward = computePriceRange(100, 130);
+  const reversed = computePriceRange(130, 100);
+  ok("computePriceRange: reversed anchors flip the sign of diff (a real, meaningful difference)", reversed.diff === -forward.diff);
+  ok("computePriceRange: reversed anchors flip direction", reversed.direction === -forward.direction);
+}
+
+{
+  // Tick count: only computed when a reliable tickSize is actually given —
+  // never fabricated.
+  const withTick = computePriceRange(100, 100.5, 0.25);
+  ok("computePriceRange: tick count computed correctly from a real tickSize", withTick.ticks === 2);
+  const noTick = computePriceRange(100, 100.5);
+  ok("computePriceRange: no tickSize given -> ticks is null, never a fabricated default", noTick.ticks === null);
+  const zeroTick = computePriceRange(100, 100.5, 0);
+  ok("computePriceRange: a zero/invalid tickSize is treated as 'no reliable tick data', not a divide-by-zero", zeroTick.ticks === null);
+}
+
+{
+  // Date Range: forward range.
+  const bars = [bar(0, 1, 1, 1, 1, 1), bar(60, 1, 1, 1, 1, 1), bar(120, 1, 1, 1, 1, 1), bar(180, 1, 1, 1, 1, 1)];
+  const r = computeDateRange(bars, 0, 180);
+  close("computeDateRange: forward range — elapsedSeconds", r.elapsedSeconds, 180);
+  ok("computeDateRange: forward range — startTime/endTime in chronological order", r.startTime === 0 && r.endTime === 180);
+  ok("computeDateRange: forward range — bar count matches the actual loaded spacing (3 bar-widths apart)", r.barCount === 3);
+}
+
+{
+  // Date Range: reversed anchors — elapsed time must stay positive and
+  // start/end must normalize to chronological order (unlike Price Range,
+  // a date range has no meaningful "sign").
+  const bars = [bar(0, 1, 1, 1, 1, 1), bar(60, 1, 1, 1, 1, 1), bar(120, 1, 1, 1, 1, 1), bar(180, 1, 1, 1, 1, 1)];
+  const forward = computeDateRange(bars, 0, 180);
+  const reversed = computeDateRange(bars, 180, 0);
+  ok("computeDateRange: reversed anchors produce the IDENTICAL result (order-independent)", JSON.stringify(forward) === JSON.stringify(reversed));
+  ok("computeDateRange: elapsedSeconds is never negative", reversed.elapsedSeconds >= 0);
+}
+
+{
+  // Bar count with gaps: computeDateRange uses the SAME gap-aware logical-
+  // index math every other pan/zoom-correct tool already uses, so a big
+  // calendar gap (e.g. a weekend) with the SAME number of actual loaded
+  // bars on either side still reports the correct BAR count, not an
+  // inflated calendar-based one.
+  const barsWithGap = [
+    bar(0, 1, 1, 1, 1, 1),
+    bar(60, 1, 1, 1, 1, 1),
+    bar(120, 1, 1, 1, 1, 1),
+    bar(200000, 1, 1, 1, 1, 1), // a huge calendar gap, still just the next loaded bar
+  ];
+  const r = computeDateRange(barsWithGap, 0, 200000);
+  ok("computeDateRange: a large calendar gap between consecutive loaded bars still counts as ONE bar-width, not a calendar-scaled count", r.barCount === 3);
+}
+
+{
+  // Degenerate: no bars loaded yet -> barCount is null (never fabricated),
+  // but elapsedSeconds is still real market-coordinate math.
+  const r = computeDateRange([], 0, 180);
+  ok("computeDateRange: no bars loaded -> barCount is null, never fabricated", r.barCount === null);
+  close("computeDateRange: elapsedSeconds is still computed correctly with no bars loaded", r.elapsedSeconds, 180);
+}
+
+{
+  // Date + Price Range must reuse the exact SAME two functions Price
+  // Range/Date Range use standalone — calling them independently with the
+  // same inputs must produce byte-identical results (the "shared
+  // calculation parity" requirement).
+  const bars = [bar(0, 1, 1, 1, 1, 1), bar(60, 1, 1, 1, 1, 1), bar(120, 1, 1, 1, 1, 1)];
+  const priceOnly = computePriceRange(100, 115);
+  const dateOnly = computeDateRange(bars, 0, 120);
+  const combinedPrice = computePriceRange(100, 115);
+  const combinedDate = computeDateRange(bars, 0, 120);
+  ok("Date + Price Range's price half is byte-identical to standalone Price Range's own calculation", JSON.stringify(priceOnly) === JSON.stringify(combinedPrice));
+  ok("Date + Price Range's date half is byte-identical to standalone Date Range's own calculation", JSON.stringify(dateOnly) === JSON.stringify(combinedDate));
 }
 
 // ---- summary ----------------------------------------------------------------

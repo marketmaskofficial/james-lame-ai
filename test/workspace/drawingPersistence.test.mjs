@@ -1638,6 +1638,90 @@ function d(id) {
   ok("chart B only sees its own anchor, not chart A's", b.length === 1 && b[0].p1.time === 200);
 }
 
+// ---- Phase 3D-10: Measurers round trip + isolation ------------------------
+// Price Range, Date Range, and Date + Price Range ("measure") are all plain
+// p1/p2 tools — canonical state is only ever the two raw anchors (+ optional
+// stroke settings). The regression this guards against: none of the DERIVED
+// display values (start/end price, diff, pct, elapsed time, bar count) may
+// ever be persisted as stale strings/numbers — StudioChart.tsx recomputes
+// them fresh from p1/p2/bars/instrument via computePriceRange/computeDateRange
+// on every render (calc.ts), so a reload always reflects current data.
+
+{
+  fakeStorage.clear();
+
+  const priceRange = {
+    id: "pr1",
+    tool: "price-range",
+    chartInstanceId: "chart-1",
+    p1: { time: 100, price: 50 },
+    p2: { time: 200, price: 65 },
+    color: "#22c55e",
+    settings: { style: "dashed" },
+  };
+
+  const dateRange = {
+    id: "dr1",
+    tool: "date-range",
+    chartInstanceId: "chart-1",
+    p1: { time: 500, price: 10 },
+    p2: { time: 800, price: 10 },
+    color: "#4da3ff",
+  };
+
+  const measure = {
+    id: "me1",
+    tool: "measure",
+    chartInstanceId: "chart-1",
+    p1: { time: 1000, price: 20 },
+    p2: { time: 1300, price: 15 },
+    color: "#a855f7",
+  };
+
+  saveDrawingsFor("chart-1", "BTCUSDT", "15m", [priceRange, dateRange, measure]);
+  const loaded = loadDrawingsFor("chart-1", "BTCUSDT", "15m");
+
+  ok("Phase 3D-10 round trip: all three Measurer drawings come back", loaded.length === 3);
+
+  const loadedPriceRange = loaded.find((x) => x.id === "pr1");
+  ok("Price Range: p1/p2 (the only canonical state) survive intact", loadedPriceRange.p1.price === 50 && loadedPriceRange.p2.price === 65);
+  ok("Price Range: stroke style setting survives intact", loadedPriceRange.settings.style === "dashed");
+  ok(
+    "Price Range: no derived diff/pct/direction/ticks were persisted — always recomputed fresh",
+    loadedPriceRange.diff === undefined && loadedPriceRange.pct === undefined && loadedPriceRange.ticks === undefined,
+  );
+
+  const loadedDateRange = loaded.find((x) => x.id === "dr1");
+  ok("Date Range: p1/p2 timestamps survive intact", loadedDateRange.p1.time === 500 && loadedDateRange.p2.time === 800);
+  ok(
+    "Date Range: no derived elapsedSeconds/barCount were persisted — always recomputed fresh",
+    loadedDateRange.elapsedSeconds === undefined && loadedDateRange.barCount === undefined,
+  );
+
+  const loadedMeasure = loaded.find((x) => x.id === "me1");
+  ok("Date + Price Range: p1/p2 survive intact", loadedMeasure.p1.time === 1000 && loadedMeasure.p2.time === 1300 && loadedMeasure.p2.price === 15);
+}
+
+// ---- Phase 3D-10: chartInstanceId isolation for the three Measurer tools --
+
+{
+  fakeStorage.clear();
+  const chartAPriceRange = { id: "a-pr", tool: "price-range", chartInstanceId: "chart-A", p1: { time: 0, price: 10 }, p2: { time: 100, price: 20 } };
+  const chartBDateRange = { id: "b-dr", tool: "date-range", chartInstanceId: "chart-B", p1: { time: 0, price: 1 }, p2: { time: 500, price: 1 } };
+  const chartAMeasure = { id: "a-me", tool: "measure", chartInstanceId: "chart-A", p1: { time: 0, price: 5 }, p2: { time: 200, price: 8 } };
+
+  saveDrawingsFor("chart-A", "DOGEUSDT", "5m", [chartAPriceRange, chartAMeasure]);
+  saveDrawingsFor("chart-B", "DOGEUSDT", "5m", [chartBDateRange]);
+
+  const a = loadDrawingsFor("chart-A", "DOGEUSDT", "5m");
+  const b = loadDrawingsFor("chart-B", "DOGEUSDT", "5m");
+  ok(
+    "Price Range/Date + Price Range respect chartInstanceId isolation: chart A only sees its own two Measurers",
+    a.length === 2 && a.some((x) => x.tool === "price-range") && a.some((x) => x.tool === "measure"),
+  );
+  ok("chart B only sees its own Date Range, not chart A's Measurers", b.length === 1 && b[0].tool === "date-range" && b[0].p2.time === 500);
+}
+
 // ---- summary ----------------------------------------------------------------
 
 console.log(`\n${pass}/${pass + fail} passed`);

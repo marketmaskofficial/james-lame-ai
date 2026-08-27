@@ -46,6 +46,8 @@ import {
   pitchforkTarget,
   pitchforkTeethAnchors,
   captureRelativePattern,
+  computePriceRange,
+  computeDateRange,
   type PitchforkVariant,
   type FibLevel,
 } from "@/lib/drawing/calc";
@@ -3457,16 +3459,21 @@ export function StudioChart({
           ctx.lineTo(ex, ey);
           ctx.stroke();
           if (d.tool === "measure" || d.tool === "price-range" || d.tool === "date-range") {
-            const diff = d.p2.price - d.p1.price;
-            const pct = d.p1.price !== 0 ? (diff / d.p1.price) * 100 : 0;
-            const barsSpan = Math.round(toLogicalD(d.p2.time) - toLogicalD(d.p1.time));
+            // Both measurements are now the SAME shared pure calc.ts
+            // functions Date + Price Range also calls below — never a
+            // third inline copy of either calculation.
+            const inst = stateRef.current.instrument;
+            const tick = inst?.tickSize && inst.tickSize > 0 ? inst.tickSize : undefined;
+            const priceRange = computePriceRange(d.p1.price, d.p2.price, tick);
+            const dateRange = computeDateRange(stateRef.current.bars, d.p1.time, d.p2.time);
+            const barsText = dateRange.barCount != null ? `${dateRange.barCount} bars` : null;
             const label =
               d.tool === "price-range"
-                ? `${fmt(diff)} (${pct.toFixed(2)}%)`
+                ? `${fmt(priceRange.startPrice)} → ${fmt(priceRange.endPrice)}  ${fmt(priceRange.diff)} (${priceRange.pct.toFixed(2)}%)${priceRange.ticks != null ? ` · ${priceRange.ticks} ticks` : ""}`
                 : d.tool === "date-range"
-                  ? `${Math.abs(barsSpan)} bars · ${fmtDuration(Math.abs(d.p2.time - d.p1.time))}`
-                  : `${fmt(diff)} (${pct.toFixed(2)}%) · ${Math.abs(barsSpan)} bars`;
-            ctx.fillStyle = diff >= 0 ? "#22c55e" : "#ef4444";
+                  ? `${barsText ?? ""}${barsText ? " · " : ""}${fmtDuration(dateRange.elapsedSeconds)}`
+                  : `${fmt(priceRange.diff)} (${priceRange.pct.toFixed(2)}%) · ${barsText ?? "? bars"} · ${fmtDuration(dateRange.elapsedSeconds)}`;
+            ctx.fillStyle = priceRange.diff >= 0 ? "#22c55e" : "#ef4444";
             ctx.fillText(label, x2 + 6, y2 - 6);
           }
           if (d.tool === "info-line" || d.tool === "trend-angle") {

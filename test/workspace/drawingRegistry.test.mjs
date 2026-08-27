@@ -625,6 +625,30 @@ for (const t of TOOL_DEFS) {
   ok("Long/Short Position both declare positionMetrics — the real shared risk/reward model", TOOL_BY_ID["long"]?.capabilities.positionMetrics === true && TOOL_BY_ID["short"]?.capabilities.positionMetrics === true);
 }
 
+// ---- Phase 3D-10: Measurers audit -------------------------------------------
+// Price Range, Date Range, and Date + Price Range ("measure") were already
+// genuinely implemented (Phase 1) and are confirmed here as still correctly
+// registered; the render-label math was upgraded to shared calc.ts
+// functions (computePriceRange/computeDateRange, tested in
+// drawingCalc.test.mjs) but the registry entries themselves needed no
+// changes. "ruler" stays out of scope/deferred per its own note (identical
+// measurement to Date + Price Range, no distinct geometry to add).
+
+{
+  const MEASURER_TOOLS = ["price-range", "date-range", "measure"];
+  for (const id of MEASURER_TOOLS) {
+    ok(`${id} is implemented:true`, TOOL_BY_ID[id]?.implemented === true);
+    ok(`${id} is in IMPLEMENTED_TOOLS`, IMPLEMENTED_TOOLS.some((t) => t.id === id));
+    ok(`${id} resolves to the "measure" category`, TOOL_BY_ID[id]?.category === "measure");
+    ok(`${id} is a 2-anchor drag tool`, TOOL_BY_ID[id]?.interactionType === "drag" && TOOL_BY_ID[id]?.anchorCount === 2);
+  }
+  ok(
+    "Price Range/Date Range/Date+Price Range are three distinct tool ids",
+    new Set(MEASURER_TOOLS.map((id) => TOOL_BY_ID[id]?.id)).size === 3,
+  );
+  ok("ruler stays deferred (identical measurement to Date + Price Range, correctly not duplicated)", TOOL_BY_ID["ruler"]?.implemented === false);
+}
+
 // ---- capability-gated settings sections have a real reason to exist -------
 
 {
