@@ -13,7 +13,30 @@ import {
   AlignLeft,
   AlignCenter,
   AlignRight,
+  Star,
+  Heart,
+  Check,
+  Zap,
+  TriangleAlert,
+  ThumbsUp,
+  Bell,
 } from "lucide-react";
+
+/** Content Icon's curated catalog (Phase 3D-13) — the same small, real
+ * lucide-react icon set StudioChart.tsx's ICON_GLYPH_PATHS draws on canvas,
+ * rendered here as the genuine React components since this popover is a
+ * normal DOM context. Kept in exactly one place logically (this list's keys
+ * must match ICON_GLYPH_PATHS' keys 1:1) rather than duplicating geometry. */
+const CONTENT_ICON_CHOICES: { key: string; Icon: typeof Star }[] = [
+  { key: "star", Icon: Star },
+  { key: "heart", Icon: Heart },
+  { key: "check", Icon: Check },
+  { key: "x", Icon: X },
+  { key: "zap", Icon: Zap },
+  { key: "triangle-alert", Icon: TriangleAlert },
+  { key: "thumbs-up", Icon: ThumbsUp },
+  { key: "bell", Icon: Bell },
+];
 import type { Drawing, DrawStyle } from "./StudioChart";
 import { defaultFibLevelsForTool, addFibLevel, removeFibLevel, type FibLevel } from "@/lib/drawing/calc";
 import { TOOL_BY_ID } from "@/lib/drawing/registry";
@@ -366,6 +389,29 @@ export function DrawingSettingsPopover({
                     className="h-6 w-10 rounded border border-border bg-card p-0"
                   />
                 </label>
+              </div>
+            </div>
+          )}
+
+          {caps.iconPicker && (
+            <div className="mt-3 space-y-2">
+              <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Icon</p>
+              <div className="flex flex-wrap gap-1.5">
+                {CONTENT_ICON_CHOICES.map(({ key, Icon }) => {
+                  const active = ((drawing.settings?.icon as string | undefined) ?? "star") === key;
+                  return (
+                    <button
+                      key={key}
+                      title={key}
+                      onClick={() => setSetting("icon", key)}
+                      className={`flex h-7 w-7 items-center justify-center rounded border ${
+                        active ? "border-brand bg-brand/10 text-brand" : "border-border text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      <Icon className="h-4 w-4" />
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}

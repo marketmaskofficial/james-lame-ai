@@ -1722,6 +1722,98 @@ function d(id) {
   ok("chart B only sees its own Date Range, not chart A's Measurers", b.length === 1 && b[0].tool === "date-range" && b[0].p2.time === 500);
 }
 
+// ---- Phase 3D-13: Ruler round trip + isolation -----------------------------
+// Ruler graduated to implemented:true as a deliberate duplicate of
+// Date + Price Range (same p1/p2 shape, same shared render code) — its
+// persistence shape is identical: canonical p1/p2 only, no derived values.
+
+{
+  fakeStorage.clear();
+  const ruler = {
+    id: "rl1",
+    tool: "ruler",
+    chartInstanceId: "chart-1",
+    p1: { time: 0, price: 30 },
+    p2: { time: 400, price: 45 },
+    color: "#e6b800",
+  };
+  saveDrawingsFor("chart-1", "SOLUSDT", "5m", [ruler]);
+  const loaded = loadDrawingsFor("chart-1", "SOLUSDT", "5m");
+
+  ok("Ruler round trip: the drawing comes back", loaded.length === 1);
+  ok("Ruler: p1/p2 survive intact", loaded[0].p1.price === 30 && loaded[0].p2.time === 400);
+  ok("Ruler: no derived diff/pct/elapsedSeconds/barCount were persisted — always recomputed fresh", loaded[0].diff === undefined && loaded[0].elapsedSeconds === undefined);
+}
+
+{
+  fakeStorage.clear();
+  const chartARuler = { id: "a-rl", tool: "ruler", chartInstanceId: "chart-A", p1: { time: 0, price: 1 }, p2: { time: 100, price: 2 } };
+  const chartBRuler = { id: "b-rl", tool: "ruler", chartInstanceId: "chart-B", p1: { time: 0, price: 5 }, p2: { time: 300, price: 9 } };
+
+  saveDrawingsFor("chart-A", "AVAXUSDT", "15m", [chartARuler]);
+  saveDrawingsFor("chart-B", "AVAXUSDT", "15m", [chartBRuler]);
+
+  const a = loadDrawingsFor("chart-A", "AVAXUSDT", "15m");
+  const b = loadDrawingsFor("chart-B", "AVAXUSDT", "15m");
+  ok("Ruler respects chartInstanceId isolation: chart A only sees its own ruler", a.length === 1 && a[0].p2.price === 2);
+  ok("chart B only sees its own ruler, not chart A's", b.length === 1 && b[0].p2.price === 9);
+}
+
+// ---- Phase 3D-13: Content Icon / Emoji round trip + isolation --------------
+// Both persist only a tiny string alongside p1/p2 (an icon-catalog KEY for
+// Content Icon, the literal unicode character(s) for Emoji) — never large
+// binary/base64 data, unlike the still-deferred Image tool.
+
+{
+  fakeStorage.clear();
+  const contentIcon = {
+    id: "ci1",
+    tool: "content-icon",
+    chartInstanceId: "chart-1",
+    p1: { time: 100, price: 50 },
+    p2: { time: 100, price: 50 },
+    color: "#e6b800",
+    text: "Breakout",
+    settings: { icon: "zap", fontSize: "large" },
+  };
+  const emoji = {
+    id: "em1",
+    tool: "emoji",
+    chartInstanceId: "chart-1",
+    p1: { time: 200, price: 60 },
+    p2: { time: 200, price: 60 },
+    text: "🚀",
+    settings: { fontSize: "normal" },
+  };
+  saveDrawingsFor("chart-1", "ETHUSDT", "1h", [contentIcon, emoji]);
+  const loaded = loadDrawingsFor("chart-1", "ETHUSDT", "1h");
+
+  ok("Phase 3D-13 round trip: both Content Icon and Emoji come back", loaded.length === 2);
+
+  const loadedIcon = loaded.find((x) => x.id === "ci1");
+  ok("Content Icon: p1 anchor survives intact", loadedIcon.p1.time === 100 && loadedIcon.p1.price === 50);
+  ok("Content Icon: the chosen catalog key and size survive intact", loadedIcon.settings.icon === "zap" && loadedIcon.settings.fontSize === "large");
+  ok("Content Icon: optional caption text survives intact", loadedIcon.text === "Breakout");
+
+  const loadedEmoji = loaded.find((x) => x.id === "em1");
+  ok("Emoji: p1 anchor survives intact", loadedEmoji.p1.price === 60);
+  ok("Emoji: the literal unicode character survives intact, not re-encoded/dropped", loadedEmoji.text === "🚀");
+}
+
+{
+  fakeStorage.clear();
+  const chartAIcon = { id: "a-ci", tool: "content-icon", chartInstanceId: "chart-A", p1: { time: 0, price: 1 }, p2: { time: 0, price: 1 }, settings: { icon: "star" } };
+  const chartBEmoji = { id: "b-em", tool: "emoji", chartInstanceId: "chart-B", p1: { time: 0, price: 1 }, p2: { time: 0, price: 1 }, text: "🔥" };
+
+  saveDrawingsFor("chart-A", "BNBUSDT", "5m", [chartAIcon]);
+  saveDrawingsFor("chart-B", "BNBUSDT", "5m", [chartBEmoji]);
+
+  const a = loadDrawingsFor("chart-A", "BNBUSDT", "5m");
+  const b = loadDrawingsFor("chart-B", "BNBUSDT", "5m");
+  ok("Content Icon/Emoji respect chartInstanceId isolation: chart A only sees its own icon", a.length === 1 && a[0].tool === "content-icon");
+  ok("chart B only sees its own emoji, not chart A's icon", b.length === 1 && b[0].tool === "emoji" && b[0].text === "🔥");
+}
+
 // ---- summary ----------------------------------------------------------------
 
 console.log(`\n${pass}/${pass + fail} passed`);

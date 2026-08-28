@@ -37,7 +37,7 @@ import {
   Highlighter,
   CandlestickChart,
   Waves,
-  Hash,
+  Star,
   Fan,
   Activity,
   Rows,
@@ -350,6 +350,11 @@ export type ToolCapabilities = {
    * content IS the grid), but nothing enforces that — a tool could
    * declare both if it ever needed to. */
   table?: boolean;
+  /** Content Icon's curated icon-choice row (Phase 3D-13) — a small fixed
+   * set of real lucide-react icon geometries (see StudioChart.tsx's
+   * ICON_GLYPH_PATHS), not an open-ended catalog. Persisted as a plain
+   * `settings.icon` string key. */
+  iconPicker?: boolean;
 };
 
 export type ToolDefaultStyle = {
@@ -804,7 +809,16 @@ export const TOOL_DEFS: ToolDef[] = [
   { id: "price-range", name: "Price Range", category: "measure", icon: PriceRangeGlyph, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
   { id: "date-range", name: "Date Range", category: "measure", icon: DateRangeGlyph, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
   { id: "measure", name: "Date + Price Range", category: "measure", icon: Scan, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
-  { id: "ruler", name: "Ruler / Measure", category: "measure", icon: Ruler, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: false, note: "Same measurement as Date + Price Range above — no distinct geometry to add without duplicating it." },
+  // Ruler (Phase 3D-13 audit): genuinely functionally equivalent to
+  // Date + Price Range above — same p1/p2 shape, same computePriceRange/
+  // computeDateRange calls, same combined label (see StudioChart.tsx's
+  // render branch, which now includes "ruler" alongside "measure" rather
+  // than a second copy of that math). Kept as its own tool id (own
+  // favorites/Objects-panel/persisted-tool identity) since that costs
+  // nothing once the render/hit-test code is shared — exactly the same
+  // "distinct id, shared render function" pattern already used elsewhere
+  // in this registry (e.g. Fib Wedge/Pitchfan, Ellipse/Circle).
+  { id: "ruler", name: "Ruler / Measure", category: "measure", icon: Ruler, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
 
   // ---- Content (architecture-ready only, lowest priority) -----------------
   // Image (Phase 3D-7 audit): stays implemented:false — this codebase has
@@ -816,8 +830,19 @@ export const TOOL_DEFS: ToolDef[] = [
   // explicitly the wrong tradeoff (unbounded localStorage growth, no real
   // asset lifecycle) and deliberately not done here.
   { id: "image", name: "Image", category: "content", icon: Image, interactionType: "point", anchorCount: 1, capabilities: {}, defaultStyle: {}, implemented: false },
-  { id: "content-icon", name: "Icon", category: "content", icon: Hash, interactionType: "point", anchorCount: 1, capabilities: {}, defaultStyle: {}, implemented: false },
-  { id: "emoji", name: "Emoji", category: "content", icon: Smile, interactionType: "point", anchorCount: 1, capabilities: {}, defaultStyle: {}, implemented: false },
+  // Content Icon (Phase 3D-13): a small curated set of REAL lucide-react
+  // icon geometries (star/heart/check/x/zap/triangle-alert/thumbs-up/bell —
+  // see StudioChart.tsx's ICON_GLYPH_PATHS), not a fabricated catalog.
+  // `iconPicker` drives the settings popover's icon-choice row; `text`
+  // reuses the existing font-size scale for icon SIZE and lets an optional
+  // caption sit alongside the icon, exactly like Pin/Comment above.
+  { id: "content-icon", name: "Icon", category: "content", icon: Star, interactionType: "point", anchorCount: 1, capabilities: { text: true, iconPicker: true }, defaultStyle: { color: "#e6b800" }, implemented: true },
+  // Emoji (Phase 3D-13): a native unicode emoji character is plain text —
+  // reuses the `text` capability's existing free-text input (any OS emoji
+  // picker/paste works there) and font-size scale, just rendered larger
+  // (see StudioChart.tsx's GLYPH_ICON_PX) so it reads as an icon-sized
+  // glyph rather than a text label. No new storage/rendering system.
+  { id: "emoji", name: "Emoji", category: "content", icon: Smile, interactionType: "point", anchorCount: 1, capabilities: { text: true }, defaultStyle: { color: "#e6b800" }, implemented: true },
 ];
 
 export const TOOL_BY_ID: Record<string, ToolDef> = Object.fromEntries(TOOL_DEFS.map((t) => [t.id, t]));

@@ -703,6 +703,50 @@ function fmt(n: number) {
   return n.toFixed(abs >= 1000 ? 1 : abs >= 1 ? 2 : 6);
 }
 
+/**
+ * Content Icon (Phase 3D-13): a small curated set of REAL lucide-react icon
+ * geometries (their exact `<path>` `d` data, transcribed from the installed
+ * lucide-react v0.575.0 package — see each icon's own upstream file under
+ * `node_modules/lucide-react/dist/esm/icons/`), drawn on canvas via Path2D
+ * instead of the DOM-only React components lucide ships. This is
+ * deliberately a SMALL fixed catalog (not "a huge custom icon catalog
+ * manually" built from scratch) reusing an icon source already a dependency
+ * of this project, per the phase brief. `DrawingSettingsPopover.tsx`'s
+ * picker renders the real `<Star/>`/`<Heart/>`/etc. React components for
+ * the UI (that's a normal DOM context); only the canvas render path below
+ * needs the raw path data.
+ */
+const ICON_GLYPH_PATHS: Record<string, string[]> = {
+  star: ["M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"],
+  heart: ["M2 9.5a5.5 5.5 0 0 1 9.591-3.676.56.56 0 0 0 .818 0A5.49 5.49 0 0 1 22 9.5c0 2.29-1.5 4-3 5.5l-5.492 5.313a2 2 0 0 1-3 .019L5 15c-1.5-1.5-3-3.2-3-5.5"],
+  check: ["M20 6 9 17l-5-5"],
+  x: ["M18 6 6 18", "m6 6 12 12"],
+  zap: ["M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"],
+  "triangle-alert": ["m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3", "M12 9v4", "M12 17h.01"],
+  "thumbs-up": ["M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z", "M7 10v12"],
+  bell: ["M10.268 21a2 2 0 0 0 3.464 0", "M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"],
+};
+
+/** Content Icon and Emoji share this size scale (Phase 3D-13) — deliberately
+ * a different, larger lookup than `LABEL_FONT_PX` below: both are meant to
+ * read as a small ICON on the chart, not a text label. */
+const GLYPH_ICON_PX: Record<string, number> = { tiny: 16, small: 22, normal: 28, large: 36 };
+
+function drawIconGlyph(ctx: CanvasRenderingContext2D, iconKey: string, x: number, y: number, size: number, col: string, alpha: number): void {
+  const paths = ICON_GLYPH_PATHS[iconKey] ?? ICON_GLYPH_PATHS.star;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(size / 24, size / 24);
+  ctx.translate(-12, -12);
+  ctx.setLineDash([]);
+  ctx.strokeStyle = withAlpha(col, alpha);
+  ctx.lineWidth = 2;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  for (const d of paths) ctx.stroke(new Path2D(d));
+  ctx.restore();
+}
+
 type AnnotationGlyphShape = "pin" | "flag" | "signpost" | "comment" | "note";
 
 /**
@@ -2926,6 +2970,31 @@ export function StudioChart({
         ctx.restore();
         continue;
       }
+      if (d.tool === "content-icon") {
+        const iconKey = (d.settings?.icon as string | undefined) ?? "star";
+        const size = GLYPH_ICON_PX[(d.settings?.fontSize as string) ?? "normal"] ?? 28;
+        drawIconGlyph(ctx, iconKey, x1, y1, size, col, alpha);
+        if (d.text) drawTextLabel(ctx, d, x1 + size / 2 + 6, y1 + 4, col, alpha);
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "emoji") {
+        // A native unicode emoji character is just text — reuses
+        // drawTextLabel's exact font/background/border machinery via a
+        // bigger size scale (GLYPH_ICON_PX, not LABEL_FONT_PX) so it reads
+        // as an icon-sized glyph rather than a small text label. Falls back
+        // to a default glyph when the user declined the creation prompt, so
+        // a fresh Emoji drawing is never invisible.
+        const size = GLYPH_ICON_PX[(d.settings?.fontSize as string) ?? "normal"] ?? 28;
+        ctx.setLineDash([]);
+        ctx.font = `${size}px ui-sans-serif, system-ui, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji"`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = withAlpha(col, alpha);
+        ctx.fillText(d.text || "🙂", x1, y1);
+        ctx.restore();
+        continue;
+      }
       if (d.tool === "pin" || d.tool === "comment" || d.tool === "signpost" || d.tool === "flag-mark") {
         // Phase 3D-7: one shared glyph function, one shape per tool id —
         // see drawAnnotationGlyph's own doc comment.
@@ -3438,7 +3507,7 @@ export function StudioChart({
         ctx.fillStyle = withAlpha(col, alpha);
         ctx.fillText(fmt(d.p1.price), Math.max(6, fromX + 4), y1 - 4);
       } else if (x2 != null && y2 != null) {
-        if (d.tool === "trend" || d.tool === "ray" || d.tool === "extended" || d.tool === "info-line" || d.tool === "trend-angle" || d.tool === "measure" || d.tool === "price-range" || d.tool === "date-range") {
+        if (d.tool === "trend" || d.tool === "ray" || d.tool === "extended" || d.tool === "info-line" || d.tool === "trend-angle" || d.tool === "measure" || d.tool === "price-range" || d.tool === "date-range" || d.tool === "ruler") {
           let sx = x1;
           let sy = y1;
           let ex = x2;
@@ -3458,10 +3527,17 @@ export function StudioChart({
           ctx.moveTo(sx, sy);
           ctx.lineTo(ex, ey);
           ctx.stroke();
-          if (d.tool === "measure" || d.tool === "price-range" || d.tool === "date-range") {
-            // Both measurements are now the SAME shared pure calc.ts
-            // functions Date + Price Range also calls below — never a
-            // third inline copy of either calculation.
+          if (d.tool === "measure" || d.tool === "price-range" || d.tool === "date-range" || d.tool === "ruler") {
+            // Ruler (Phase 3D-13) is a genuine duplicate-by-design of
+            // Date + Price Range — same combined price+pct+bars+duration
+            // label (the final branch of the ternary below, since "ruler"
+            // matches neither "price-range" nor "date-range") — reusing
+            // this exact branch instead of a second copy is the whole
+            // point: no distinct geometry exists to justify one.
+            //
+            // Both measurements are the SAME shared pure calc.ts functions
+            // Date + Price Range also calls below — never a third inline
+            // copy of either calculation.
             const inst = stateRef.current.instrument;
             const tick = inst?.tickSize && inst.tickSize > 0 ? inst.tickSize : undefined;
             const priceRange = computePriceRange(d.p1.price, d.p2.price, tick);
@@ -3859,6 +3935,8 @@ export function StudioChart({
     "price-note",
     "price-label",
     "table",
+    "content-icon",
+    "emoji",
   ]);
 
   // Closest drawing to a screen point — used by Select/erase (inside the
@@ -4109,7 +4187,7 @@ export function StudioChart({
           hit = { d, anchor: "body" };
         }
         if (
-          (d.tool === "trend" || d.tool === "ray" || d.tool === "arrow" || d.tool === "info-line" || d.tool === "trend-angle" || d.tool === "measure" || d.tool === "price-range" || d.tool === "date-range") &&
+          (d.tool === "trend" || d.tool === "ray" || d.tool === "arrow" || d.tool === "info-line" || d.tool === "trend-angle" || d.tool === "measure" || d.tool === "price-range" || d.tool === "date-range" || d.tool === "ruler") &&
           x1 != null && y1 != null && x2 != null && y2 != null
         ) {
           const dist = distToSegment(mx, my, x1, y1, x2, y2);
@@ -4973,14 +5051,18 @@ export function StudioChart({
         tool === "signpost" ||
         tool === "flag-mark" ||
         tool === "price-note" ||
-        tool === "price-label"
+        tool === "price-label" ||
+        tool === "emoji"
       ) {
         // Every one of these single-anchor annotation tools (Phase 3D-7's
         // Pin/Comment/Signpost/Flag Mark/Price Note/Price Label reusing
-        // Note's exact prompt-then-place gesture) has OPTIONAL text — only
-        // plain Text itself requires non-empty content, matching its
-        // existing behavior exactly.
-        const text = window.prompt(tool === "text" ? "Label text" : "Note text (optional)");
+        // Note's exact prompt-then-place gesture; Phase 3D-13's Emoji joins
+        // them unchanged) has OPTIONAL text — only plain Text itself
+        // requires non-empty content, matching its existing behavior
+        // exactly. Emoji's render branch falls back to a default glyph
+        // when `text` is empty, so declining the prompt still places a
+        // visible drawing instead of an invisible one.
+        const text = window.prompt(tool === "text" ? "Label text" : tool === "emoji" ? "Emoji (optional — paste or type one)" : "Note text (optional)");
         if (tool === "text" && !text) return;
         onAddDrawing(stampNew({ tool, p1: pt, p2: pt, ...(text ? { text } : {}) }));
         return;
@@ -5002,6 +5084,13 @@ export function StudioChart({
             },
           }),
         );
+        return;
+      }
+      if (tool === "content-icon") {
+        // No prompt — like Table above, Content Icon's one real setting
+        // (which curated icon to show) is picked via the settings popover's
+        // icon-picker row (double-click after creation), not a text prompt.
+        onAddDrawing(stampNew({ tool, p1: pt, p2: pt, settings: { icon: "star" } }));
         return;
       }
       if (tool === "vwap") {

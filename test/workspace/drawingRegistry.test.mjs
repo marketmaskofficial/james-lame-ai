@@ -146,7 +146,11 @@ for (const t of TOOL_DEFS) {
 // (see their own dedicated blocks further below).
 
 {
-  const DEFERRED_SAMPLE = ["ruler", "image"];
+  // "ruler" graduated to implemented:true in Phase 3D-13 (see its own
+  // dedicated block further below) — "image" remains genuinely deferred:
+  // no durable file/image storage or upload infrastructure exists
+  // anywhere in this codebase (confirmed by that same phase's audit).
+  const DEFERRED_SAMPLE = ["image"];
   const wronglyImplemented = DEFERRED_SAMPLE.filter((id) => TOOL_BY_ID[id]?.implemented);
   ok(`deferred tools stay implemented:false (wrongly true: ${wronglyImplemented.join(",") || "none"})`, wronglyImplemented.length === 0);
 }
@@ -647,8 +651,9 @@ for (const t of TOOL_DEFS) {
 // registered; the render-label math was upgraded to shared calc.ts
 // functions (computePriceRange/computeDateRange, tested in
 // drawingCalc.test.mjs) but the registry entries themselves needed no
-// changes. "ruler" stays out of scope/deferred per its own note (identical
-// measurement to Date + Price Range, no distinct geometry to add).
+// changes. "ruler" graduated to implemented:true in Phase 3D-13 (see that
+// phase's own dedicated block further below) — it deliberately reuses this
+// exact render/hit-test code rather than a second copy.
 
 {
   const MEASURER_TOOLS = ["price-range", "date-range", "measure"];
@@ -662,7 +667,6 @@ for (const t of TOOL_DEFS) {
     "Price Range/Date Range/Date+Price Range are three distinct tool ids",
     new Set(MEASURER_TOOLS.map((id) => TOOL_BY_ID[id]?.id)).size === 3,
   );
-  ok("ruler stays deferred (identical measurement to Date + Price Range, correctly not duplicated)", TOOL_BY_ID["ruler"]?.implemented === false);
 }
 
 // ---- capability-gated settings sections have a real reason to exist -------
@@ -738,7 +742,7 @@ for (const t of TOOL_DEFS) {
     callout: "text", comment: "text", "price-label": "text", signpost: "text", "flag-mark": "text",
     long: "forecast", short: "forecast", forecast: "forecast", "bars-pattern": "forecast", "ghost-feed": "forecast", sector: "forecast",
     vwap: "volume", "vp-fixed": "volume", "vp-anchored": "volume",
-    "price-range": "measure", "date-range": "measure", measure: "measure",
+    "price-range": "measure", "date-range": "measure", measure: "measure", ruler: "measure",
   };
   const ids = Object.keys(EXPECTED_SECTION);
   ok(`the phase brief's SECTION ORGANIZATION lists exactly ${ids.length} implemented tools, matching IMPLEMENTED_TOOLS' count of tools outside the deferred "content" family`, ids.length === IMPLEMENTED_TOOLS.filter((t) => t.category !== "content").length);
@@ -748,14 +752,20 @@ for (const t of TOOL_DEFS) {
   ok(`every one of those tools is reachable via IMPLEMENTED_TOOLS (missing: ${notReachable.join(",") || "none"})`, notReachable.length === 0);
 
   // Image/Post/Idea must never leak into the toolbar as fake working
-  // drawings — the deferred "content" family must contribute zero
-  // implemented tools (DrawToolbar.tsx filters a family out entirely once
-  // its implemented-tool count is zero).
+  // drawings. As of Phase 3D-11 this asserted the whole "content" family
+  // contributed zero implemented tools; Phase 3D-13 graduated two of its
+  // three entries (see that phase's own dedicated block further below) —
+  // this now asserts the family contributes EXACTLY those two genuinely-
+  // implemented tools, and that Image specifically (which needs real file/
+  // asset storage infrastructure this codebase doesn't have) stays
+  // implemented:false rather than being faked.
   ok(
-    "the deferred Content family (Image/Post/Idea) contributes zero implemented tools — never rendered as a fake working section",
-    IMPLEMENTED_TOOLS.filter((t) => t.category === "content").length === 0,
+    "the Content family contributes exactly Content Icon + Emoji as implemented — Image stays deferred, never rendered as a fake working section",
+    IMPLEMENTED_TOOLS.filter((t) => t.category === "content").length === 2 &&
+      IMPLEMENTED_TOOLS.some((t) => t.id === "content-icon") &&
+      IMPLEMENTED_TOOLS.some((t) => t.id === "emoji"),
   );
-  ok("Image/Icon/Emoji are still declared but explicitly implemented:false", ["image", "content-icon", "emoji"].every((id) => TOOL_BY_ID[id]?.implemented === false));
+  ok("Image is still declared but explicitly implemented:false (no durable file/asset storage infrastructure exists)", TOOL_BY_ID["image"]?.implemented === false);
 
   // Spot-check icon distinctness for the specific collisions this phase's
   // redesign was required to resolve (not an exhaustive uniqueness
@@ -773,6 +783,46 @@ for (const t of TOOL_DEFS) {
   ok("Crossline no longer shares an icon with the Gann grid tools", TOOL_BY_ID["crossline"]?.icon !== TOOL_BY_ID["gann-box"]?.icon);
   ok("Price Range, Date Range, and Date + Price Range are three distinct icons (previously all shared Ruler)", new Set([TOOL_BY_ID["price-range"]?.icon, TOOL_BY_ID["date-range"]?.icon, TOOL_BY_ID["measure"]?.icon]).size === 3);
   ok("Arrow Marker no longer shares an icon with Arrow", TOOL_BY_ID["arrow-marker"]?.icon !== TOOL_BY_ID["arrow"]?.icon);
+}
+
+// ---- Phase 3D-13: Ruler graduates to implemented:true ----------------------
+// Ruler is a deliberate duplicate-by-design of Date + Price Range — same
+// p1/p2 shape, same interactionType/anchorCount, same render/hit-test code
+// path (see StudioChart.tsx, which now lists "ruler" alongside "measure" in
+// all three of its measure-tool branches instead of a second copy).
+
+{
+  ok("ruler is now implemented:true", TOOL_BY_ID["ruler"]?.implemented === true);
+  ok("ruler is in IMPLEMENTED_TOOLS", IMPLEMENTED_TOOLS.some((t) => t.id === "ruler"));
+  ok("ruler resolves to the \"measure\" section, alongside Price Range/Date Range/Date + Price Range", TOOL_BY_ID["ruler"]?.category === "measure");
+  ok(
+    "ruler shares the exact same interactionType/anchorCount/capabilities shape as Date + Price Range (genuinely the same tool, not a lookalike with drifted metadata)",
+    TOOL_BY_ID["ruler"]?.interactionType === TOOL_BY_ID["measure"]?.interactionType &&
+      TOOL_BY_ID["ruler"]?.anchorCount === TOOL_BY_ID["measure"]?.anchorCount &&
+      JSON.stringify(TOOL_BY_ID["ruler"]?.capabilities) === JSON.stringify(TOOL_BY_ID["measure"]?.capabilities),
+  );
+  ok("ruler is still its own distinct tool id, not an alias of measure", TOOL_BY_ID["ruler"]?.id !== TOOL_BY_ID["measure"]?.id);
+}
+
+// ---- Phase 3D-13: Content Icon / Emoji graduate to implemented:true -------
+// Both reuse existing architecture rather than new infrastructure: Content
+// Icon draws a small curated set of REAL lucide-react icon geometries (see
+// StudioChart.tsx's ICON_GLYPH_PATHS) via the new `iconPicker` capability;
+// Emoji is plain unicode text rendered larger via the existing `text`
+// capability. Image (real file uploads, needing durable storage this
+// codebase doesn't have) is deliberately NOT included here — see the block
+// above confirming it stays implemented:false.
+
+{
+  ok("content-icon is now implemented:true", TOOL_BY_ID["content-icon"]?.implemented === true);
+  ok("emoji is now implemented:true", TOOL_BY_ID["emoji"]?.implemented === true);
+  ok("both are in IMPLEMENTED_TOOLS", IMPLEMENTED_TOOLS.some((t) => t.id === "content-icon") && IMPLEMENTED_TOOLS.some((t) => t.id === "emoji"));
+  ok("both resolve to the \"content\" section", TOOL_BY_ID["content-icon"]?.category === "content" && TOOL_BY_ID["emoji"]?.category === "content");
+  ok("both are single-anchor point tools (placed with one click, like Note/Pin/Comment)", TOOL_BY_ID["content-icon"]?.interactionType === "point" && TOOL_BY_ID["content-icon"]?.anchorCount === 1 && TOOL_BY_ID["emoji"]?.interactionType === "point" && TOOL_BY_ID["emoji"]?.anchorCount === 1);
+  ok("Content Icon declares the new iconPicker capability", TOOL_BY_ID["content-icon"]?.capabilities.iconPicker === true);
+  ok("Content Icon also declares text (optional caption + reused font-size-as-icon-size control)", TOOL_BY_ID["content-icon"]?.capabilities.text === true);
+  ok("Emoji declares text (the emoji character itself) but NOT iconPicker (it has no curated catalog — any unicode emoji works)", TOOL_BY_ID["emoji"]?.capabilities.text === true && !TOOL_BY_ID["emoji"]?.capabilities.iconPicker);
+  ok("Content Icon and Emoji are two distinct tool ids", TOOL_BY_ID["content-icon"]?.id !== TOOL_BY_ID["emoji"]?.id);
 }
 
 // ---- summary ----------------------------------------------------------------
