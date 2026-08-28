@@ -198,22 +198,19 @@ export function DrawToolbar({
 
   return (
     <nav ref={navRef} className="relative flex w-12 shrink-0 flex-col border-r border-border bg-sidebar">
-      {/* Cursor / Select — pinned, not part of the scrolling section list. */}
+      {/* Select — pinned, not part of the scrolling section list. Phase
+          3D-15 merged the old separate Cursor button into this one tool:
+          it pans on empty-space drag/click (same as Cursor used to) and
+          selects/moves/resizes a drawing when the pointer is over one (same
+          as Select used to) — see the hover-driven pointerEvents toggle in
+          StudioChart's pointer-interaction effect for how that's done
+          without reimplementing native chart pan/zoom. "cursor" still
+          exists as an internal-only DrawTool value for read-only chart
+          panes (see studio.tsx), it's just no longer a separate toolbar
+          button. */}
       <div className="flex shrink-0 flex-col gap-1 border-b border-border px-1.5 py-1.5">
         <button
-          title="Cursor — pan/zoom only, never selects a drawing"
-          onClick={() => {
-            onSelectTool("cursor");
-            setOpenPanel(null);
-          }}
-          className={`flex h-8 w-8 items-center justify-center rounded-[6px] ${
-            tool === "cursor" ? "bg-brand text-brand-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground"
-          }`}
-        >
-          <MousePointer2 className="h-4 w-4" />
-        </button>
-        <button
-          title="Select — click a drawing to select/move/resize it"
+          title="Select — click a drawing to select/move/resize it, drag empty space to pan"
           onClick={() => {
             onSelectTool("select");
             setOpenPanel(null);
@@ -222,7 +219,7 @@ export function DrawToolbar({
             tool === "select" ? "bg-brand text-brand-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground"
           }`}
         >
-          <MousePointer2 className="h-3 w-3" />
+          <MousePointer2 className="h-4 w-4" />
         </button>
       </div>
 

@@ -870,7 +870,21 @@ function StudioWorkspace() {
   // AI Builder's conversation at that SAME project instead of leaking a
   // different one's history into it.
   const [aiIndicatorId, setAiIndicatorId] = useState<string | null>(null);
-  const [tool, setTool] = useState<DrawTool>("cursor");
+  // "select" is the sole canonical Select/Cursor toolbar tool (Phase
+  // 3D-15) — "cursor" itself still exists as a DrawTool value but is only
+  // ever used internally now, for read-only chart panes (see the
+  // hardcoded tool="cursor" further down).
+  const [tool, setTool] = useState<DrawTool>("select");
+  // Stable reference (Phase 3D-15 follow-up) — passed to StudioChart's
+  // right-click-cancel handler, which lives inside an effect keyed in part
+  // on this callback's identity. An inline arrow here would be a fresh
+  // function every render, and this component re-renders very often (the
+  // live price feed alone), which was tearing down and re-arming that
+  // effect (and, with it, the Select-tool hover/pointerEvents state and
+  // the crosshair position) far more often than any real tool change.
+  // `setTool` itself is already stable (a useState setter), so an empty
+  // dependency array is correct here, not a lint workaround.
+  const handleCancelTool = useCallback(() => setTool("select"), []);
   // Backtest overlay: entry/exit markers from the last run of the current project.
   const [backtestTrades, setBacktestTrades] = useState<BacktestTrade[] | null>(null);
   // Prompt handed to the AI panel when the tester asks for missing rules.
@@ -3585,6 +3599,7 @@ function StudioWorkspace() {
             bars={activeChartInstance.bars}
             indicators={activeChartInstance.indicators}
             tool={tool}
+            onCancelTool={handleCancelTool}
             drawings={activeChartInstance.drawings}
             onAddDrawing={addDrawing}
             onRemoveDrawing={removeDrawing}
@@ -5015,7 +5030,7 @@ function StudioWorkspace() {
         onOpenHistory={handleOpenAiHistory}
         onOpenAlerts={handleOpenAlerts}
       />
-      <div ref={rootRef} className="flex h-full min-w-0 flex-1 flex-col bg-background text-foreground">
+      <div ref={rootRef} className="studio-scrollbars flex h-full min-w-0 flex-1 flex-col bg-background text-foreground">
       {/* top bar */}
       <header className="flex h-10 shrink-0 items-center gap-1.5 border-b border-border bg-sidebar px-2">
         <span className="hidden shrink-0 text-[13px] font-medium tracking-tight text-muted-foreground md:inline">

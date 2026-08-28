@@ -273,8 +273,23 @@ export type ToolGroupId =
  * id, capability, or persisted drawing data changed. */
 export const TOOL_GROUPS: { id: ToolGroupId; label: string }[] = [
   { id: "lines", label: "Lines" },
+  // Phase 3D-15: Forecasting and Volume-Based moved up to sit directly
+  // under Lines in the rail, in that order — an order-only change (each
+  // keeps its own section and its own `category` on every tool below;
+  // none are merged into Lines or into each other). Arrows stays at its
+  // original position below (between Brushes and Shapes) — an earlier
+  // pass in this phase mistakenly moved Arrows here instead; that was
+  // reverted. Text and Notes moved down to sit directly above Content
+  // (which holds the Image tool) — also order-only, still its own
+  // section. Measurers moved up to sit directly under Pitchforks — also
+  // order-only, still its own section. Every other section keeps its
+  // original relative order (Shapes and Text and Notes are now adjacent,
+  // having had Measurers extracted from between them).
+  { id: "forecast", label: "Forecasting" },
+  { id: "volume", label: "Volume-Based" },
   { id: "channels", label: "Channels" },
   { id: "pitchforks", label: "Pitchforks" },
+  { id: "measure", label: "Measurers" },
   { id: "fib", label: "Fibonacci" },
   { id: "gann", label: "Gann" },
   { id: "patterns", label: "Chart Patterns" },
@@ -284,9 +299,6 @@ export const TOOL_GROUPS: { id: ToolGroupId; label: string }[] = [
   { id: "arrows", label: "Arrows" },
   { id: "shapes", label: "Shapes" },
   { id: "text", label: "Text and Notes" },
-  { id: "forecast", label: "Forecasting" },
-  { id: "volume", label: "Volume-Based" },
-  { id: "measure", label: "Measurers" },
   { id: "content", label: "Content" },
 ];
 

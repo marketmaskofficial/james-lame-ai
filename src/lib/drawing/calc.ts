@@ -8,7 +8,7 @@
  * selection `anchoredVwap` already does).
  */
 
-import { type Bar, timeToLogicalExtrapolated } from "./geometry";
+import { type Bar, type MarketPoint, timeToLogicalExtrapolated } from "./geometry";
 
 // ---- Fibonacci ---------------------------------------------------------
 
@@ -310,6 +310,64 @@ export function computePositionMetrics(
     rewardTicks: Math.round(rewardPerUnit / safeTick),
     riskValue: riskPerUnit * valuePerPoint,
     rewardValue: rewardPerUnit * valuePerPoint,
+  };
+}
+
+/**
+ * Long/Short Position's dedicated anchor edits (Phase 3D-15) — pure, so the
+ * interaction-safety invariants (price-only edits never touch time, and
+ * vice versa) are unit-testable without going through StudioChart's canvas
+ * pointer-event plumbing. StudioChart's onMove calls these directly; it
+ * does not reimplement this logic inline.
+ */
+export function movePositionEntry(p1: MarketPoint, price: number): MarketPoint {
+  return { ...p1, price };
+}
+
+export function movePositionTarget(p2: MarketPoint, price: number): MarketPoint {
+  return { ...p2, price };
+}
+
+export function movePositionStop(_stop: number | undefined, price: number): number {
+  return price;
+}
+
+/**
+ * Left/right width-resize: moves whichever of p1/p2 currently sits on that
+ * side's time extent, leaving both anchors' prices untouched. "Which side"
+ * is resolved from the p1/p2 passed in (the caller's fixed pre-drag
+ * snapshot) so a resize that crosses over the opposite edge mid-drag keeps
+ * moving the same anchor's time throughout the gesture.
+ */
+export function resizePositionWidth(
+  p1: MarketPoint,
+  p2: MarketPoint,
+  edge: "left" | "right",
+  time: number,
+): { p1: MarketPoint; p2: MarketPoint } {
+  const leftIsP1 = p1.time <= p2.time;
+  const movingP1 = edge === "left" ? leftIsP1 : !leftIsP1;
+  return {
+    p1: movingP1 ? { ...p1, time } : p1,
+    p2: !movingP1 ? { ...p2, time } : p2,
+  };
+}
+
+/**
+ * Whole-object move: shifts both anchors and the stop together by the same
+ * time/price delta, preserving entry/target/stop's relative distances.
+ */
+export function movePositionBody(
+  p1: MarketPoint,
+  p2: MarketPoint,
+  stop: number | undefined,
+  dt: number,
+  dp: number,
+): { p1: MarketPoint; p2: MarketPoint; stop: number | undefined } {
+  return {
+    p1: { time: p1.time + dt, price: p1.price + dp },
+    p2: { time: p2.time + dt, price: p2.price + dp },
+    stop: stop != null ? stop + dp : stop,
   };
 }
 
