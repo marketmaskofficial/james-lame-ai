@@ -696,13 +696,26 @@ for (const t of TOOL_DEFS) {
 // pass instead — see the phase completion report.
 
 {
-  // The exact 16 sections from the phase brief's SECTION ORGANIZATION, in
-  // order, with their exact visible names (uppercased via CSS in the
-  // flyout header, not in this label string itself).
+  // The 16 sections, in order, with their exact visible names (uppercased
+  // via CSS in the flyout header, not in this label string itself).
+  // Phase 3D-15 moved "forecast" and "volume" to sit directly under
+  // "lines", in that order (an order-only change — each keeps its own
+  // category on every tool below, never merged into "lines" or into each
+  // other); "arrows" stays at its original phase-brief position (between
+  // "brushes" and "shapes") — an earlier pass in this phase mistakenly
+  // moved "arrows" under "lines" instead; that was reverted. "text" moved
+  // down to sit directly above "content" (which holds the Image tool), and
+  // "measure" moved up to sit directly under "pitchforks" — both also
+  // order-only, each still its own section. Every other section keeps its
+  // original relative order ("shapes" and "text" are now adjacent, having
+  // had "measure" extracted from between them).
   const EXPECTED_GROUPS = [
     ["lines", "Lines"],
+    ["forecast", "Forecasting"],
+    ["volume", "Volume-Based"],
     ["channels", "Channels"],
     ["pitchforks", "Pitchforks"],
+    ["measure", "Measurers"],
     ["fib", "Fibonacci"],
     ["gann", "Gann"],
     ["patterns", "Chart Patterns"],
@@ -712,13 +725,10 @@ for (const t of TOOL_DEFS) {
     ["arrows", "Arrows"],
     ["shapes", "Shapes"],
     ["text", "Text and Notes"],
-    ["forecast", "Forecasting"],
-    ["volume", "Volume-Based"],
-    ["measure", "Measurers"],
     ["content", "Content"],
   ];
   ok(
-    "TOOL_GROUPS has exactly the 16 expected sections, in order, with the phase brief's exact section names",
+    "TOOL_GROUPS has exactly the 16 expected sections, in order (Forecasting and Volume-Based moved directly under Lines, Text and Notes moved directly above Content, and Measurers moved directly under Pitchforks, in Phase 3D-15), with the phase brief's exact section names",
     JSON.stringify(TOOL_GROUPS.map((g) => [g.id, g.label])) === JSON.stringify(EXPECTED_GROUPS),
   );
 

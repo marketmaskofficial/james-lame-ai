@@ -1883,6 +1883,50 @@ function d(id) {
   ok("chart B only sees its own image drawing, not chart A's — even though both belong to the same uploading user", b.length === 1 && b[0].settings.imagePath === "user-1/b.png");
 }
 
+// ---- Long/Short Position: adjusted geometry round trip (Phase 3D-15) ------
+// Reload must restore the EXACT adjusted entry/target/stop/width — not the
+// as-drawn geometry — and chart isolation must still hold for this tool.
+
+{
+  fakeStorage.clear();
+  const longPos = {
+    id: "long1",
+    tool: "long",
+    chartInstanceId: "chart-1",
+    p1: { time: 1000, price: 95 }, // entry, dragged off its as-drawn price
+    p2: { time: 2600, price: 140 }, // target, dragged off its as-drawn price + time (width)
+    stop: 88, // dragged independently of entry/target
+  };
+  saveDrawingsFor("chart-1", "ETHUSDT", "1h", [longPos]);
+  const loaded = loadDrawingsFor("chart-1", "ETHUSDT", "1h");
+  ok("Long Position: reload restores the exact adjusted entry (p1)", loaded[0].p1.time === 1000 && loaded[0].p1.price === 95);
+  ok("Long Position: reload restores the exact adjusted target (p2) including the resized width", loaded[0].p2.time === 2600 && loaded[0].p2.price === 140);
+  ok("Long Position: reload restores the independently-adjusted stop", loaded[0].stop === 88);
+}
+
+{
+  // Short: target (p2) drawn to the LEFT of entry (p1) in time, mirroring
+  // the Long case above but with the orientation flipped.
+  fakeStorage.clear();
+  const shortPos = {
+    id: "short1",
+    tool: "short",
+    chartInstanceId: "chart-2",
+    p1: { time: 2600, price: 100 }, // entry, on the right
+    p2: { time: 1000, price: 70 }, // target, on the left
+    stop: 108,
+  };
+  const otherChartPos = { ...shortPos, id: "short-other", chartInstanceId: "chart-1", stop: 999 };
+  saveDrawingsFor("chart-2", "ETHUSDT", "1h", [shortPos]);
+  saveDrawingsFor("chart-1", "ETHUSDT", "1h", [otherChartPos]);
+
+  const loadedShort = loadDrawingsFor("chart-2", "ETHUSDT", "1h");
+  ok("Short Position: reload restores entry/target/stop exactly, mirrored orientation included", loadedShort[0].p1.price === 100 && loadedShort[0].p2.price === 70 && loadedShort[0].stop === 108);
+
+  const loadedChart1 = loadDrawingsFor("chart-1", "ETHUSDT", "1h");
+  ok("Long/Short Position respects chartInstanceId isolation: chart 1's edit did not leak into chart 2's drawing", loadedChart1.length === 1 && loadedChart1[0].id === "short-other" && loadedChart1[0].stop === 999);
+}
+
 // ---- summary ----------------------------------------------------------------
 
 console.log(`\n${pass}/${pass + fail} passed`);

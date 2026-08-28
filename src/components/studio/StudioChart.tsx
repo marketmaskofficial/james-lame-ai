@@ -33,6 +33,11 @@ import {
   lerpMarketPoint,
   anchoredVwap,
   computePositionMetrics,
+  movePositionEntry,
+  movePositionTarget,
+  movePositionStop,
+  resizePositionWidth,
+  movePositionBody,
   cyclicLineTimes,
   timeCyclesTimes,
   sineLinePoints,
@@ -603,7 +608,13 @@ const DEFAULT_VISIBLE_BARS = 200;
 
 export const DEFAULT_CHART_SETTINGS: ChartSettings = {
   grid: true,
-  crosshairMagnet: true,
+  // TradingView-style crosshair: the horizontal line should follow the
+  // mouse's exact Y position rather than snapping to the nearest bar's
+  // OHLC/close (CrosshairMode.Magnet). Existing saved workspaces that
+  // already persisted a `crosshairMagnet` value (including `true` baked in
+  // from the old default) win over this via the `{...DEFAULT_CHART_SETTINGS,
+  // ...persisted}` merge at load time — this only changes brand-new charts.
+  crosshairMagnet: false,
   logScale: false,
   upColor: "#22c55e",
   downColor: "#ef4444",
@@ -1110,7 +1121,13 @@ export function StudioChart({
   // two tools) would move the drawing's `points[0]`/`points[last]` mirror
   // WITHOUT touching the authoritative `points` array itself, desyncing the
   // rendered geometry from the dragged handle. See hitTest/onMove below.
-  type AnchorKind = "p1" | "p2" | "p3" | "stop" | "body" | `point:${number}`;
+  // "entry"/"target"/"left"/"right" are Long/Short Position's dedicated
+  // anchors (Phase 3D-15) — "entry"/"target" drag only `p1.price`/`p2.price`
+  // (never touching time), "left"/"right" drag only the box's time extent
+  // (never touching price), all distinct from the generic "p1"/"p2" corner
+  // anchors (which move both time AND price together) so the two anchor
+  // families can't be confused. See hitTest/onMove below.
+  type AnchorKind = "p1" | "p2" | "p3" | "stop" | "entry" | "target" | "left" | "right" | "body" | `point:${number}`;
   const editRef = useRef<{
     drawing: Drawing;
     anchor: AnchorKind;
@@ -3974,7 +3991,14 @@ export function StudioChart({
           }
           planBoxes.push({ id: d.id, x: right + 8, y: yEntry + 6 });
 
-          if (d.id === selected) handles.push({ x: (left + right) / 2, y: yStop });
+          if (d.id === selected) {
+            const midY = (Math.min(yEntry, yTarget, yStop) + Math.max(yEntry, yTarget, yStop)) / 2;
+            handles.push({ x: (left + right) / 2, y: yStop }); // stop
+            handles.push({ x: x1, y: yEntry }); // entry
+            handles.push({ x: x2, y: yTarget }); // target
+            handles.push({ x: left, y: midY }); // width: left edge
+            handles.push({ x: right, y: midY }); // width: right edge
+          }
         } else if (d.tool === "text") {
           drawTextLabel(ctx, d, x1, y1, col, alpha);
         }
@@ -4109,6 +4133,12 @@ export function StudioChart({
     "emoji",
   ]);
 
+  // Long/Short Position get dedicated entry/target/stop/left/right anchors
+  // (Phase 3D-15) instead of the generic p1/p2 corner-anchor path, so they're
+  // excluded from that generic path below the same way NO_ANCHOR_2_TOOLS
+  // excludes tools with no meaningful p2 anchor at all.
+  const POSITION_TOOLS = new Set<DrawTool>(["long", "short"]);
+
   // Closest drawing to a screen point — used by Select/erase (inside the
   // pointer-interaction effect below) AND by the double-click-for-settings
   // effect further down, which needs to work no matter which tool is active
@@ -4147,14 +4177,14 @@ export function StudioChart({
         // vertex array. They get their own per-vertex hit test instead (see
         // the `point:${i}` block below), which correctly writes back into
         // `points` (and re-derives the p1/p2 mirror from it).
-        if (x1 != null && y1 != null && d.tool !== "polyline" && d.tool !== "path" && !MULTI_ANCHOR_PATTERN_TOOLS.has(d.tool)) {
+        if (x1 != null && y1 != null && d.tool !== "polyline" && d.tool !== "path" && !MULTI_ANCHOR_PATTERN_TOOLS.has(d.tool) && !POSITION_TOOLS.has(d.tool)) {
           const dist = pixelDist(x1, y1, mx, my);
           if (dist < best) {
             best = dist;
             hit = { d, anchor: "p1" };
           }
         }
-        if (x2 != null && y2 != null && !NO_ANCHOR_2_TOOLS.has(d.tool) && d.tool !== "polyline" && d.tool !== "path" && !MULTI_ANCHOR_PATTERN_TOOLS.has(d.tool)) {
+        if (x2 != null && y2 != null && !NO_ANCHOR_2_TOOLS.has(d.tool) && d.tool !== "polyline" && d.tool !== "path" && !MULTI_ANCHOR_PATTERN_TOOLS.has(d.tool) && !POSITION_TOOLS.has(d.tool)) {
           const dist = pixelDist(x2, y2, mx, my);
           if (dist < best) {
             best = dist;
@@ -4332,15 +4362,45 @@ export function StudioChart({
             }
           }
         }
-        if ((d.tool === "long" || d.tool === "short") && d.stop != null && x1 != null && x2 != null) {
-          const stopY = price.priceToCoordinate(d.stop);
+        if (POSITION_TOOLS.has(d.tool) && x1 != null && y1 != null && x2 != null && y2 != null) {
+          // Dedicated Long/Short Position anchors (Phase 3D-15) — replaces
+          // the generic p1/p2 corner-anchor path (excluded above via
+          // POSITION_TOOLS) so entry/target price edits can never also drag
+          // the box's time extent, and width can resize without touching
+          // any price level. "entry"/"target" sit at the exact screen
+          // position the old p1/p2 corner anchors used to (x1,y1 / x2,y2) —
+          // only the onMove semantics differ.
+          const entryDist = pixelDist(x1, y1, mx, my);
+          if (entryDist < best) {
+            best = entryDist;
+            hit = { d, anchor: "entry" };
+          }
+          const targetDist = pixelDist(x2, y2, mx, my);
+          if (targetDist < best) {
+            best = targetDist;
+            hit = { d, anchor: "target" };
+          }
+          const left = Math.min(x1, x2);
+          const right = Math.max(x1, x2, left + 140);
+          const stopY = d.stop != null ? price.priceToCoordinate(d.stop) : null;
           if (stopY != null) {
-            const left = Math.min(x1, x2);
-            const right = Math.max(x1, x2, left + 140);
-            const dist = pixelDist((left + right) / 2, stopY, mx, my);
-            if (dist < best) {
-              best = dist;
+            const stopDist = pixelDist((left + right) / 2, stopY, mx, my);
+            if (stopDist < best) {
+              best = stopDist;
               hit = { d, anchor: "stop" };
+            }
+            // Width-resize handles, vertically centered on the box so they
+            // sit clearly apart from the entry/target/stop rows.
+            const midY = (Math.min(y1, y2, stopY) + Math.max(y1, y2, stopY)) / 2;
+            const leftDist = pixelDist(left, midY, mx, my);
+            if (leftDist < best) {
+              best = leftDist;
+              hit = { d, anchor: "left" };
+            }
+            const rightDist = pixelDist(right, midY, mx, my);
+            if (rightDist < best) {
+              best = rightDist;
+              hit = { d, anchor: "right" };
             }
           }
         }
@@ -4872,13 +4932,29 @@ export function StudioChart({
           }
         }
         if (
-          (d.tool === "rect" || d.tool === "circle" || d.tool === "long" || d.tool === "short" || d.tool === "image") &&
+          (d.tool === "rect" || d.tool === "circle" || d.tool === "image") &&
           x1 != null && x2 != null && y1 != null && y2 != null &&
           mx >= Math.min(x1, x2) && mx <= Math.max(x1, x2) &&
           my >= Math.min(y1, y2) && my <= Math.max(y1, y2) &&
           !hit
         ) {
           hit = { d, anchor: "body" };
+        }
+        if (POSITION_TOOLS.has(d.tool) && x1 != null && x2 != null && y1 != null && y2 != null && !hit) {
+          // Long/Short's own body bbox (Phase 3D-15 fix) — the render's
+          // 140px minimum-width floor and the stop row can both extend past
+          // the raw p1/p2 box the shared rect/circle/image test above uses,
+          // so part of the visually-rendered position could previously fall
+          // outside its own clickable body region. Matches
+          // paintDrawing()'s `left`/`right` computation exactly.
+          const left = Math.min(x1, x2);
+          const right = Math.max(x1, x2, left + 140);
+          const stopY = d.stop != null ? price.priceToCoordinate(d.stop) : null;
+          const top = Math.min(y1, y2, stopY ?? y1);
+          const bottom = Math.max(y1, y2, stopY ?? y1);
+          if (mx >= left && mx <= right && my >= top && my <= bottom) {
+            hit = { d, anchor: "body" };
+          }
         }
         if (d.tool === "table" && x1 != null && y1 != null && !hit) {
           const rows = (d.settings?.tableRows as string[][] | undefined) ?? [
@@ -4960,6 +5036,65 @@ export function StudioChart({
     // — same as Escape (see the keyboard effect below).
     pendingRef.current = null;
     previewPointRef.current = null;
+
+    // ---- canonical Select tool: hover-driven pass-through (Phase 3D-15) ----
+    // Select must both hit-test drawings (click/drag to select, move, resize)
+    // AND let click-drag on truly empty space reach the native chart's own
+    // pan/zoom — but once a pointerdown lands on this overlay canvas, the
+    // gesture can't be handed off to the native canvas underneath mid-flight
+    // (that canvas never saw the initial pointerdown, so its own internal
+    // drag tracking never starts). Instead this toggles `pointerEvents` on
+    // the overlay BEFORE the down event even happens, driven by a continuous
+    // hover hit-test: "auto" while hovering something selectable, "none"
+    // over empty space so the eventual down event is delivered straight to
+    // the native chart canvas and its native pan/zoom/wheel handling runs
+    // completely untouched — zero reimplementation of chart panning here.
+    // The listener lives on `hostRef` (the shared container both canvases
+    // sit in via lib.createChart(hostRef.current, ...)), not on this overlay
+    // canvas, since an element with pointerEvents:"none" stops receiving the
+    // very events that would tell it to turn back on.
+    let cleanupHover: (() => void) | undefined;
+    if (tool === "select") {
+      const host = hostRef.current;
+      if (host) {
+        const updateHover = (clientX: number, clientY: number) => {
+          // An active drag already routes via pointer capture regardless of
+          // pointerEvents/hit-testing — leave the style alone mid-gesture.
+          if (editRef.current || draftRef.current || pendingRef.current) return;
+          const rect = canvas.getBoundingClientRect();
+          const hit = hitTest(clientX - rect.left, clientY - rect.top);
+          canvas.style.pointerEvents = hit ? "auto" : "none";
+          if (!hit) {
+            canvas.style.cursor = "crosshair";
+          } else if (hit.d.locked) {
+            canvas.style.cursor = "default";
+          } else if (hit.anchor === "body") {
+            canvas.style.cursor = "move";
+          } else if (hit.anchor === "stop" || hit.anchor === "entry" || hit.anchor === "target") {
+            canvas.style.cursor = "ns-resize";
+          } else if (hit.anchor === "left" || hit.anchor === "right") {
+            canvas.style.cursor = "ew-resize";
+          } else {
+            canvas.style.cursor = "nwse-resize";
+          }
+        };
+        const onHostMove = (e: PointerEvent) => updateHover(e.clientX, e.clientY);
+        const onHostLeave = () => {
+          canvas.style.pointerEvents = "auto";
+          canvas.style.cursor = "crosshair";
+        };
+        host.addEventListener("pointermove", onHostMove);
+        host.addEventListener("pointerleave", onHostLeave);
+        canvas.style.pointerEvents = "auto";
+        canvas.style.cursor = "crosshair";
+        cleanupHover = () => {
+          host.removeEventListener("pointermove", onHostMove);
+          host.removeEventListener("pointerleave", onHostLeave);
+          canvas.style.pointerEvents = "";
+          canvas.style.cursor = "";
+        };
+      }
+    }
 
     const rawPoint = (e: PointerEvent): MarketPoint | null => {
       const rect = canvas.getBoundingClientRect();
@@ -5302,16 +5437,36 @@ export function StudioChart({
         if (edit.anchor === "body") {
           const dt = pt.time - edit.start.time;
           const dp = pt.price - edit.start.price;
+          // movePositionBody's p1/p2/stop arithmetic is identical to this
+          // branch's original inline formula for every tool (not just
+          // Long/Short) — delegated here so it's covered by the same pure,
+          // unit-tested helper StudioChart actually runs.
+          const moved = movePositionBody(edit.drawing.p1, edit.drawing.p2, edit.drawing.stop, dt, dp);
           onUpdateDrawing({
             ...edit.drawing,
-            p1: { time: edit.drawing.p1.time + dt, price: edit.drawing.p1.price + dp },
-            p2: { time: edit.drawing.p2.time + dt, price: edit.drawing.p2.price + dp },
+            p1: moved.p1,
+            p2: moved.p2,
             points: edit.drawing.points?.map((p) => ({ time: p.time + dt, price: p.price + dp })),
-            ...(edit.drawing.stop != null ? { stop: edit.drawing.stop + dp } : {}),
+            ...(moved.stop != null ? { stop: moved.stop } : {}),
             updatedAt: Date.now(),
           });
         } else if (edit.anchor === "stop") {
-          onUpdateDrawing({ ...edit.drawing, stop: pt.price, updatedAt: Date.now() });
+          onUpdateDrawing({ ...edit.drawing, stop: movePositionStop(edit.drawing.stop, pt.price), updatedAt: Date.now() });
+        } else if (edit.anchor === "entry") {
+          // Vertical-only, like "stop" — price changes, `p1.time` (and thus
+          // the box's time extent on that side) never does.
+          onUpdateDrawing({ ...edit.drawing, p1: movePositionEntry(edit.drawing.p1, pt.price), updatedAt: Date.now() });
+        } else if (edit.anchor === "target") {
+          onUpdateDrawing({ ...edit.drawing, p2: movePositionTarget(edit.drawing.p2, pt.price), updatedAt: Date.now() });
+        } else if (edit.anchor === "left" || edit.anchor === "right") {
+          // Horizontal-only: moves whichever of p1/p2 sits on that side's
+          // time extent, never touching either anchor's price. "Which side"
+          // is resolved once against `edit.drawing` (the fixed pre-drag
+          // snapshot every anchor kind here reads from), not re-derived per
+          // frame, so a resize that crosses over the opposite edge mid-drag
+          // still keeps moving the SAME anchor's time.
+          const resized = resizePositionWidth(edit.drawing.p1, edit.drawing.p2, edit.anchor, pt.time);
+          onUpdateDrawing({ ...edit.drawing, p1: resized.p1, p2: resized.p2, updatedAt: Date.now() });
         } else if (edit.anchor === "p3") {
           onUpdateDrawing({ ...edit.drawing, points: [pt], updatedAt: Date.now() });
         } else if (edit.anchor.startsWith("point:")) {
@@ -5441,6 +5596,7 @@ export function StudioChart({
       canvas.removeEventListener("pointermove", onMove);
       canvas.removeEventListener("pointerup", onUp);
       canvas.removeEventListener("dblclick", onFinishMultiPoint);
+      cleanupHover?.();
     };
   }, [tool, onAddDrawing, onRemoveDrawing, onUpdateDrawing, onSelectDrawing]);
 
@@ -5571,7 +5727,13 @@ export function StudioChart({
       <canvas
         ref={canvasRef}
         className="absolute inset-0 z-10"
-        style={{ pointerEvents: tool === "cursor" ? "none" : "auto", cursor: tool === "erase" ? "not-allowed" : tool === "cursor" ? "default" : tool === "select" ? "pointer" : "crosshair" }}
+        style={{
+          pointerEvents: tool === "cursor" ? "none" : "auto",
+          // "select"'s cursor is dynamic (see the hover-driven pass-through
+          // block in the pointer-interaction effect above) — this is just
+          // its baseline before the first hover move lands.
+          cursor: tool === "erase" ? "not-allowed" : tool === "cursor" ? "default" : "crosshair",
+        }}
       />
 
       {/* Phase 3D-14: the Image tool's file picker. Hidden and

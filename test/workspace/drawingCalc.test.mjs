@@ -12,6 +12,11 @@ import {
   removeFibLevel,
   anchoredVwap,
   computePositionMetrics,
+  movePositionEntry,
+  movePositionTarget,
+  movePositionStop,
+  resizePositionWidth,
+  movePositionBody,
   FIB_EXTENSION_DEFAULT_LEVELS,
   FIB_CHANNEL_DEFAULT_LEVELS,
   FIB_WEDGE_DEFAULT_LEVELS,
@@ -183,6 +188,72 @@ function bar(time, open, high, low, close, volume) {
   // dividing by zero.
   const m = computePositionMetrics(100, 90, 130, 0, 1);
   ok("position: non-positive tickSize falls back safely", Number.isFinite(m.riskTicks) && m.riskTicks > 0);
+}
+
+// ---- Long/Short position interaction anchors (Phase 3D-15) -------------
+// StudioChart's onMove calls these directly for the "entry"/"target"/
+// "left"/"right"/"body" anchor kinds — not a parallel reimplementation.
+
+{
+  const p1 = { time: 1000, price: 100 };
+  const moved = movePositionEntry(p1, 95);
+  close("movePositionEntry: changes only price", moved.price, 95);
+  ok("movePositionEntry: time is untouched", moved.time === p1.time);
+}
+
+{
+  const p2 = { time: 2000, price: 130 };
+  const moved = movePositionTarget(p2, 140);
+  close("movePositionTarget: changes only price", moved.price, 140);
+  ok("movePositionTarget: time is untouched", moved.time === p2.time);
+}
+
+{
+  ok("movePositionStop: sets the stop price", movePositionStop(90, 85) === 85);
+  ok("movePositionStop: works from an undefined starting stop", movePositionStop(undefined, 85) === 85);
+}
+
+{
+  // p1 (entry) drawn on the left, p2 (target) on the right.
+  const p1 = { time: 1000, price: 100 };
+  const p2 = { time: 2000, price: 130 };
+  const left = resizePositionWidth(p1, p2, "left", 800);
+  close("resizePositionWidth left: moves p1's time (the left side)", left.p1.time, 800);
+  ok("resizePositionWidth left: p1's price is untouched", left.p1.price === p1.price);
+  ok("resizePositionWidth left: p2 is untouched", left.p2 === p2);
+  const right = resizePositionWidth(p1, p2, "right", 2500);
+  close("resizePositionWidth right: moves p2's time (the right side)", right.p2.time, 2500);
+  ok("resizePositionWidth right: p2's price is untouched", right.p2.price === p2.price);
+  ok("resizePositionWidth right: p1 is untouched", right.p1 === p1);
+}
+
+{
+  // Mirrored Short: p2 (target) drawn to the LEFT of p1 (entry) — "left"/
+  // "right" must resolve by actual on-screen time position, not by which of
+  // p1/p2 it happens to be.
+  const p1 = { time: 2000, price: 100 }; // entry, on the right
+  const p2 = { time: 1000, price: 70 }; // target, on the left
+  const left = resizePositionWidth(p1, p2, "left", 500);
+  ok("resizePositionWidth left (short, p2 is the left side): moves p2's time", left.p2.time === 500 && left.p1 === p1);
+  const right = resizePositionWidth(p1, p2, "right", 2600);
+  ok("resizePositionWidth right (short, p1 is the left side): moves p1's time", right.p1.time === 2600 && right.p2 === p2);
+}
+
+{
+  const p1 = { time: 1000, price: 100 }; // entry
+  const p2 = { time: 2000, price: 130 }; // target
+  const stop = 90;
+  const moved = movePositionBody(p1, p2, stop, 500, -5);
+  close("movePositionBody: shifts entry time+price", moved.p1.time, 1500);
+  close("movePositionBody: shifts entry price", moved.p1.price, 95);
+  close("movePositionBody: shifts target time+price", moved.p2.time, 2500);
+  close("movePositionBody: shifts target price", moved.p2.price, 125);
+  close("movePositionBody: shifts stop by the same price delta", moved.stop, 85);
+  // Relative distances (risk/reward) must be preserved by a pure shift.
+  close("movePositionBody: preserves risk distance", moved.p1.price - moved.stop, p1.price - stop);
+  close("movePositionBody: preserves reward distance", moved.p2.price - moved.p1.price, p2.price - p1.price);
+  const movedNoStop = movePositionBody(p1, p2, undefined, 100, 10);
+  ok("movePositionBody: an undefined stop stays undefined", movedNoStop.stop === undefined);
 }
 
 // ---- Phase 3C: Trend-Based Fib Extension / Channel / Wedge -------------

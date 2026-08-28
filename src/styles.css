@@ -96,6 +96,40 @@
   border-radius: 999px;
 }
 
+/* Professional dark scrollbars for Chart Studio (Phase 3D-15) — applied to
+   the Studio route root (see `.studio-scrollbars` on studio.tsx's root
+   container), so every overflow panel underneath (Positions/Orders/Strategy
+   Tester/History/Journal/Saved/etc.) AND CodeMirror's internal
+   `.cm-scroller` (plain DOM, no Shadow DOM boundary) pick it up automatically
+   via one rule instead of a class added to each panel. Deliberately separate
+   from `.subtle-scrollbar` above (kept as-is, still used elsewhere) since
+   this one additionally covers horizontal scrollbars and a hover state.
+   Scoped to `.studio-scrollbars *` specifically (the scrollbar
+   pseudo-elements only), not the whole site, so unrelated pages are
+   untouched. */
+.studio-scrollbars *::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.studio-scrollbars *::-webkit-scrollbar-track {
+  background: transparent;
+}
+.studio-scrollbars *::-webkit-scrollbar-thumb {
+  background-color: var(--color-border);
+  border-radius: 999px;
+}
+.studio-scrollbars *::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-muted-foreground);
+}
+.studio-scrollbars *::-webkit-scrollbar-corner {
+  background: transparent;
+}
+.studio-scrollbars,
+.studio-scrollbars * {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
 .loading-bar {
   animation: loading-bar-slide 1.4s infinite ease-in-out;
   transform-origin: left;
