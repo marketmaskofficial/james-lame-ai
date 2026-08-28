@@ -566,7 +566,13 @@ export const TOOL_DEFS: ToolDef[] = [
   // Triangle Pattern: 4 anchors forming two CONVERGING trendlines (0->2 and
   // 1->3 — see patternSegments' triangle-pattern override), not a 0-1-2-3
   // zigzag and not the unrelated 3-anchor geometric "Triangle" shape tool.
-  { id: "triangle-pattern", name: "Triangle Pattern", category: "patterns", icon: Waypoints, interactionType: "multi-click", anchorCount: 4, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  // Phase 3D-12 icon pass: unlike its four zigzag-chain siblings above/below
+  // (XABCD/Cypher/ABCD/Three Drives, which genuinely share one shape), this
+  // tool's real geometry is two CONVERGING trendlines, not a zigzag chain —
+  // the plain triangle glyph (shared across sections with Shapes' literal
+  // triangle and Elliott's own converging-wave triangle below, never shown
+  // in the same flyout) communicates that correctly at zero new-glyph cost.
+  { id: "triangle-pattern", name: "Triangle Pattern", category: "patterns", icon: Triangle, interactionType: "multi-click", anchorCount: 4, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
   // Three Drives: a plain 6-anchor zigzag (three drive legs + two
   // retracement legs) — the default patternSegments topology, same as
   // XABCD/Cypher/ABCD, just with a longer label set.
@@ -590,7 +596,11 @@ export const TOOL_DEFS: ToolDef[] = [
   // converging-trendline topology of Phase 3D-1's Triangle Pattern and NOT
   // the unrelated 3-anchor geometric "Triangle" shape — three fully
   // distinct tool ids/geometries that happen to share the word "triangle".
-  { id: "elliott-triangle", name: "Triangle (A-B-C-D-E)", category: "elliott", icon: Activity, interactionType: "multi-click", anchorCount: 6, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  // Phase 3D-12 icon pass: an Elliott triangle wave is a contracting/
+  // expanding triangle shape, not a monotonic zigzag like Impulse/
+  // Correction/Double Combo/Triple Combo — the plain triangle glyph
+  // communicates that real difference at zero new-glyph cost.
+  { id: "elliott-triangle", name: "Triangle (A-B-C-D-E)", category: "elliott", icon: Triangle, interactionType: "multi-click", anchorCount: 6, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
   { id: "elliott-double-combo", name: "Double Combo (W-X-Y)", category: "elliott", icon: Activity, interactionType: "multi-click", anchorCount: 4, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
   // Triple Combo (W-X-Y-X-Z): label sequence repeats "X" at anchor indices 2
   // and 4 — anchor identity is ALWAYS the index into `points`, never the

@@ -288,8 +288,19 @@ export function DrawToolbar({
         </div>
       )}
 
-      {/* Global drawing controls — pinned at the bottom, always reachable. */}
-      <div className="grid shrink-0 grid-cols-2 gap-1 border-t border-border px-1.5 py-1.5">
+      {/* Global drawing controls — pinned at the bottom, always reachable.
+          Phase 3D-12: this was a `grid-cols-2` layout left over from Phase
+          2's 80px-wide two-column rail. Phase 3D-11 narrowed the rail to
+          48px (one icon per row everywhere else — Cursor/Select above, every
+          section icon in the scrolling list) but never updated this block,
+          so two 32px buttons + gap (68px) were forced into ~36px of content
+          width, visually crowding/overlapping. Single column matches every
+          other control in this toolbar (same fixed 32px slot, same
+          spacing) and fits the rail's actual width with room to spare — no
+          horizontal overflow, so no horizontal scrollbar risk. This section
+          stays `shrink-0` (a fixed-height footer that never compresses),
+          the section-icon list above it is the only thing that scrolls. */}
+      <div className="flex shrink-0 flex-col gap-1 border-t border-border px-1.5 py-1.5">
         <button
           title={MAGNET_LABEL[magnet]}
           onClick={() => onSetMagnet(MAGNET_CYCLE[(MAGNET_CYCLE.indexOf(magnet) + 1) % MAGNET_CYCLE.length])}
