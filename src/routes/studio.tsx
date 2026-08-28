@@ -2263,6 +2263,14 @@ function StudioWorkspace() {
     },
     [setChartField],
   );
+  // Phase 3D-14: deliberately does NOT call deleteChartImage() for a removed
+  // Image drawing's `settings.imagePath`, even though src/lib/storage/
+  // chartImages.ts exposes exactly that function. A `Duplicate`d Image
+  // drawing shares the exact same path as its source, so deleting one
+  // would silently break every other drawing (on this chart OR another)
+  // still pointing at that object. Real cleanup needs reference counting
+  // across every drawing on every chart instance — deliberately out of
+  // scope for this phase; the storage object is simply left behind.
   const removeDrawing = useCallback((id: string, chartId: string = activeChartInstanceIdRef.current) => {
     const prev = chartStatesMapRef.current[chartId]?.drawings ?? DEFAULT_CHART_RUNTIME_STATE.drawings;
     const after = prev.filter((d) => d.id !== id);
@@ -3581,6 +3589,7 @@ function StudioWorkspace() {
             onAddDrawing={addDrawing}
             onRemoveDrawing={removeDrawing}
             onUpdateDrawing={updateDrawing}
+            userId={user?.id ?? null}
             selectedId={selectedDrawing}
             onSelectDrawing={setSelectedDrawing}
             onOpenDrawingSettings={(id, screen) => {
@@ -3652,6 +3661,7 @@ function StudioWorkspace() {
             if (drawingSettingsFor) removeDrawing(drawingSettingsFor);
           }}
           onClose={() => setDrawingSettingsFor(null)}
+          userId={user?.id ?? null}
         />
       )}
 

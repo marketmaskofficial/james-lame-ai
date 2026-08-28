@@ -146,13 +146,15 @@ for (const t of TOOL_DEFS) {
 // (see their own dedicated blocks further below).
 
 {
-  // "ruler" graduated to implemented:true in Phase 3D-13 (see its own
-  // dedicated block further below) — "image" remains genuinely deferred:
-  // no durable file/image storage or upload infrastructure exists
-  // anywhere in this codebase (confirmed by that same phase's audit).
-  const DEFERRED_SAMPLE = ["image"];
-  const wronglyImplemented = DEFERRED_SAMPLE.filter((id) => TOOL_BY_ID[id]?.implemented);
-  ok(`deferred tools stay implemented:false (wrongly true: ${wronglyImplemented.join(",") || "none"})`, wronglyImplemented.length === 0);
+  // "ruler" graduated to implemented:true in Phase 3D-13; "image" graduated
+  // in Phase 3D-14 (see each phase's own dedicated block further below) —
+  // as of Phase 3D-14, EVERY registered drawing tool is genuinely
+  // implemented:true. This asserts that milestone directly rather than
+  // checking a specific deferred-sample list that no longer has anything
+  // left to name (Post/Idea are publishing/community actions with no
+  // registry entry at all — never drawings — so they don't factor in here).
+  const stillDeferred = TOOL_DEFS.filter((t) => !t.implemented).map((t) => t.id);
+  ok(`no drawing tool remains implemented:false (still deferred: ${stillDeferred.join(",") || "none"})`, stillDeferred.length === 0);
 }
 
 // ---- Fibonacci family audit: no member left deferred (Phase 3C-4) ---------
@@ -601,7 +603,8 @@ for (const t of TOOL_DEFS) {
   ok("Callout is a real 2-anchor tool (pointed-to location + text box position)", TOOL_BY_ID["callout"]?.interactionType === "drag" && TOOL_BY_ID["callout"]?.anchorCount === 2);
   ok("Callout declares text capability", TOOL_BY_ID["callout"]?.capabilities.text === true);
 
-  ok("Image remains implemented:false — no durable asset-storage infrastructure exists yet", TOOL_BY_ID["image"]?.implemented === false);
+  // Image graduated to implemented:true in Phase 3D-14 — see that phase's
+  // own dedicated block further below for its full coverage.
   ok("Post/Idea have no registry entry — publishing/community actions, not chart drawings", TOOL_BY_ID["post"] === undefined && TOOL_BY_ID["idea"] === undefined);
 
   ok("Text and Note (marker) were already complete and remain implemented:true (untouched)", TOOL_BY_ID["text"]?.implemented === true && TOOL_BY_ID["marker"]?.implemented === true);
@@ -753,19 +756,15 @@ for (const t of TOOL_DEFS) {
 
   // Image/Post/Idea must never leak into the toolbar as fake working
   // drawings. As of Phase 3D-11 this asserted the whole "content" family
-  // contributed zero implemented tools; Phase 3D-13 graduated two of its
-  // three entries (see that phase's own dedicated block further below) —
-  // this now asserts the family contributes EXACTLY those two genuinely-
-  // implemented tools, and that Image specifically (which needs real file/
-  // asset storage infrastructure this codebase doesn't have) stays
-  // implemented:false rather than being faked.
+  // contributed zero implemented tools; Phase 3D-13 graduated Content Icon
+  // and Emoji; Phase 3D-14 graduated Image too (see each phase's own
+  // dedicated block further below) — the family now contributes all three
+  // of its entries as genuinely implemented, real (not faked) tools.
   ok(
-    "the Content family contributes exactly Content Icon + Emoji as implemented — Image stays deferred, never rendered as a fake working section",
-    IMPLEMENTED_TOOLS.filter((t) => t.category === "content").length === 2 &&
-      IMPLEMENTED_TOOLS.some((t) => t.id === "content-icon") &&
-      IMPLEMENTED_TOOLS.some((t) => t.id === "emoji"),
+    "the Content family contributes all three of Content Icon + Emoji + Image as implemented",
+    IMPLEMENTED_TOOLS.filter((t) => t.category === "content").length === 3 &&
+      ["content-icon", "emoji", "image"].every((id) => IMPLEMENTED_TOOLS.some((t) => t.id === id)),
   );
-  ok("Image is still declared but explicitly implemented:false (no durable file/asset storage infrastructure exists)", TOOL_BY_ID["image"]?.implemented === false);
 
   // Spot-check icon distinctness for the specific collisions this phase's
   // redesign was required to resolve (not an exhaustive uniqueness
@@ -823,6 +822,34 @@ for (const t of TOOL_DEFS) {
   ok("Content Icon also declares text (optional caption + reused font-size-as-icon-size control)", TOOL_BY_ID["content-icon"]?.capabilities.text === true);
   ok("Emoji declares text (the emoji character itself) but NOT iconPicker (it has no curated catalog — any unicode emoji works)", TOOL_BY_ID["emoji"]?.capabilities.text === true && !TOOL_BY_ID["emoji"]?.capabilities.iconPicker);
   ok("Content Icon and Emoji are two distinct tool ids", TOOL_BY_ID["content-icon"]?.id !== TOOL_BY_ID["emoji"]?.id);
+}
+
+// ---- Phase 3D-14: Image graduates to implemented:true ----------------------
+// Backed by a real, durable Supabase Storage bucket (private "chart-images",
+// see supabase/migrations/20260827120000_chart_images_bucket.sql) and
+// src/lib/storage/chartImages.ts — not base64/localStorage. Deliberately a
+// 2-anchor DRAG box (p1/p2 are its two opposite corners), matching
+// Rectangle's own geometry exactly, so it reuses Rectangle's existing body/
+// corner hit-test and resize/move code in StudioChart.tsx with zero new
+// geometry math (see that file's "image" render/hit-test branches). This
+// is the last of the four Phase 3D-12-audit deferred entries (ruler,
+// content-icon, emoji, image) to graduate — see the "no drawing tool
+// remains implemented:false" assertion near the top of this file.
+
+{
+  ok("image is now implemented:true", TOOL_BY_ID["image"]?.implemented === true);
+  ok("image is in IMPLEMENTED_TOOLS", IMPLEMENTED_TOOLS.some((t) => t.id === "image"));
+  ok("image resolves to the \"content\" section, alongside Content Icon/Emoji", TOOL_BY_ID["image"]?.category === "content");
+  ok(
+    "image is a 2-anchor DRAG tool (a resizable box, like Rectangle) — NOT the single-click point tool it used to be declared as",
+    TOOL_BY_ID["image"]?.interactionType === "drag" && TOOL_BY_ID["image"]?.anchorCount === 2,
+  );
+  ok(
+    "image shares the exact same interactionType/anchorCount shape as Rectangle (the geometry it deliberately reuses)",
+    TOOL_BY_ID["image"]?.interactionType === TOOL_BY_ID["rect"]?.interactionType && TOOL_BY_ID["image"]?.anchorCount === TOOL_BY_ID["rect"]?.anchorCount,
+  );
+  ok("image declares the new imageReplace capability (the settings popover's \"Replace Image\" action)", TOOL_BY_ID["image"]?.capabilities.imageReplace === true);
+  ok("image does NOT declare stroke/fill/text — its content IS the picture, not a styleable shape", !TOOL_BY_ID["image"]?.capabilities.stroke && !TOOL_BY_ID["image"]?.capabilities.fill && !TOOL_BY_ID["image"]?.capabilities.text);
 }
 
 // ---- summary ----------------------------------------------------------------

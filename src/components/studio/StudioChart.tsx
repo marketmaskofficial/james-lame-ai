@@ -57,6 +57,7 @@ import {
   computeAnchoredVolumeProfile,
   type DrawingVolumeProfileResult,
 } from "@/lib/drawing/volumeProfile";
+import { uploadChartImage, createChartImageSignedUrl, validateChartImageFile } from "@/lib/storage/chartImages";
 
 /** Magnet strength for drawing-anchor snapping (distinct from the chart's own
  * `crosshairMagnet` display setting, which only affects the crosshair, not
@@ -882,6 +883,13 @@ export function StudioChart({
   chartInstanceId,
   /** Drawing-anchor snap strength — see `MagnetMode`'s doc comment. */
   magnet = "off",
+  /** Authenticated user id (Phase 3D-14) — used ONLY to build the Image
+   * tool's upload path ("{userId}/{uuid}.{ext}", matching the
+   * chart-images bucket's owner-scoped RLS policies). Optional/nullable:
+   * every other tool works with no auth at all, and the inactive-pane
+   * StudioChart instance (tool="cursor", never creates drawings) never
+   * needs it either. */
+  userId = null,
 
 }: {
   bars: Bar[];
@@ -920,6 +928,7 @@ export function StudioChart({
   onRenderStats?: (statsByIndicatorKey: Record<string, RenderStats>) => void;
   chartInstanceId?: string;
   magnet?: MagnetMode;
+  userId?: string | null;
 }) {
 
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -950,6 +959,130 @@ export function StudioChart({
   // Live refs for the overlay renderer (avoids stale closures in rAF).
   const stateRef = useRef({ indicators, drawings, tool, bars, instrument, selectedId, magnet, chartInstanceId });
   stateRef.current = { indicators, drawings, tool, bars, instrument, selectedId, magnet, chartInstanceId };
+
+  const newId = () => `d${Date.now()}${Math.round(Math.random() * 1e4)}`;
+  // Always mints a FRESH id here, regardless of whatever placeholder the
+  // caller's draft object was carrying (draftRef entries use the constant
+  // "__draft__" while a shape is still being dragged/multi-clicked, purely
+  // so the in-progress object has some id shape — see draftRef assignments
+  // in the pointer-interaction effect below). Committing every drawing's
+  // real id in exactly one place is what guarantees two drawings can never
+  // collide on id, which id-keyed selection/update/delete/persistence all
+  // depend on. Hoisted to component scope (Phase 3D-14) rather than living
+  // only inside that effect's closure, so the Image tool's async upload-
+  // then-finalize handler (a plain event handler, not part of that effect)
+  // can stamp a new drawing through this exact same single source of truth
+  // instead of a second id-minting copy. Reads only `stateRef.current` (a
+  // ref) and the imported `getToolStyleDefaults`, so redefining it every
+  // render is harmless — nothing here is per-render state.
+  const stampNew = (d: Omit<Drawing, "id" | "chartInstanceId" | "createdAt" | "updatedAt"> & { id?: string }): Drawing => {
+    const now = Date.now();
+    // Per-tool "last used style" — a Trend Line restyled to yellow/2px/
+    // dashed makes future Trend Lines start that way; scoped strictly per
+    // DrawTool id so it can never bleed into an unrelated tool's defaults
+    // (see src/lib/drawing/styleDefaults.ts). Applied as a BASE, under
+    // whatever the draft itself already carries — no creation path above
+    // sets color/width/style/settings on the draft directly, so this never
+    // actually collides with real drawn geometry (p1/p2/points/stop/tool).
+    const remembered = getToolStyleDefaults(d.tool);
+    return {
+      ...remembered,
+      ...d,
+      ...(remembered?.settings || d.settings ? { settings: { ...remembered?.settings, ...d.settings } } : {}),
+      id: newId(),
+      chartInstanceId: stateRef.current.chartInstanceId,
+      locked: false,
+      hidden: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+  };
+
+  // Phase 3D-14: the Image tool's RUNTIME-ONLY signed-URL/loaded-image
+  // cache, keyed by the drawing's persisted `settings.imagePath`. Never
+  // read from or written into anything persisted — a signed URL expires,
+  // so it can never be treated as durable drawing state (see
+  // src/lib/storage/chartImages.ts's own doc comment). `drawOverlay()`
+  // already runs on every animation frame regardless of React state (see
+  // its own doc comment above), so mutating this plain ref/Map from an
+  // async `.then()` needs no forceRerender/setState hack — the next frame
+  // just picks up whatever status this cache now holds.
+  const imageCacheRef = useRef<
+    Map<string, { status: "loading" | "loaded" | "error"; img: HTMLImageElement | null; resolvedAt: number }>
+  >(new Map());
+  // Re-resolve a bit before the signed URL's actual TTL elapses, not
+  // exactly at it — avoids a race where a render reuses a URL that expires
+  // between the check and the (already-loaded) `<img>` staying valid.
+  const IMAGE_URL_REFRESH_MS = 55 * 60 * 1000;
+  // drawOverlay() runs every animation frame (60fps) — without a cooldown
+  // on the "error" status too (not just "loading"/"loaded"), a genuinely
+  // failed resolve (missing bucket, deleted object, RLS rejection) would
+  // get re-fetched on literally every frame forever, hammering Storage
+  // with a failing request 60 times a second instead of failing once and
+  // occasionally retrying in case the asset becomes available again.
+  const IMAGE_ERROR_RETRY_MS = 30 * 1000;
+  function ensureChartImageLoaded(path: string) {
+    const cache = imageCacheRef.current;
+    const existing = cache.get(path);
+    if (existing) {
+      const age = Date.now() - existing.resolvedAt;
+      if (existing.status === "loading") return existing;
+      if (existing.status === "loaded" && age < IMAGE_URL_REFRESH_MS) return existing;
+      if (existing.status === "error" && age < IMAGE_ERROR_RETRY_MS) return existing;
+    }
+    const placeholder = { status: "loading" as const, img: null, resolvedAt: Date.now() };
+    cache.set(path, placeholder);
+    createChartImageSignedUrl(path)
+      .then((signedUrl) => {
+        const img = new Image();
+        img.onload = () => cache.set(path, { status: "loaded", img, resolvedAt: Date.now() });
+        img.onerror = () => cache.set(path, { status: "error", img: null, resolvedAt: Date.now() });
+        img.src = signedUrl;
+      })
+      .catch(() => cache.set(path, { status: "error", img: null, resolvedAt: Date.now() }));
+    return placeholder;
+  }
+
+  // Set by the pointer-interaction effect's onUp handler the instant an
+  // Image drag-box is released, read back by handleImageFileChange once
+  // the (necessarily async) upload resolves — the gap between those two
+  // moments is exactly why Image can't go through the generic synchronous
+  // `stampNew`-and-done path every other drag tool uses.
+  const pendingImagePlacementRef = useRef<{ p1: MarketPoint; p2: MarketPoint } | null>(null);
+  const imageFileInputRef = useRef<HTMLInputElement | null>(null);
+  const userIdRef = useRef(userId);
+  userIdRef.current = userId;
+
+  async function handleImageFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0] ?? null;
+    e.target.value = ""; // so picking the exact same file again still fires a change event
+    const placement = pendingImagePlacementRef.current;
+    pendingImagePlacementRef.current = null;
+    if (!file || !placement) return; // user cancelled the OS file picker — place nothing
+    const invalid = validateChartImageFile(file);
+    if (invalid) {
+      window.alert(invalid === "too-large" ? "Image exceeds the 5 MB limit." : "Unsupported image type — use PNG, JPEG, WEBP, or GIF.");
+      return;
+    }
+    const uid = userIdRef.current;
+    if (!uid) {
+      window.alert("Sign in to upload an image.");
+      return;
+    }
+    try {
+      const path = await uploadChartImage(file, uid);
+      // Pre-warm the runtime signed-URL cache (the "resolve signed url"
+      // step) so the image is already loading — or loaded — by the time
+      // this drawing's very first frame renders, rather than starting cold.
+      ensureChartImageLoaded(path);
+      onAddDrawing(stampNew({ tool: "image", p1: placement.p1, p2: placement.p2, settings: { imagePath: path } }));
+    } catch (err) {
+      // Upload genuinely failed (network/RLS/bucket-limit rejection) — no
+      // drawing is added, matching "no broken/empty persistent drawing
+      // left behind" exactly like the user cancelling the picker above.
+      window.alert(err instanceof Error ? err.message : "Failed to upload image.");
+    }
+  }
 
   // Render telemetry, recomputed every drawOverlay() frame and pushed to the
   // parent so it can drive an honest success/failure notice instead of a
@@ -3571,6 +3704,43 @@ export function StudioChart({
         } else if (d.tool === "rect") {
           ctx.fillRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
           ctx.strokeRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
+        } else if (d.tool === "image") {
+          // Phase 3D-14: the SAME bounding-box geometry as Rectangle just
+          // above (p1/p2 are its two opposite corners) — only the fill is
+          // different (a real image instead of a flat color), reusing
+          // Rectangle's own body/corner hit-test and resize/move behavior
+          // with zero new geometry (see the shared hit-test tuple below).
+          const boxX = Math.min(x1, x2);
+          const boxY = Math.min(y1, y2);
+          const boxW = Math.abs(x2 - x1);
+          const boxH = Math.abs(y2 - y1);
+          const imagePath = d.settings?.imagePath as string | undefined;
+          const entry = imagePath ? ensureChartImageLoaded(imagePath) : null;
+          ctx.setLineDash([]);
+          if (entry?.status === "loaded" && entry.img) {
+            ctx.drawImage(entry.img, boxX, boxY, boxW, boxH);
+            ctx.lineWidth = 1;
+            ctx.strokeStyle = withAlpha(col, alpha * 0.6);
+            ctx.strokeRect(boxX, boxY, boxW, boxH);
+          } else {
+            // Loading, errored, or (should never happen — only ever
+            // created with a real path) missing path: a visible but
+            // unobtrusive placeholder box rather than silently rendering
+            // nothing, per the phase brief.
+            const isError = !imagePath || entry?.status === "error";
+            ctx.strokeStyle = withAlpha(isError ? "#ef4444" : col, alpha);
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([4, 3]);
+            ctx.strokeRect(boxX, boxY, boxW, boxH);
+            ctx.setLineDash([]);
+            if (boxW > 44 && boxH > 16) {
+              ctx.fillStyle = withAlpha(isError ? "#ef4444" : col, alpha);
+              ctx.font = "11px ui-sans-serif, system-ui";
+              ctx.textAlign = "center";
+              ctx.textBaseline = "middle";
+              ctx.fillText(isError ? "Image unavailable" : "Loading…", boxX + boxW / 2, boxY + boxH / 2);
+            }
+          }
         } else if (d.tool === "circle" || d.tool === "ellipse") {
           // Ellipse (Phase 3A) is a DISTINCT tool id from Circle but reuses
           // this exact free-drag geometry 1:1, per registry.ts's comment —
@@ -4702,7 +4872,7 @@ export function StudioChart({
           }
         }
         if (
-          (d.tool === "rect" || d.tool === "circle" || d.tool === "long" || d.tool === "short") &&
+          (d.tool === "rect" || d.tool === "circle" || d.tool === "long" || d.tool === "short" || d.tool === "image") &&
           x1 != null && x2 != null && y1 != null && y2 != null &&
           mx >= Math.min(x1, x2) && mx <= Math.max(x1, x2) &&
           my >= Math.min(y1, y2) && my <= Math.max(y1, y2) &&
@@ -4807,36 +4977,8 @@ export function StudioChart({
       return snapPoint(stateRef.current.bars, raw, stateRef.current.magnet);
     };
 
-    const newId = () => `d${Date.now()}${Math.round(Math.random() * 1e4)}`;
-    // Always mints a FRESH id here, regardless of whatever placeholder the
-    // caller's draft object was carrying (draftRef entries use the constant
-    // "__draft__" while a shape is still being dragged/multi-clicked, purely
-    // so the in-progress object has some id shape — see draftRef assignments
-    // below). Committing every drawing's real id in exactly one place is
-    // what guarantees two drawings can never collide on id, which id-keyed
-    // selection/update/delete/persistence all depend on.
-    const stampNew = (d: Omit<Drawing, "id" | "chartInstanceId" | "createdAt" | "updatedAt"> & { id?: string }): Drawing => {
-      const now = Date.now();
-      // Per-tool "last used style" — a Trend Line restyled to yellow/2px/
-      // dashed makes future Trend Lines start that way; scoped strictly per
-      // DrawTool id so it can never bleed into an unrelated tool's defaults
-      // (see src/lib/drawing/styleDefaults.ts). Applied as a BASE, under
-      // whatever the draft itself already carries — no creation path above
-      // sets color/width/style/settings on the draft directly, so this never
-      // actually collides with real drawn geometry (p1/p2/points/stop/tool).
-      const remembered = getToolStyleDefaults(d.tool);
-      return {
-        ...remembered,
-        ...d,
-        ...(remembered?.settings || d.settings ? { settings: { ...remembered?.settings, ...d.settings } } : {}),
-        id: newId(),
-        chartInstanceId: stateRef.current.chartInstanceId,
-        locked: false,
-        hidden: false,
-        createdAt: now,
-        updatedAt: now,
-      };
-    };
+    // newId/stampNew now live at component scope (Phase 3D-14) — see their
+    // doc comment there for why.
 
     const onDown = (e: PointerEvent) => {
       const raw = rawPoint(e);
@@ -5242,6 +5384,20 @@ export function StudioChart({
         onAddDrawing(stampNew({ ...draft, stop: entry - (target - entry) * 0.5 }));
         return;
       }
+      if (draft.tool === "image") {
+        // Phase 3D-14: unlike every other drag tool, Image can't finalize
+        // synchronously here — placing it needs a file pick + an async
+        // upload first. Stash the drawn box (this draft is about to be
+        // discarded — draftRef is cleared right after this listener
+        // returns) and hand off to the hidden file input; the ACTUAL
+        // onAddDrawing call happens in handleImageFileChange below, only
+        // once the upload genuinely succeeds. If the user cancels the
+        // picker or the upload fails, nothing is ever added — no broken/
+        // empty drawing left behind.
+        pendingImagePlacementRef.current = { p1: draft.p1, p2: draft.p2 };
+        imageFileInputRef.current?.click();
+        return;
+      }
       onAddDrawing(stampNew(draft));
     };
 
@@ -5416,6 +5572,19 @@ export function StudioChart({
         ref={canvasRef}
         className="absolute inset-0 z-10"
         style={{ pointerEvents: tool === "cursor" ? "none" : "auto", cursor: tool === "erase" ? "not-allowed" : tool === "cursor" ? "default" : tool === "select" ? "pointer" : "crosshair" }}
+      />
+
+      {/* Phase 3D-14: the Image tool's file picker. Hidden and
+          programmatically clicked (see the pointer-interaction effect's
+          "image" onUp branch and DrawingSettingsPopover's "Replace Image"
+          action) rather than a visible <input> — the actual UI is the
+          drag-a-box gesture on the canvas above. */}
+      <input
+        ref={imageFileInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/gif"
+        className="hidden"
+        onChange={handleImageFileChange}
       />
 
       {/* Draggable trade levels. Only the thin row captures the pointer, so

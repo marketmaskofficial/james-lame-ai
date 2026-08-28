@@ -355,6 +355,10 @@ export type ToolCapabilities = {
    * ICON_GLYPH_PATHS), not an open-ended catalog. Persisted as a plain
    * `settings.icon` string key. */
   iconPicker?: boolean;
+  /** Image's settings-popover "Replace Image" button (Phase 3D-14) — picks
+   * a new file, uploads it, and swaps `settings.imagePath` in place while
+   * keeping the drawing's existing p1/p2 geometry untouched. */
+  imageReplace?: boolean;
 };
 
 export type ToolDefaultStyle = {
@@ -821,15 +825,16 @@ export const TOOL_DEFS: ToolDef[] = [
   { id: "ruler", name: "Ruler / Measure", category: "measure", icon: Ruler, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
 
   // ---- Content (architecture-ready only, lowest priority) -----------------
-  // Image (Phase 3D-7 audit): stays implemented:false — this codebase has
-  // NO durable image/file upload infrastructure (no storage bucket, no
-  // upload server function; `profiles.avatar_url` is a plain URL column,
-  // not an upload pipeline). Placing a real image needs that asset-storage
-  // dependency built first; persisting a base64 blob into drawing
-  // localStorage instead — the one shortcut that WOULD "work" today — is
-  // explicitly the wrong tradeoff (unbounded localStorage growth, no real
-  // asset lifecycle) and deliberately not done here.
-  { id: "image", name: "Image", category: "content", icon: Image, interactionType: "point", anchorCount: 1, capabilities: {}, defaultStyle: {}, implemented: false },
+  // Image (Phase 3D-14): graduated to implemented:true now that real,
+  // durable asset storage exists (the private "chart-images" Supabase
+  // Storage bucket — see supabase/migrations/20260827120000_chart_images_
+  // bucket.sql — and src/lib/storage/chartImages.ts). A 2-anchor drag box
+  // like Rectangle (p1/p2 are the two opposite corners) deliberately
+  // reuses Rectangle's existing body/corner hit-test and resize/move code
+  // rather than new geometry — see StudioChart.tsx's render/hit-test
+  // branches. `imageReplace` gates the settings popover's "Replace Image"
+  // action.
+  { id: "image", name: "Image", category: "content", icon: Image, interactionType: "drag", anchorCount: 2, capabilities: { imageReplace: true }, defaultStyle: { color: "#4da3ff" }, implemented: true },
   // Content Icon (Phase 3D-13): a small curated set of REAL lucide-react
   // icon geometries (star/heart/check/x/zap/triangle-alert/thumbs-up/bell —
   // see StudioChart.tsx's ICON_GLYPH_PATHS), not a fabricated catalog.

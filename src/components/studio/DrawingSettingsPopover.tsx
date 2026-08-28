@@ -20,7 +20,10 @@ import {
   TriangleAlert,
   ThumbsUp,
   Bell,
+  Upload,
+  Loader2,
 } from "lucide-react";
+import { uploadChartImage, validateChartImageFile } from "@/lib/storage/chartImages";
 
 /** Content Icon's curated catalog (Phase 3D-13) — the same small, real
  * lucide-react icon set StudioChart.tsx's ICON_GLYPH_PATHS draws on canvas,
@@ -72,6 +75,7 @@ export function DrawingSettingsPopover({
   onDuplicate,
   onRemove,
   onClose,
+  userId = null,
 }: {
   drawing: Drawing;
   label: string;
@@ -82,9 +86,14 @@ export function DrawingSettingsPopover({
   onDuplicate: () => void;
   onRemove: () => void;
   onClose: () => void;
+  /** Authenticated user id (Phase 3D-14) — needed only by Image's "Replace
+   * Image" action, to build the new upload's owner-scoped path. */
+  userId?: string | null;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [customLevel, setCustomLevel] = useState("");
+  const [imageReplaceState, setImageReplaceState] = useState<"idle" | "uploading" | "error">("idle");
+  const imageReplaceInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -110,6 +119,41 @@ export function DrawingSettingsPopover({
     onChange({ ...drawing, settings: { ...drawing.settings, [key]: value }, updatedAt: Date.now() });
     setToolStyleDefaults(drawing.tool, { settings: { [key]: value } });
   };
+
+  /**
+   * Image's "Replace Image" action (Phase 3D-14). Picks a NEW file, uploads
+   * it to a fresh path (never overwrites/reuses the old object — see
+   * src/lib/storage/chartImages.ts's own doc comment on why deletion is
+   * deferred), then swaps only `settings.imagePath` via the same
+   * `setSetting` every other tool's settings already go through — p1/p2
+   * geometry is untouched. StudioChart.tsx's render-time image cache is
+   * keyed by path, so pointing the drawing at a new path is itself the
+   * "refresh the runtime cache" step: the old path's cache entry simply
+   * stops being referenced, and the new path is a natural cache miss that
+   * loads fresh — no explicit cache-invalidation call needed here.
+   */
+  async function handleReplaceImageFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0] ?? null;
+    e.target.value = "";
+    if (!file) return; // user cancelled the picker — leave the existing image as-is
+    const invalid = validateChartImageFile(file);
+    if (invalid) {
+      setImageReplaceState("error");
+      return;
+    }
+    if (!userId) {
+      setImageReplaceState("error");
+      return;
+    }
+    setImageReplaceState("uploading");
+    try {
+      const path = await uploadChartImage(file, userId);
+      setSetting("imagePath", path);
+      setImageReplaceState("idle");
+    } catch {
+      setImageReplaceState("error");
+    }
+  }
 
   const fibLevels = (drawing.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(drawing.tool);
   // Fib Time Zone's levels are whole-number Fibonacci-SEQUENCE multiples
@@ -390,6 +434,22 @@ export function DrawingSettingsPopover({
                   />
                 </label>
               </div>
+            </div>
+          )}
+
+          {caps.imageReplace && (
+            <div className="mt-3 space-y-1.5">
+              <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Image</p>
+              <input ref={imageReplaceInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="hidden" onChange={handleReplaceImageFile} />
+              <button
+                onClick={() => imageReplaceInputRef.current?.click()}
+                disabled={imageReplaceState === "uploading"}
+                className="flex w-full items-center justify-center gap-1.5 rounded border border-border px-2 py-1.5 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-50"
+              >
+                {imageReplaceState === "uploading" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                {imageReplaceState === "uploading" ? "Uploading…" : "Replace Image"}
+              </button>
+              {imageReplaceState === "error" && <p className="text-[10.5px] text-destructive">Couldn't replace the image — check the file (PNG/JPEG/WEBP/GIF, under 5 MB) and that you're signed in.</p>}
             </div>
           )}
 

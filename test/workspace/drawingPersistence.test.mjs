@@ -1814,6 +1814,75 @@ function d(id) {
   ok("chart B only sees its own emoji, not chart A's icon", b.length === 1 && b[0].tool === "emoji" && b[0].text === "🔥");
 }
 
+// ---- Phase 3D-14: Image round trip + isolation -----------------------------
+// Image persists ONLY `settings.imagePath` (a small, durable object-storage
+// path like "user-123/9c1e...-abc.png") plus ordinary p1/p2 box geometry —
+// never a signed URL (expires, so it's not durable state), never base64,
+// never a blob: URL. The signed URL is resolved at RENDER time into an
+// in-memory-only cache (StudioChart.tsx's imageCacheRef) that this
+// persistence layer never sees at all.
+
+{
+  fakeStorage.clear();
+  const image = {
+    id: "img1",
+    tool: "image",
+    chartInstanceId: "chart-1",
+    p1: { time: 100, price: 50 },
+    p2: { time: 400, price: 30 },
+    settings: { imagePath: "user-123/9c1e2f3a-b4d5-4e6f-8a9b-0c1d2e3f4a5b.png" },
+  };
+  saveDrawingsFor("chart-1", "ETHUSDT", "1h", [image]);
+  const loaded = loadDrawingsFor("chart-1", "ETHUSDT", "1h");
+
+  ok("Image round trip: the drawing comes back", loaded.length === 1);
+  ok("Image: the bounding-box corners (p1/p2) survive intact", loaded[0].p1.time === 100 && loaded[0].p1.price === 50 && loaded[0].p2.time === 400 && loaded[0].p2.price === 30);
+  ok("Image: the canonical imagePath survives intact, byte-for-byte", loaded[0].settings.imagePath === "user-123/9c1e2f3a-b4d5-4e6f-8a9b-0c1d2e3f4a5b.png");
+}
+
+// ---- Phase 3D-14: explicit regression guard — forbidden representations ---
+// Locks in the architectural rule itself, not just one example of it: NO
+// drawing this store ever round-trips may contain a base64 data URI, a
+// blob: URL, or a Supabase signed URL (which always carries a `token=`
+// query parameter and an expiry) anywhere in its persisted JSON — the
+// canonical reference is always the bare object path.
+
+{
+  fakeStorage.clear();
+  const image = {
+    id: "img2",
+    tool: "image",
+    chartInstanceId: "chart-1",
+    p1: { time: 0, price: 10 },
+    p2: { time: 100, price: 5 },
+    settings: { imagePath: "user-456/9c1e2f3a-b4d5-4e6f-8a9b-0c1d2e3f4a5b.jpg" },
+  };
+  saveDrawingsFor("chart-1", "SOLUSDT", "5m", [image]);
+
+  const rawSerialized = fakeStorage.getItem("sg.studio.drawings.v2");
+  ok("the persisted store never contains a base64 data URI", !rawSerialized.includes("data:image"));
+  ok("the persisted store never contains a blob: URL", !rawSerialized.includes("blob:"));
+  ok("the persisted store never contains a Supabase signed-URL token param (the tell-tale sign of a non-durable, expiring reference)", !rawSerialized.includes("token="));
+  ok("the persisted store never contains a signed-URL path segment", !rawSerialized.includes("/object/sign/"));
+
+  const loaded = loadDrawingsFor("chart-1", "SOLUSDT", "5m");
+  ok("the loaded drawing's imagePath is a bare storage path, not a URL of any kind", !loaded[0].settings.imagePath.includes("://") && !loaded[0].settings.imagePath.startsWith("data:") && !loaded[0].settings.imagePath.startsWith("blob:"));
+}
+
+{
+  fakeStorage.clear();
+  const chartAImage = { id: "a-img", tool: "image", chartInstanceId: "chart-A", p1: { time: 0, price: 1 }, p2: { time: 100, price: 2 }, settings: { imagePath: "user-1/a.png" } };
+  const chartBImage = { id: "b-img", tool: "image", chartInstanceId: "chart-B", p1: { time: 0, price: 1 }, p2: { time: 200, price: 3 }, settings: { imagePath: "user-1/b.png" } };
+
+  saveDrawingsFor("chart-A", "DOGEUSDT", "15m", [chartAImage]);
+  saveDrawingsFor("chart-B", "DOGEUSDT", "15m", [chartBImage]);
+
+  const a = loadDrawingsFor("chart-A", "DOGEUSDT", "15m");
+  const b = loadDrawingsFor("chart-B", "DOGEUSDT", "15m");
+  ok("Image respects chartInstanceId isolation: chart A only sees its own image drawing", a.length === 1 && a[0].settings.imagePath === "user-1/a.png");
+  ok("chart B only sees its own image drawing, not chart A's — even though both belong to the same uploading user", b.length === 1 && b[0].settings.imagePath === "user-1/b.png");
+}
+
 // ---- summary ----------------------------------------------------------------
 
 console.log(`\n${pass}/${pass + fail} passed`);
