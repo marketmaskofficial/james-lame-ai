@@ -652,6 +652,12 @@ type ChartApi = {
   priceScale: (id: string) => { applyOptions: (o: Record<string, unknown>) => void };
   subscribeCrosshairMove: (cb: (p: CrosshairParam) => void) => void;
   panes: () => Array<{ setHeight: (h: number) => void; getHeight: () => number }>;
+  /** Externally drives the native crosshair (Phase 3D-15 follow-up) — the
+   * library's own documented mechanism for "synchronise the crosshairs of
+   * two separate charts," reused here so it stays visible while a drawing
+   * tool's overlay is the one actually receiving mouse events. */
+  setCrosshairPosition: (price: number, horizontalPosition: number, seriesApi: SeriesApi) => void;
+  clearCrosshairPosition: () => void;
 };
 
 type CrosshairParam = {
@@ -881,6 +887,12 @@ export function StudioChart({
   selectedId = null,
   onSelectDrawing,
   onOpenDrawingSettings,
+  /** Right-click on the chart while a drawing tool is armed (Phase 3D-15
+   * follow-up): cancels the in-progress placement and asks the parent to
+   * switch back to the canonical Select tool. Never fired for "select"
+   * itself, so the pre-existing right-click "price under cursor" order
+   * menu (see the contextmenu effect below) is untouched there. */
+  onCancelTool,
   /**
    * Fired every drawOverlay() frame with what actually happened to every
    * indicator-drawn primitive this frame — received/drawn/offscreen/
@@ -936,6 +948,7 @@ export function StudioChart({
    * chart-relative, so the caller can position a `position: fixed` popover
    * without needing to know this canvas's own offset. */
   onOpenDrawingSettings?: (id: string, screen: { x: number; y: number }) => void;
+  onCancelTool?: () => void;
   onRenderStats?: (statsByIndicatorKey: Record<string, RenderStats>) => void;
   chartInstanceId?: string;
   magnet?: MagnetMode;
@@ -1115,6 +1128,16 @@ export function StudioChart({
   onRenderStatsRef.current = onRenderStats;
 
   const draftRef = useRef<Drawing | null>(null);
+  /** Last known mouse position over the chart, in market coordinates, while
+   * a non-"cursor" tool is armed (Phase 3D-15 follow-up) — read every frame
+   * by the RAF loop below to keep re-asserting the native crosshair via
+   * `chart.setCrosshairPosition`. A single set-on-pointermove call gets
+   * silently overwritten by the chart's own periodic internal crosshair
+   * recompute (tied to live-data repaints, not to our external call), so
+   * it has to be refreshed continuously rather than once per event — see
+   * the pointer-interaction effect's host listener for where this is
+   * written, and the `loop()` function for where it's replayed. */
+  const crosshairPosRef = useRef<MarketPoint | null>(null);
   // `point:${index}` is Polyline/Path's per-vertex anchor kind (Phase 3A) —
   // distinct from "p1"/"p2" so dragging vertex 0 or the last vertex can
   // never be mistaken for the generic p1/p2 anchor path, which (for these
@@ -1362,6 +1385,13 @@ export function StudioChart({
 
       const loop = () => {
         drawOverlayRef.current();
+        // Re-assert every frame, not just on pointermove (Phase 3D-15
+        // follow-up) — see `crosshairPosRef`'s doc comment for why a
+        // single per-event call isn't enough to keep the native crosshair
+        // visible on this live-updating chart.
+        const pos = crosshairPosRef.current;
+        const series = priceSeriesRef.current;
+        if (pos && series) chart.setCrosshairPosition(pos.price, pos.time, series);
         raf = requestAnimationFrame(loop);
       };
       raf = requestAnimationFrame(loop);
@@ -5037,6 +5067,22 @@ export function StudioChart({
     pendingRef.current = null;
     previewPointRef.current = null;
 
+    const rawPoint = (e: PointerEvent): MarketPoint | null => {
+      const rect = canvas.getBoundingClientRect();
+      const chart = chartRef.current;
+      const price = priceSeriesRef.current;
+      if (!chart || !price) return null;
+      const logical = chart.timeScale().coordinateToLogical(e.clientX - rect.left);
+      const p = price.coordinateToPrice(e.clientY - rect.top);
+      if (logical == null || p == null) return null;
+      return { time: logicalToTime(stateRef.current.bars, logical), price: p };
+    };
+    const toPoint = (e: PointerEvent): MarketPoint | null => {
+      const raw = rawPoint(e);
+      if (!raw) return null;
+      return snapPoint(stateRef.current.bars, raw, stateRef.current.magnet);
+    };
+
     // ---- canonical Select tool: hover-driven pass-through (Phase 3D-15) ----
     // Select must both hit-test drawings (click/drag to select, move, resize)
     // AND let click-drag on truly empty space reach the native chart's own
@@ -5049,12 +5095,36 @@ export function StudioChart({
     // over empty space so the eventual down event is delivered straight to
     // the native chart canvas and its native pan/zoom/wheel handling runs
     // completely untouched — zero reimplementation of chart panning here.
-    // The listener lives on `hostRef` (the shared container both canvases
-    // sit in via lib.createChart(hostRef.current, ...)), not on this overlay
-    // canvas, since an element with pointerEvents:"none" stops receiving the
-    // very events that would tell it to turn back on.
+    //
+    // ---- native crosshair stays active for every armed tool (Phase 3D-15
+    // follow-up) -------------------------------------------------------
+    // Every OTHER tool keeps this overlay's pointerEvents "auto" at all
+    // times (it has to, to catch a pointerdown anywhere — including empty
+    // space — and start a drawing), so the native chart canvas underneath
+    // never sees a real mousemove and its own crosshair never updates.
+    // Lightweight Charts exposes exactly this "externally driven crosshair"
+    // case via `chart.setCrosshairPosition`/`clearCrosshairPosition` (its
+    // own doc: "if you want to synchronise the crosshairs of two separate
+    // charts") — driving it from here is purely visual (reads no drawing
+    // state, writes nothing to `Drawing`), can't intercept a pointer event,
+    // and isn't a second overlay — it just feeds the chart's own existing
+    // crosshair renderer a position when our overlay is the one receiving
+    // the real mouse events. A single `setCrosshairPosition` call per
+    // pointermove is NOT enough on this chart, though — its own periodic
+    // internal crosshair recompute (tied to the live-data repaint cycle,
+    // not to genuine hover state) silently overwrites a one-off external
+    // call within a frame or two. So this only records the latest pointer
+    // position (`crosshairPosRef`); the actual `setCrosshairPosition` call
+    // happens every frame from the chart-creation effect's existing RAF
+    // loop, which reliably wins that race the same way continuous real
+    // mouse movement would.
+    //
+    // Both live on ONE `hostRef` listener (the shared container both
+    // canvases sit in via lib.createChart(hostRef.current, ...)), not on
+    // this overlay canvas, since an element with pointerEvents:"none" stops
+    // receiving the very events that would tell it to turn back on.
     let cleanupHover: (() => void) | undefined;
-    if (tool === "select") {
+    {
       const host = hostRef.current;
       if (host) {
         const updateHover = (clientX: number, clientY: number) => {
@@ -5078,44 +5148,52 @@ export function StudioChart({
             canvas.style.cursor = "nwse-resize";
           }
         };
-        const onHostMove = (e: PointerEvent) => updateHover(e.clientX, e.clientY);
+        const onHostMove = (e: PointerEvent) => {
+          // Only records where the pointer is — the RAF loop (in the
+          // chart-creation effect) is what actually calls
+          // `setCrosshairPosition` every frame; see `crosshairPosRef`'s
+          // doc comment for why a single per-event call isn't sufficient.
+          crosshairPosRef.current = rawPoint(e);
+          if (tool === "select") updateHover(e.clientX, e.clientY);
+        };
         const onHostLeave = () => {
-          canvas.style.pointerEvents = "auto";
-          canvas.style.cursor = "crosshair";
+          crosshairPosRef.current = null;
+          chartRef.current?.clearCrosshairPosition();
+          if (tool === "select") {
+            canvas.style.pointerEvents = "auto";
+            canvas.style.cursor = "crosshair";
+          }
         };
         host.addEventListener("pointermove", onHostMove);
         host.addEventListener("pointerleave", onHostLeave);
-        canvas.style.pointerEvents = "auto";
-        canvas.style.cursor = "crosshair";
+        if (tool === "select") {
+          canvas.style.pointerEvents = "auto";
+          canvas.style.cursor = "crosshair";
+        }
         cleanupHover = () => {
           host.removeEventListener("pointermove", onHostMove);
           host.removeEventListener("pointerleave", onHostLeave);
-          canvas.style.pointerEvents = "";
-          canvas.style.cursor = "";
+          crosshairPosRef.current = null;
+          chartRef.current?.clearCrosshairPosition();
+          if (tool === "select") {
+            canvas.style.pointerEvents = "";
+            canvas.style.cursor = "";
+          }
         };
       }
     }
-
-    const rawPoint = (e: PointerEvent): MarketPoint | null => {
-      const rect = canvas.getBoundingClientRect();
-      const chart = chartRef.current;
-      const price = priceSeriesRef.current;
-      if (!chart || !price) return null;
-      const logical = chart.timeScale().coordinateToLogical(e.clientX - rect.left);
-      const p = price.coordinateToPrice(e.clientY - rect.top);
-      if (logical == null || p == null) return null;
-      return { time: logicalToTime(stateRef.current.bars, logical), price: p };
-    };
-    const toPoint = (e: PointerEvent): MarketPoint | null => {
-      const raw = rawPoint(e);
-      if (!raw) return null;
-      return snapPoint(stateRef.current.bars, raw, stateRef.current.magnet);
-    };
 
     // newId/stampNew now live at component scope (Phase 3D-14) — see their
     // doc comment there for why.
 
     const onDown = (e: PointerEvent) => {
+      // Left button only (Phase 3D-15 follow-up) — a right-click's own
+      // "pointerdown" fires BEFORE its "contextmenu" event, so without
+      // this guard it would already be treated as a normal placement
+      // click (finishing a pending multi-click drawing, starting a drag,
+      // hit-testing a selection, ...) before the contextmenu-cancel
+      // handler further below ever got a chance to run.
+      if (e.button !== 0) return;
       const raw = rawPoint(e);
       if (!raw) return;
       const rect = canvas.getBoundingClientRect();
@@ -5587,6 +5665,28 @@ export function StudioChart({
       onSelectDrawing?.(null);
     };
 
+    // ---- right-click cancels an armed drawing tool (Phase 3D-15 follow-up) --
+    // Only when a placement tool other than Select is armed — Select itself
+    // is a no-op here so the pre-existing right-click "price under cursor"
+    // order menu (see the separate contextmenu effect further down) keeps
+    // working exactly as before. Registered on `hostRef` in the CAPTURE
+    // phase specifically so it runs, and can stopPropagation, before that
+    // other effect's bubble-phase listener on the same host element — the
+    // two are independent effects with no defined mount order otherwise.
+    const host = hostRef.current;
+    const onContextCancel = (e: MouseEvent) => {
+      if (tool === "select") return;
+      e.preventDefault();
+      e.stopPropagation();
+      pendingRef.current = null;
+      draftRef.current = null;
+      previewPointRef.current = null;
+      editRef.current = null;
+      pendingImagePlacementRef.current = null;
+      onCancelTool?.();
+    };
+    host?.addEventListener("contextmenu", onContextCancel, true);
+
     canvas.addEventListener("pointerdown", onDown);
     canvas.addEventListener("pointermove", onMove);
     canvas.addEventListener("pointerup", onUp);
@@ -5596,9 +5696,10 @@ export function StudioChart({
       canvas.removeEventListener("pointermove", onMove);
       canvas.removeEventListener("pointerup", onUp);
       canvas.removeEventListener("dblclick", onFinishMultiPoint);
+      host?.removeEventListener("contextmenu", onContextCancel, true);
       cleanupHover?.();
     };
-  }, [tool, onAddDrawing, onRemoveDrawing, onUpdateDrawing, onSelectDrawing]);
+  }, [tool, onAddDrawing, onRemoveDrawing, onUpdateDrawing, onSelectDrawing, onCancelTool]);
 
   // ---- double-click a completed drawing -> open its settings ---------------
   // Deliberately its OWN effect, not folded into the pointer-interaction one
