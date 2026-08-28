@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AccountRouteImport } from './routes/account'
 import { Route as AppRouteImport } from './routes/app'
 import { Route as AuthRouteImport } from './routes/auth'
+import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as PricingRouteImport } from './routes/pricing'
 import { Route as StudioRouteImport } from './routes/studio'
 import { Route as ApiGenerateRouteImport } from './routes/api/generate'
@@ -40,6 +41,11 @@ const AppRoute = AppRouteImport.update({
 const AuthRoute = AuthRouteImport.update({
   id: '/auth',
   path: '/auth',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DashboardRoute = DashboardRouteImport.update({
+  id: '/dashboard',
+  path: '/dashboard',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PricingRoute = PricingRouteImport.update({
@@ -90,6 +96,7 @@ export interface FileRoutesByFullPath {
   '/account': typeof AccountRoute
   '/app': typeof AppRoute
   '/auth': typeof AuthRoute
+  '/dashboard': typeof DashboardRoute
   '/pricing': typeof PricingRoute
   '/studio': typeof StudioRoute
   '/api/generate': typeof ApiGenerateRoute
@@ -104,6 +111,7 @@ export interface FileRoutesByTo {
   '/account': typeof AccountRoute
   '/app': typeof AppRoute
   '/auth': typeof AuthRoute
+  '/dashboard': typeof DashboardRoute
   '/pricing': typeof PricingRoute
   '/studio': typeof StudioRoute
   '/api/generate': typeof ApiGenerateRoute
@@ -119,6 +127,7 @@ export interface FileRoutesById {
   '/account': typeof AccountRoute
   '/app': typeof AppRoute
   '/auth': typeof AuthRoute
+  '/dashboard': typeof DashboardRoute
   '/pricing': typeof PricingRoute
   '/studio': typeof StudioRoute
   '/api/generate': typeof ApiGenerateRoute
@@ -135,6 +144,7 @@ export interface FileRouteTypes {
     | '/account'
     | '/app'
     | '/auth'
+    | '/dashboard'
     | '/pricing'
     | '/studio'
     | '/api/generate'
@@ -149,6 +159,7 @@ export interface FileRouteTypes {
     | '/account'
     | '/app'
     | '/auth'
+    | '/dashboard'
     | '/pricing'
     | '/studio'
     | '/api/generate'
@@ -163,6 +174,7 @@ export interface FileRouteTypes {
     | '/account'
     | '/app'
     | '/auth'
+    | '/dashboard'
     | '/pricing'
     | '/studio'
     | '/api/generate'
@@ -178,6 +190,7 @@ export interface RootRouteChildren {
   AccountRoute: typeof AccountRoute
   AppRoute: typeof AppRoute
   AuthRoute: typeof AuthRoute
+  DashboardRoute: typeof DashboardRoute
   PricingRoute: typeof PricingRoute
   StudioRoute: typeof StudioRoute
   ApiGenerateRoute: typeof ApiGenerateRoute
@@ -216,6 +229,13 @@ declare module '@tanstack/react-router' {
       path: '/auth'
       fullPath: '/auth'
       preLoaderRoute: typeof AuthRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/dashboard': {
+      id: '/dashboard'
+      path: '/dashboard'
+      fullPath: '/dashboard'
+      preLoaderRoute: typeof DashboardRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/pricing': {
@@ -282,6 +302,7 @@ const rootRouteChildren: RootRouteChildren = {
   AccountRoute: AccountRoute,
   AppRoute: AppRoute,
   AuthRoute: AuthRoute,
+  DashboardRoute: DashboardRoute,
   PricingRoute: PricingRoute,
   StudioRoute: StudioRoute,
   ApiGenerateRoute: ApiGenerateRoute,
