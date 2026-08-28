@@ -1,7 +1,7 @@
-import { Link } from "@tanstack/react-router";
+import { Link, useLocation } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { Bell, Crown, History, LogOut, Wand2 } from "lucide-react";
+import { Bell, Crown, History, LayoutDashboard, LineChart, LogOut, Wand2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useSubscription } from "@/hooks/useSubscription";
@@ -31,6 +31,25 @@ function RailIcon({
     >
       {icon}
     </button>
+  );
+}
+
+/** Same look as `RailIcon`, but a real navigation `<Link>` rather than an
+ * action button — for the two primary app-surface destinations (Studio,
+ * Dashboard) that a route change (not a callback prop) should handle. */
+function RailLink({ to, icon, active, title }: { to: string; icon: React.ReactNode; active: boolean; title: string }) {
+  return (
+    <Link
+      to={to}
+      title={title}
+      className={`flex h-9 w-9 items-center justify-center rounded-lg transition ${
+        active
+          ? "bg-accent text-foreground"
+          : "text-muted-foreground hover:bg-accent hover:text-foreground"
+      }`}
+    >
+      {icon}
+    </Link>
   );
 }
 
@@ -87,6 +106,7 @@ export function AppNavRail({
   const { isActive: isPro } = useSubscription();
   const qc = useQueryClient();
   const listAlertNotificationsFn = useServerFn(listAlertNotifications);
+  const { pathname } = useLocation();
 
   // Real, not fabricated: the same triggered-alert unread count Chart
   // Studio's AlertsSidePanel computes from this exact query, so the badge
@@ -115,6 +135,9 @@ export function AppNavRail({
         >
           G
         </Link>
+        <RailLink to="/studio" icon={<LineChart className="h-4 w-4" />} active={pathname.startsWith("/studio")} title="Chart Studio" />
+        <RailLink to="/dashboard" icon={<LayoutDashboard className="h-4 w-4" />} active={pathname.startsWith("/dashboard")} title="Trading Dashboard" />
+        <div className="h-px w-6 bg-border" />
         <RailIcon icon={<Wand2 className="h-4 w-4" />} title="New AI Builder project" onClick={onNewProject} />
         <RailIcon icon={<History className="h-4 w-4" />} title="AI Builder history" onClick={onOpenHistory} />
         <div className="relative">
