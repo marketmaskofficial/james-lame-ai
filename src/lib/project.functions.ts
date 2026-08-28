@@ -7,6 +7,7 @@ import { PROJECT_SYSTEM_PROMPT } from "@/lib/ai/project-prompt";
 import { coerceSpec, type IndicatorSpec } from "@/lib/spec/types";
 import { validatePine, formatIssues, type PineReport } from "@/lib/validate/pine";
 import { validateSgScript, visualParity } from "@/lib/validate/sgscript";
+import { recordAiUsage, accumulateUsage, type AiUsageTokens } from "@/lib/ai-usage.server";
 
 const MODEL = "gpt-5.6-sol";
 const MAX_REPAIRS = 3;
@@ -103,16 +104,23 @@ export const buildProject = createServerFn({ method: "POST" })
         currentSgscript: z.string().max(200_000).optional(),
         symbol: z.string().max(40).optional(),
         timeframe: z.string().max(10).optional(),
+        // UI-8: which AI Builder action this call is for, purely for usage
+        // accounting (src/lib/ai-usage.server.ts) — never changes behavior.
+        // Optional + defaulted so this stays backward compatible with any
+        // caller that predates this field.
+        operation: z.enum(["build", "modify", "fix_error"]).optional(),
       })
       .parse(i),
   )
-  .handler(async ({ data }): Promise<BuildResult> => {
+  .handler(async ({ data, context }): Promise<BuildResult> => {
     const apiKey = process.env["OPENAI_API_KEY"];
     if (!apiKey) throw new Error("AI is not configured");
     const provider = createOpenAiProvider(apiKey);
     const model = provider(MODEL);
+    const operation = data.operation ?? (data.currentSpec ? "modify" : "build");
+    let usage: AiUsageTokens = {};
 
-    const context = [
+    const projectContext = [
       data.symbol ? `Chart symbol: ${data.symbol}` : "",
       data.timeframe ? `Chart timeframe: ${data.timeframe}` : "",
       data.currentSpec
@@ -126,7 +134,7 @@ export const buildProject = createServerFn({ method: "POST" })
       .join("\n\n");
 
     const call = async (prompt: string) => {
-      const { text } = await generateText({
+      const result = await generateText({
         model,
         temperature: 0.1,
         // Sol is a reasoning model: its internal "thinking" tokens are billed
@@ -136,69 +144,90 @@ export const buildProject = createServerFn({ method: "POST" })
         system: PROJECT_SYSTEM_PROMPT,
         prompt,
       });
-      return extractJson(text);
+      usage = accumulateUsage(usage, result.usage);
+      return extractJson(result.text);
     };
 
-    let json = await call(
-      `${context ? `${context}\n\n` : ""}Trader request:\n${data.request}`,
-    );
-
-    let spec = coerceSpec(json["spec"]);
-    let pine = str(json["pine"]);
-    let sgscript = str(json["sgscript"]);
-    let summary = str(json["summary"]);
-    let changelog = str(json["changelog"]) || "Updated";
-
-    // Static validation + Pine<->runtime visual parity in one report.
-    const check = (pineSrc: string, sgSrc: string) => {
-      const base = validateSgScript(sgSrc);
-      const parity = visualParity(pineSrc, sgSrc);
-      const issues = [...base.issues, ...parity];
-      return { ok: !issues.some((i) => i.severity === "error"), issues };
-    };
-
-    let pineReport = validatePine(pine);
-    let sgReport = check(pine, sgscript);
-    let passes = 0;
-
-    while ((!pineReport.ok || !sgReport.ok) && passes < MAX_REPAIRS) {
-      passes++;
-      const problems = [
-        pineReport.ok ? "" : `Pine issues:\n${formatIssues(pineReport.issues)}`,
-        sgReport.ok ? "" : `SGScript issues:\n${formatIssues(sgReport.issues)}`,
-      ]
-        .filter(Boolean)
-        .join("\n\n");
-
-      json = await call(
-        `The previous project failed static validation. Fix ONLY these problems and return the full JSON object again with the same specification intent.\n\n${problems}\n\nSpecification:\n${JSON.stringify(spec)}\n\nPine:\n${pine}\n\nSGScript:\n${sgscript}`,
+    try {
+      let json = await call(
+        `${projectContext ? `${projectContext}\n\n` : ""}Trader request:\n${data.request}`,
       );
 
-      spec = coerceSpec(json["spec"]);
-      pine = str(json["pine"]) || pine;
-      sgscript = str(json["sgscript"]) || sgscript;
-      summary = str(json["summary"]) || summary;
-      changelog = str(json["changelog"]) || changelog;
-      pineReport = validatePine(pine);
-      sgReport = check(pine, sgscript);
+      let spec = coerceSpec(json["spec"]);
+      let pine = str(json["pine"]);
+      let sgscript = str(json["sgscript"]);
+      let summary = str(json["summary"]);
+      let changelog = str(json["changelog"]) || "Updated";
+
+      // Static validation + Pine<->runtime visual parity in one report.
+      const check = (pineSrc: string, sgSrc: string) => {
+        const base = validateSgScript(sgSrc);
+        const parity = visualParity(pineSrc, sgSrc);
+        const issues = [...base.issues, ...parity];
+        return { ok: !issues.some((i) => i.severity === "error"), issues };
+      };
+
+      let pineReport = validatePine(pine);
+      let sgReport = check(pine, sgscript);
+      let passes = 0;
+
+      while ((!pineReport.ok || !sgReport.ok) && passes < MAX_REPAIRS) {
+        passes++;
+        const problems = [
+          pineReport.ok ? "" : `Pine issues:\n${formatIssues(pineReport.issues)}`,
+          sgReport.ok ? "" : `SGScript issues:\n${formatIssues(sgReport.issues)}`,
+        ]
+          .filter(Boolean)
+          .join("\n\n");
+
+        json = await call(
+          `The previous project failed static validation. Fix ONLY these problems and return the full JSON object again with the same specification intent.\n\n${problems}\n\nSpecification:\n${JSON.stringify(spec)}\n\nPine:\n${pine}\n\nSGScript:\n${sgscript}`,
+        );
+
+        spec = coerceSpec(json["spec"]);
+        pine = str(json["pine"]) || pine;
+        sgscript = str(json["sgscript"]) || sgscript;
+        summary = str(json["summary"]) || summary;
+        changelog = str(json["changelog"]) || changelog;
+        pineReport = validatePine(pine);
+        sgReport = check(pine, sgscript);
+      }
+
+      // The auditor's own classification is advisory; the static analyzer wins.
+      spec = { ...spec, repaint: pineReport.repaint.classification };
+
+      await recordAiUsage(context.supabase, {
+        userId: context.userId,
+        operation,
+        success: true,
+        model: MODEL,
+        usage,
+      });
+
+      return {
+        spec,
+        pine,
+        sgscript,
+        summary,
+        changelog,
+        validation: {
+          pine: pineReport,
+          sgscript: sgReport,
+          repairPasses: passes,
+          method: "static-validation",
+        },
+      };
+    } catch (e) {
+      await recordAiUsage(context.supabase, {
+        userId: context.userId,
+        operation,
+        success: false,
+        model: MODEL,
+        errorMessage: e instanceof Error ? e.message : "Unknown error",
+        usage,
+      });
+      throw e;
     }
-
-    // The auditor's own classification is advisory; the static analyzer wins.
-    spec = { ...spec, repaint: pineReport.repaint.classification };
-
-    return {
-      spec,
-      pine,
-      sgscript,
-      summary,
-      changelog,
-      validation: {
-        pine: pineReport,
-        sgscript: sgReport,
-        repairPasses: passes,
-        method: "static-validation",
-      },
-    };
   });
 
 /** Re-validates code the user edited by hand, without calling the model. */

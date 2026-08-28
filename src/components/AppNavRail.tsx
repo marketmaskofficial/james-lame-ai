@@ -145,12 +145,13 @@ export function AppNavRail({
                 <Crown className="h-4 w-4" />
               </Link>
             )}
-            <div
-              title={user.email ?? ""}
-              className="flex h-8 w-8 items-center justify-center rounded-full bg-brand text-[11px] font-bold text-brand-foreground"
+            <Link
+              to="/account"
+              title="Account settings"
+              className="flex h-8 w-8 items-center justify-center rounded-full bg-brand text-[11px] font-bold text-brand-foreground hover:opacity-90"
             >
               {(user.email ?? "?").slice(0, 1).toUpperCase()}
-            </div>
+            </Link>
             <button
               onClick={signOut}
               title="Sign out"

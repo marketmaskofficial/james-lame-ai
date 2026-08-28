@@ -1,13 +1,17 @@
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 /**
  * Verifies the Supabase bearer token on a raw HTTP API route and returns the
- * user id. Server routes are NOT covered by `requireSupabaseAuth`, so any
- * expensive endpoint must call this itself.
+ * user id, plus an RLS-scoped Supabase client authenticated AS that user
+ * (its requests carry the caller's own bearer token, not the anon key) —
+ * usable for any authenticated read/write this route needs to make on the
+ * user's behalf, e.g. AI usage accounting (src/lib/ai-usage.server.ts).
+ * Server routes are NOT covered by `requireSupabaseAuth`, so any expensive
+ * endpoint must call this itself.
  */
 export async function requireApiUser(
   request: Request,
-): Promise<{ userId: string } | Response> {
+): Promise<{ userId: string; supabase: SupabaseClient } | Response> {
   const header = request.headers.get("authorization") ?? "";
   const token = header.toLowerCase().startsWith("bearer ")
     ? header.slice(7).trim()
@@ -23,7 +27,7 @@ export async function requireApiUser(
     });
   }
 
-  const supabase = createClient(url, key, {
+  const anonClient = createClient(url, key, {
     auth: { persistSession: false, autoRefreshToken: false },
     global: {
       fetch: (input, init) => {
@@ -37,9 +41,25 @@ export async function requireApiUser(
     },
   });
 
-  const { data, error } = await supabase.auth.getUser(token);
+  const { data, error } = await anonClient.auth.getUser(token);
   if (error || !data.user) return unauthorized();
-  return { userId: data.user.id };
+
+  // A second client, otherwise identical, but whose requests carry the
+  // caller's own bearer token — so RLS-scoped inserts/selects (like AI usage
+  // accounting) run AS that user, never as anon and never as service role.
+  const userScopedClient = createClient(url, key, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: {
+      fetch: (input, init) => {
+        const h = new Headers(init?.headers);
+        h.set("apikey", key);
+        h.set("Authorization", `Bearer ${token}`);
+        return fetch(input, { ...init, headers: h });
+      },
+    },
+  });
+
+  return { userId: data.user.id, supabase: userScopedClient };
 }
 
 function unauthorized() {

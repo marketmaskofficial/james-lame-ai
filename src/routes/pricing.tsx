@@ -1,26 +1,47 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
-import { ArrowLeft, Check } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ArrowLeft, Check, LineChart, Sparkles, TestTube2, Wallet } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useSubscription } from "@/hooks/useSubscription";
 import { StripeEmbeddedCheckout } from "@/components/StripeEmbeddedCheckout";
 import { PaymentTestModeBanner } from "@/components/PaymentTestModeBanner";
-import { createPortalSession } from "@/lib/payments.functions";
-import { getStripeEnvironment } from "@/lib/stripe";
+import { createPortalSession, getBetaPlan, type BetaPlanResult } from "@/lib/payments.functions";
+import { getStripeEnvironment, paymentsEnabled } from "@/lib/stripe";
 import { useServerFn } from "@tanstack/react-start";
 
 export const Route = createFileRoute("/pricing")({
   head: () => ({
     meta: [
-      { title: "Pricing — Signal Goat AI Pro" },
+      { title: "Pricing — Signal Goat AI Beta" },
       {
         name: "description",
-        content: "Upgrade to Signal Goat AI Pro for unlimited history, custom symbols, and priority AI models.",
+        content: "Join the Signal Goat AI paid beta for full access to Chart Studio, the AI Builder, Strategy Tester, and Paper Trading.",
       },
     ],
   }),
   component: Pricing,
 });
+
+// Real, current beta capabilities — do not add anything here that isn't
+// actually shipped in Chart Studio today.
+const BETA_FEATURES = [
+  { icon: LineChart, label: "Chart Studio", desc: "Live multi-chart workspace with indicators, drawing tools, and layouts." },
+  { icon: Sparkles, label: "AI Builder", desc: "Build, modify, explain, and fix SGScript indicators from plain English." },
+  { icon: TestTube2, label: "Strategy Tester", desc: "Backtest strategies against historical data before risking anything." },
+  { icon: Wallet, label: "Paper Trading", desc: "Run your strategies live against real markets with simulated funds." },
+];
+
+function formatPrice(plan: Extract<BetaPlanResult, { priceLookupKey: string }>): string {
+  if (plan.unitAmount == null) return "Contact us";
+  const amount = new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: plan.currency.toUpperCase(),
+    minimumFractionDigits: plan.unitAmount % 100 === 0 ? 0 : 2,
+  }).format(plan.unitAmount / 100);
+  if (!plan.interval) return amount;
+  const cadence = plan.intervalCount && plan.intervalCount > 1 ? `${plan.intervalCount} ${plan.interval}s` : plan.interval;
+  return `${amount}/${cadence}`;
+}
 
 function Pricing() {
   const { user, loading } = useAuth();
@@ -28,7 +49,33 @@ function Pricing() {
   const navigate = useNavigate();
   const [checkingOut, setCheckingOut] = useState(false);
   const portal = useServerFn(createPortalSession);
+  const getBetaPlanFn = useServerFn(getBetaPlan);
   const [portalLoading, setPortalLoading] = useState(false);
+  const [plan, setPlan] = useState<BetaPlanResult | { status: "loading" }>({ status: "loading" });
+
+  useEffect(() => {
+    // Checked before anything else: while the beta runs with checkout
+    // disabled, /pricing never calls getBetaPlan(), never resolves a Stripe
+    // environment, and never touches the Lovable gateway or Stripe at all.
+    if (!paymentsEnabled()) {
+      setPlan({ status: "disabled" });
+      return;
+    }
+    let cancelled = false;
+    let environment: ReturnType<typeof getStripeEnvironment>;
+    try {
+      environment = getStripeEnvironment();
+    } catch (e) {
+      setPlan({ error: e instanceof Error ? e.message : "Payments are not configured" });
+      return;
+    }
+    getBetaPlanFn({ data: { environment } }).then((result) => {
+      if (!cancelled) setPlan(result);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [getBetaPlanFn]);
 
   const openPortal = async () => {
     try {
@@ -48,6 +95,10 @@ function Pricing() {
     }
   };
 
+  const planLoaded = "priceLookupKey" in plan;
+  const planErrored = "error" in plan;
+  const planDisabled = "status" in plan && plan.status === "disabled";
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       <PaymentTestModeBanner />
@@ -57,16 +108,25 @@ function Pricing() {
             <ArrowLeft className="h-4 w-4" /> Back
           </Link>
           <Link to="/" className="text-sm font-semibold">Signal Goat AI</Link>
+          {!loading && !user ? (
+            <Link to="/auth" className="text-sm text-muted-foreground hover:text-foreground">
+              Sign in
+            </Link>
+          ) : (
+            <span className="w-[52px]" aria-hidden />
+          )}
         </div>
       </header>
 
       <div className="mx-auto max-w-5xl px-4 py-16">
         <div className="text-center">
-          <h1 className="text-4xl font-black tracking-tight md:text-5xl">Upgrade to Pro</h1>
-          <p className="mt-3 text-muted-foreground">Unlock everything Signal Goat AI can do.</p>
+          <h1 className="text-4xl font-black tracking-tight md:text-5xl">Signal Goat AI Beta</h1>
+          <p className="mt-3 text-muted-foreground">
+            One plan. Full access to everything in the paid beta.
+          </p>
         </div>
 
-        {checkingOut ? (
+        {checkingOut && !planDisabled ? (
           <div className="mx-auto mt-10 max-w-2xl rounded-xl border border-border bg-card p-4">
             <button
               onClick={() => setCheckingOut(false)}
@@ -74,45 +134,49 @@ function Pricing() {
             >
               ← Cancel
             </button>
-            <StripeEmbeddedCheckout priceId="pro_monthly" />
+            <StripeEmbeddedCheckout priceId={planLoaded ? plan.priceLookupKey : "pro_monthly"} />
           </div>
         ) : (
-          <div className="mx-auto mt-12 grid max-w-3xl gap-4 md:grid-cols-2">
-            <div className="rounded-xl border border-border bg-card p-6">
-              <div className="text-sm font-semibold text-muted-foreground">Free</div>
-              <div className="mt-2 text-4xl font-black">$0</div>
-              <div className="text-xs text-muted-foreground">forever</div>
-              <ul className="mt-5 space-y-2 text-sm">
-                {["Unlimited prompts", "Live chart preview", "History (last 50 scripts)"].map((i) => (
-                  <li key={i} className="flex items-center gap-2">
-                    <Check className="h-4 w-4 text-brand" /> {i}
-                  </li>
-                ))}
-              </ul>
-            </div>
+          <div className="mx-auto mt-12 max-w-md">
             <div className="rounded-xl border border-brand bg-card p-6 shadow-lg shadow-brand/10">
-              <div className="text-sm font-semibold text-brand">Pro</div>
-              <div className="mt-2 text-4xl font-black">
-                $19<span className="text-base font-normal text-muted-foreground">/mo</span>
+              <div className="text-sm font-semibold text-brand">
+                {planLoaded ? plan.productName : "Signal Goat AI Beta"}
               </div>
-              <ul className="mt-5 space-y-2 text-sm">
-                {[
-                  "Everything in Free",
-                  "Unlimited script history",
-                  "Custom symbols & timeframes",
-                  "Priority AI models",
-                ].map((i) => (
-                  <li key={i} className="flex items-center gap-2">
-                    <Check className="h-4 w-4 text-brand" /> {i}
+              <div className="mt-2 text-4xl font-black">
+                {planDisabled ? (
+                  <span className="text-lg font-semibold text-brand">Beta access — free for now</span>
+                ) : planLoaded ? (
+                  formatPrice(plan)
+                ) : planErrored ? (
+                  <span className="text-lg font-semibold text-muted-foreground">Pricing unavailable</span>
+                ) : (
+                  <span className="text-lg font-semibold text-muted-foreground">Loading price…</span>
+                )}
+              </div>
+              {planDisabled ? (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Checkout is temporarily disabled during the beta — sign up to get full access now.
+                </p>
+              ) : (
+                planErrored && <p className="mt-1 text-xs text-destructive">{plan.error}</p>
+              )}
+              <ul className="mt-5 space-y-3 text-sm">
+                {BETA_FEATURES.map((f) => (
+                  <li key={f.label} className="flex items-start gap-2.5">
+                    <Check className="mt-0.5 h-4 w-4 shrink-0 text-brand" />
+                    <span>
+                      <span className="font-medium">{f.label}</span>{" "}
+                      <span className="text-muted-foreground">— {f.desc}</span>
+                    </span>
                   </li>
                 ))}
               </ul>
               {loading ? null : !user ? (
                 <button
-                  onClick={() => navigate({ to: "/auth" })}
+                  onClick={() => navigate({ to: "/auth", search: { mode: "signup" } })}
                   className="mt-6 inline-flex w-full items-center justify-center rounded-md bg-brand px-3 py-2 text-sm font-semibold text-brand-foreground hover:opacity-90"
                 >
-                  Sign in to upgrade
+                  Create an account to join
                 </button>
               ) : isActive ? (
                 <button
@@ -122,13 +186,29 @@ function Pricing() {
                 >
                   {portalLoading ? "Opening…" : "Manage subscription"}
                 </button>
+              ) : planDisabled ? (
+                <button
+                  onClick={() => navigate({ to: "/studio" })}
+                  className="mt-6 inline-flex w-full items-center justify-center rounded-md bg-brand px-3 py-2 text-sm font-semibold text-brand-foreground hover:opacity-90"
+                >
+                  Enter Chart Studio
+                </button>
               ) : (
                 <button
                   onClick={() => setCheckingOut(true)}
-                  className="mt-6 inline-flex w-full items-center justify-center rounded-md bg-brand px-3 py-2 text-sm font-semibold text-brand-foreground hover:opacity-90"
+                  disabled={!planLoaded}
+                  className="mt-6 inline-flex w-full items-center justify-center rounded-md bg-brand px-3 py-2 text-sm font-semibold text-brand-foreground hover:opacity-90 disabled:opacity-50"
                 >
-                  Upgrade to Pro
+                  Join the beta
                 </button>
+              )}
+              {!user && (
+                <p className="mt-3 text-center text-xs text-muted-foreground">
+                  Already have an account?{" "}
+                  <Link to="/auth" className="text-brand hover:underline">
+                    Sign in
+                  </Link>
+                </p>
               )}
               {isActive && subscription?.cancel_at_period_end && (
                 <p className="mt-3 text-xs text-muted-foreground">

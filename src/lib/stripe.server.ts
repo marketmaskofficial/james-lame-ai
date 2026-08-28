@@ -8,6 +8,35 @@ const getEnv = (key: string): string => {
 
 export type StripeEnv = "sandbox" | "live";
 
+/**
+ * Server-side counterpart of stripe.ts's client-side `paymentsEnabled()` —
+ * same intent (temporary beta-wide kill switch, not a dev-only bypass),
+ * read from real Node `process.env` since server functions execute
+ * per-request rather than being build-time-inlined like `import.meta.env.
+ * VITE_*`. Both flags must be set together to fully disable the flow (this
+ * one guards the server functions directly, as defense-in-depth in case
+ * anything ever calls them while the client-side flag says disabled).
+ * Defaults to enabled unless explicitly set to "false".
+ */
+export function paymentsEnabled(): boolean {
+  return process.env.PAYMENTS_ENABLED !== "false";
+}
+
+/**
+ * The single paid beta plan's Stripe Price lookup_key. This is the ONE place
+ * that names it — `getBetaPlan` reads the live price (amount, currency,
+ * interval, product name) from Stripe by this key so the pricing page never
+ * hardcodes a dollar figure, and `createCheckoutSession` receives that same
+ * key from the client so the price actually charged always matches what was
+ * displayed. Kept as the pre-existing "pro_monthly" value on purpose: this
+ * lookup_key is already wired into checkout.sessions.create() and the
+ * webhook's resolvePriceId() fallback, so it must match whatever Price object
+ * actually exists in the connected Stripe account. Renaming it here without
+ * being able to verify the real Stripe dashboard would silently break
+ * checkout for anyone where it currently works.
+ */
+export const BETA_PLAN_LOOKUP_KEY = "pro_monthly";
+
 const GATEWAY_STRIPE_BASE = "https://connector-gateway.lovable.dev/stripe";
 
 export function getConnectionApiKey(env: StripeEnv): string {

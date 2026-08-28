@@ -2,12 +2,25 @@ import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import {
   type StripeEnv,
+  BETA_PLAN_LOOKUP_KEY,
   createStripeClient,
   getStripeErrorMessage,
+  paymentsEnabled,
 } from "@/lib/stripe.server";
 
 type CheckoutSessionResult = { clientSecret: string } | { error: string };
 type PortalSessionResult = { url: string } | { error: string };
+export type BetaPlanResult =
+  | {
+      priceLookupKey: string;
+      unitAmount: number | null;
+      currency: string;
+      interval: string | null;
+      intervalCount: number | null;
+      productName: string;
+    }
+  | { error: string }
+  | { status: "disabled" };
 
 async function resolveOrCreateCustomer(
   stripe: ReturnType<typeof createStripeClient>,
@@ -42,6 +55,48 @@ async function resolveOrCreateCustomer(
   return created.id;
 }
 
+/**
+ * Reads the paid beta plan's live price straight from Stripe (amount,
+ * currency, billing interval, product name) so the pricing page never has to
+ * hardcode a dollar figure. No auth required — anonymous visitors need to see
+ * pricing before they sign up. Fails closed: any Stripe/config error comes
+ * back as `{ error }` rather than throwing, so the caller can show an honest
+ * "pricing unavailable" state instead of guessing at a number.
+ */
+export const getBetaPlan = createServerFn({ method: "GET" })
+  .inputValidator((data: { environment: StripeEnv }) => data)
+  .handler(async ({ data }): Promise<BetaPlanResult> => {
+    // Checked before touching Stripe/Lovable at all — this is what
+    // guarantees no Lovable gateway request (and therefore no
+    // LOVABLE_API_KEY requirement) while the beta runs with checkout off.
+    if (!paymentsEnabled()) return { status: "disabled" };
+    try {
+      const stripe = createStripeClient(data.environment);
+      const prices = await stripe.prices.list({
+        lookup_keys: [BETA_PLAN_LOOKUP_KEY],
+        active: true,
+        expand: ["data.product"],
+      });
+      const price = prices.data[0];
+      if (!price) throw new Error("Beta plan price is not configured in Stripe");
+      const product = price.product;
+      const productName =
+        product && typeof product === "object" && "name" in product && typeof product.name === "string"
+          ? product.name
+          : "Signal Goat AI Beta";
+      return {
+        priceLookupKey: BETA_PLAN_LOOKUP_KEY,
+        unitAmount: price.unit_amount,
+        currency: price.currency,
+        interval: price.recurring?.interval ?? null,
+        intervalCount: price.recurring?.interval_count ?? null,
+        productName,
+      };
+    } catch (error) {
+      return { error: getStripeErrorMessage(error) };
+    }
+  });
+
 export const createCheckoutSession = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((data: { priceId: string; returnUrl: string; environment: StripeEnv }) => {
@@ -49,6 +104,7 @@ export const createCheckoutSession = createServerFn({ method: "POST" })
     return data;
   })
   .handler(async ({ data, context }): Promise<CheckoutSessionResult> => {
+    if (!paymentsEnabled()) return { error: "Checkout is temporarily disabled during the beta." };
     try {
       const stripe = createStripeClient(data.environment);
       const prices = await stripe.prices.list({ lookup_keys: [data.priceId] });

@@ -1,0 +1,510 @@
+/**
+ * Chart Studio drawing tools — market-coordinate <-> bar-index conversion,
+ * magnet/snap, and a couple of small geometry helpers.
+ *
+ * Root problem this exists to fix: before this phase, user-drawn objects
+ * (StudioChart's `Drawing` type) stored their anchors as `{ logical, price }`
+ * — a *bar-array-index* position, captured once at draw time via
+ * `chart.timeScale().coordinateToLogical()` and then used forever after as
+ * the drawing's authoritative location. That index is only stable as long as
+ * bar #0 stays bar #0. `loadOlderHistory` (studio.tsx) calls
+ * `prependBars()` (src/lib/market/candles.ts), which — as its name says —
+ * prepends older candles to the FRONT of the array. Every bar after the
+ * prepended ones shifts to a higher index, so every existing drawing
+ * anchored by logical index silently jumps to a different bar/time the next
+ * time older history loads, with no error and no visual cue why.
+ *
+ * Indicator-drawn primitives (boxes/lines/labels from `RunResult`) never had
+ * this bug because they're anchored by bar TIME (unix seconds) and converted
+ * to a pixel position fresh every render frame via the time->logical->pixel
+ * pipeline in StudioChart's `timeToLogical`/`logicalToPixel`. This module
+ * gives user-drawn objects the same treatment: anchors are stored as
+ * `{ time, price }` (a real "market coordinate", never a raw screen pixel or
+ * an index into whatever the bars array happens to look like right now), and
+ * `timeToLogicalExtrapolated` re-derives a fresh logical/pixel position from
+ * that time on every frame — the exact fix `timeToLogical` already got for
+ * off-screen indicator objects, generalized so it never returns null (a
+ * drawing anchored just past the last loaded bar, e.g. a ray drawn into the
+ * empty space ahead of price, still needs a real coordinate to render at).
+ *
+ * `logicalToTime` is the other direction, used once at creation/drag time to
+ * convert a raw pointer position (which lightweight-charts only gives you as
+ * a logical index) into the time value that gets persisted.
+ *
+ * Pure functions only — no React, no DOM, no lightweight-charts import — so
+ * this is directly unit-testable and reusable from anywhere (StudioChart's
+ * render loop, pointer handlers, and the drawing math tests).
+ */
+
+export type Bar = {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+};
+
+export type MarketPoint = { time: number; price: number };
+
+/** Average seconds between consecutive bars — the extrapolation step for
+ * positions outside the loaded range. Falls back to 60s for <2 bars (can't
+ * measure spacing yet) since that's only ever used transiently before real
+ * data loads. */
+export function avgBarInterval(bars: Bar[]): number {
+  if (bars.length < 2) return 60;
+  return (bars[bars.length - 1].time - bars[0].time) / (bars.length - 1);
+}
+
+/**
+ * Converts a (possibly fractional, possibly out-of-range) logical bar index
+ * into a real unix-second time, interpolating between the two bracketing
+ * bars in range and linearly extrapolating past either edge using the
+ * dataset's own average bar spacing. Never returns null — every logical
+ * position on a chart with at least one loaded bar maps to *some* time.
+ */
+export function logicalToTime(bars: Bar[], logical: number): number {
+  if (bars.length === 0) return Math.floor(Date.now() / 1000);
+  const n = bars.length;
+  const step = avgBarInterval(bars);
+  if (n === 1) return bars[0].time + logical * step;
+  if (logical <= 0) return bars[0].time + logical * step;
+  if (logical >= n - 1) return bars[n - 1].time + (logical - (n - 1)) * step;
+  const lo = Math.floor(logical);
+  const hi = Math.min(lo + 1, n - 1);
+  const frac = logical - lo;
+  return bars[lo].time + (bars[hi].time - bars[lo].time) * frac;
+}
+
+/**
+ * Inverse of `logicalToTime`, extended to always succeed (unlike
+ * StudioChart's own `timeToLogical`, which intentionally returns null for a
+ * time far outside the loaded range — the right call for an *indicator*
+ * result that shouldn't paint a misleading box at the chart's edge, but
+ * wrong for a *user's own drawing*, which must keep rendering at a
+ * consistent, correctly-extrapolated position even when panned somewhere
+ * the underlying time isn't currently loaded).
+ */
+export function timeToLogicalExtrapolated(bars: Bar[], time: number): number {
+  if (bars.length === 0) return 0;
+  const n = bars.length;
+  const step = avgBarInterval(bars);
+  if (n === 1) return step > 0 ? (time - bars[0].time) / step : 0;
+  if (time <= bars[0].time) return step > 0 ? (time - bars[0].time) / step : 0;
+  if (time >= bars[n - 1].time) return n - 1 + (step > 0 ? (time - bars[n - 1].time) / step : 0);
+  // Binary search for the bracketing pair, then interpolate.
+  let lo = 0;
+  let hi = n - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (bars[mid].time <= time) lo = mid;
+    else hi = mid;
+  }
+  const span = bars[hi].time - bars[lo].time;
+  const frac = span > 0 ? (time - bars[lo].time) / span : 0;
+  return lo + frac;
+}
+
+/** Index of the bar whose time is closest to `time` (empty bars -> -1). */
+export function nearestBarIndex(bars: Bar[], time: number): number {
+  if (bars.length === 0) return -1;
+  let lo = 0;
+  let hi = bars.length - 1;
+  if (time <= bars[0].time) return 0;
+  if (time >= bars[hi].time) return hi;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (bars[mid].time === time) return mid;
+    if (bars[mid].time < time) lo = mid + 1;
+    else hi = mid;
+  }
+  const a = Math.max(0, lo - 1);
+  return Math.abs(bars[a].time - time) <= Math.abs(bars[lo].time - time) ? a : lo;
+}
+
+/**
+ * Magnet/snap: pulls a raw market point onto the nearest bar's own time, and
+ * (when `strength !== "off"`) onto whichever of that bar's O/H/L/C sits
+ * closest to the raw price. "off" returns the point completely untouched —
+ * per spec, disabling the magnet must never silently alter a user's chosen
+ * coordinate, including the time component snapping to the bar grid.
+ */
+export function snapPoint(
+  bars: Bar[],
+  raw: MarketPoint,
+  strength: "off" | "weak" | "strong",
+): MarketPoint {
+  if (strength === "off" || bars.length === 0) return raw;
+  const idx = nearestBarIndex(bars, raw.time);
+  if (idx < 0) return raw;
+  const bar = bars[idx];
+  const candidates = [bar.open, bar.high, bar.low, bar.close];
+  let best = candidates[0];
+  let bestDist = Math.abs(candidates[0] - raw.price);
+  for (const c of candidates.slice(1)) {
+    const d = Math.abs(c - raw.price);
+    if (d < bestDist) {
+      best = c;
+      bestDist = d;
+    }
+  }
+  // "weak" only snaps once the raw price is already close (within 25% of the
+  // bar's own high-low range) — "strong" always snaps to the nearest of the
+  // four OHLC prices regardless of distance. Both always snap time to the bar.
+  if (strength === "weak") {
+    const range = Math.max(1e-9, bar.high - bar.low);
+    if (bestDist > range * 0.25) return { time: bar.time, price: raw.price };
+  }
+  return { time: bar.time, price: best };
+}
+
+/** Euclidean pixel distance — small shared helper for hit-testing. */
+export function pixelDist(ax: number, ay: number, bx: number, by: number): number {
+  return Math.hypot(ax - bx, ay - by);
+}
+
+/** Point-to-segment distance in pixel space, for hit-testing lines/rays/brush strokes. */
+export function distToSegment(px: number, py: number, x1: number, y1: number, x2: number, y2: number): number {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return pixelDist(px, py, x1, y1);
+  let t = ((px - x1) * dx + (py - y1) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  return pixelDist(px, py, x1 + t * dx, y1 + t * dy);
+}
+
+/**
+ * Projects the line through (x1,y1)->(x2,y2) forward past p2, out to the
+ * canvas's right edge (`width`) — the Ray tool's existing extension math,
+ * pulled out into a pure/testable helper so Extended Line (which needs the
+ * SAME forward projection plus a backward one) doesn't fork a second copy of
+ * it. Only extends when the edge is actually further from p1 than p2 is in
+ * that same direction (`scale > 1`) — a line trending away from the edge
+ * stays at its own p2, exactly like Ray already behaves.
+ */
+export function projectLineForward(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  width: number,
+): { x: number; y: number } {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const scale = dx === 0 ? 1 : (width - x1) / dx;
+  if (scale > 1) return { x: x1 + dx * scale, y: y1 + dy * scale };
+  return { x: x2, y: y2 };
+}
+
+/**
+ * Mirror of `projectLineForward` for the backward direction (past p1, out to
+ * the canvas's left edge, x=0) — Extended Line's other half. Never used by
+ * Ray (which only ever extends forward/"into the future").
+ */
+export function projectLineBackward(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+): { x: number; y: number } {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const scale = dx === 0 ? 0 : (0 - x1) / dx;
+  if (scale < 0) return { x: x1 + dx * scale, y: y1 + dy * scale };
+  return { x: x1, y: y1 };
+}
+
+/**
+ * Fib Channel's per-level parallel offset, in PIXEL space, for one level
+ * ratio — the exact same perpendicular-to-the-trend-line offset the
+ * pre-existing Parallel Channel tool already computes for its single width
+ * anchor (`p3`), generalized to scale by `ratio` instead of always using the
+ * full 1.0 offset (ratio=0 is the trend line itself; ratio=1 is exactly the
+ * width anchor's own rail; ratio=1.618/2.618/etc extend past it). Kept in
+ * PIXEL space deliberately, matching how the pre-existing Channel tool
+ * already renders its one rail: once price and time don't share a pixel
+ * scale, "perpendicular" between a price axis and a time axis isn't a
+ * meaningful market-coordinate concept — it's inherently a rendering-space
+ * one. The CANONICAL state is still the three anchors' market coordinates
+ * (p1/p2/p3); this is purely a render/hit-test-time derivation from their
+ * already-converted pixel positions, never persisted.
+ */
+export function fibChannelLevelOffset(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  x3: number,
+  y3: number,
+  ratio: number,
+): { dx: number; dy: number } {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len = Math.hypot(dx, dy) || 1;
+  const nx = -dy / len;
+  const ny = dx / len;
+  const offset = (x3 - x1) * nx + (y3 - y1) * ny;
+  return { dx: nx * offset * ratio, dy: ny * offset * ratio };
+}
+
+/**
+ * True if (px,py) lies inside (or exactly on) the axis-aligned ellipse
+ * centered at (cx,cy) with radii (rx,ry) — Phase 3A's Ellipse hit-test
+ * region. Deliberately a real interior test (same "click anywhere inside a
+ * filled shape selects it" convention StudioChart's own `pointInTriangle`
+ * already uses), NOT the looser rectangular-bounding-box shortcut Circle/
+ * Rect share — an ellipse's corners are empty space, and a box hit-test over
+ * those corners would be an "oversized rectangular hit region" the phase
+ * brief explicitly calls out to avoid for Ellipse specifically.
+ */
+export function pointInEllipse(
+  px: number,
+  py: number,
+  cx: number,
+  cy: number,
+  rx: number,
+  ry: number,
+): boolean {
+  const safeRx = Math.max(1e-9, rx);
+  const safeRy = Math.max(1e-9, ry);
+  const nx = (px - cx) / safeRx;
+  const ny = (py - cy) / safeRy;
+  return nx * nx + ny * ny <= 1;
+}
+
+/**
+ * True if (px,py) lies inside the closed polygon defined by `pts` (standard
+ * even-odd ray-casting test). Path's fill-interior hit-test region — the
+ * same interior-click convention as `pointInEllipse`/`pointInTriangle`,
+ * generalized to an arbitrary vertex count instead of exactly three, so a
+ * closed/filled Path is selectable anywhere inside it, not just within a few
+ * pixels of its outline.
+ */
+export function pointInPolygon(px: number, py: number, pts: { x: number; y: number }[]): boolean {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const xi = pts[i].x;
+    const yi = pts[i].y;
+    const xj = pts[j].x;
+    const yj = pts[j].y;
+    const intersects = yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi;
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+/**
+ * Pixel distance from (px,py) to the EDGE of an axis-aligned ellipse ring
+ * (center cx,cy, radii rx,ry) — Phase 3C-4's shared hit-test primitive for
+ * Fib Circles/Fib Speed Resistance Arcs, both of which render several
+ * concentric un-filled Fibonacci-ratio rings rather than one filled shape
+ * (so `pointInEllipse`'s interior test above is the wrong tool here — a
+ * click well inside the smallest ring must NOT select it). Normalizes the
+ * point into the ellipse's own coordinate space (nx,ny — 1.0 exactly ON the
+ * ring), then converts that normalized distance back to an approximate
+ * pixel distance using the ring's own average radius, matching every other
+ * hit-test in this file's convention of returning a real pixel distance
+ * comparable across candidate drawings, not a boolean.
+ */
+export function distToEllipseRing(px: number, py: number, cx: number, cy: number, rx: number, ry: number): number {
+  const safeRx = Math.max(1e-9, rx);
+  const safeRy = Math.max(1e-9, ry);
+  const nx = (px - cx) / safeRx;
+  const ny = (py - cy) / safeRy;
+  const normDist = Math.sqrt(nx * nx + ny * ny);
+  return Math.abs(normDist - 1) * ((safeRx + safeRy) / 2);
+}
+
+/**
+ * Deterministic parametric points for a logarithmic Fibonacci spiral (Phase
+ * 3C-4), in PIXEL space, radiating outward from (cx,cy). `r0`/`angle0` are
+ * the pixel-space distance/angle from the spiral's center anchor to its
+ * second anchor (computed fresh from market coordinates at render time by
+ * the caller, exactly like every other Fib tool's `px`/`py` conversion) —
+ * this function itself is pure pixel-space math with no persisted-state
+ * concerns of its own. Growth follows the golden ratio (phi ≈ 1.618) per a
+ * quarter turn, the standard Fibonacci-spiral convention, sampled at a
+ * fixed angular step so both the renderer and the hit-test below walk the
+ * IDENTICAL point sequence (never two slightly-different approximations of
+ * "the same" curve). `turns` bounds the spiral's total sweep (and therefore
+ * point count) so it can never grow unbounded/expensive regardless of how
+ * far apart the two anchors are dragged.
+ */
+export function fibSpiralPoints(
+  cx: number,
+  cy: number,
+  r0: number,
+  angle0: number,
+  turns = 2.5,
+): { x: number; y: number }[] {
+  const PHI = 1.6180339887498949;
+  const stepDeg = 6; // 60 points per full turn - smooth without being expensive
+  const stepRad = (stepDeg * Math.PI) / 180;
+  const totalSteps = Math.max(1, Math.round((turns * 2 * Math.PI) / stepRad));
+  const points: { x: number; y: number }[] = [];
+  for (let i = 0; i <= totalSteps; i++) {
+    const theta = i * stepRad;
+    const r = r0 * Math.pow(PHI, theta / (Math.PI / 2));
+    points.push({ x: cx + r * Math.cos(angle0 + theta), y: cy + r * Math.sin(angle0 + theta) });
+  }
+  return points;
+}
+
+/**
+ * Parallel Channel's SECOND rail, in pixel space: offsets the p1->p2
+ * baseline segment by the perpendicular component of the third anchor's own
+ * offset from p1 (a projection onto the baseline's unit normal). Shared by
+ * StudioChart.tsx's renderer AND its hit-test (Phase 3D-5 closeout) so the
+ * two can never drift apart — the bug this fixes was exactly that: the
+ * hit-test used to only ever check the baseline, never this second rail,
+ * even though it's clearly visible and clickable on screen.
+ */
+export function parallelChannelSecondRail(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  x3: number,
+  y3: number,
+): { x1: number; y1: number; x2: number; y2: number } {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len = Math.hypot(dx, dy) || 1;
+  const nx = -dy / len;
+  const ny = dx / len;
+  const offset = (x3 - x1) * nx + (y3 - y1) * ny;
+  const ox = nx * offset;
+  const oy = ny * offset;
+  return { x1: x1 + ox, y1: y1 + oy, x2: x2 + ox, y2: y2 + oy };
+}
+
+/**
+ * Sampled points (pixel space) along a quadratic Bezier curve — Arc's
+ * fixed-bulge curve and Curve's user-placed control point (Phase 3D-6) both
+ * hit-test through this one sampler, even though they RENDER via the
+ * native, perfectly smooth `ctx.quadraticCurveTo` (this is for hit-testing
+ * accuracy, not for drawing — a sampled polyline is the wrong tool for the
+ * pixels actually on screen, but an excellent, cheap approximation for
+ * "how close is the cursor to this curve").
+ */
+export function quadraticBezierPoints(
+  x1: number,
+  y1: number,
+  cx: number,
+  cy: number,
+  x2: number,
+  y2: number,
+  steps = 24,
+): { x: number; y: number }[] {
+  const points: { x: number; y: number }[] = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const mt = 1 - t;
+    points.push({
+      x: mt * mt * x1 + 2 * mt * t * cx + t * t * x2,
+      y: mt * mt * y1 + 2 * mt * t * cy + t * t * y2,
+    });
+  }
+  return points;
+}
+
+/**
+ * Sampled points (pixel space) along a CUBIC Bezier curve — Double Curve's
+ * own genuinely distinct geometry from Curve's quadratic: a cubic curve can
+ * bend twice (an S-shape), which a single quadratic control point cannot
+ * express. Same "sample for hit-testing, render natively via
+ * `ctx.bezierCurveTo`" split as quadraticBezierPoints above.
+ */
+export function cubicBezierPoints(
+  x1: number,
+  y1: number,
+  c1x: number,
+  c1y: number,
+  c2x: number,
+  c2y: number,
+  x2: number,
+  y2: number,
+  steps = 32,
+): { x: number; y: number }[] {
+  const points: { x: number; y: number }[] = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const mt = 1 - t;
+    points.push({
+      x: mt * mt * mt * x1 + 3 * mt * mt * t * c1x + 3 * mt * t * t * c2x + t * t * t * x2,
+      y: mt * mt * mt * y1 + 3 * mt * mt * t * c1y + 3 * mt * t * t * c2y + t * t * t * y2,
+    });
+  }
+  return points;
+}
+
+/**
+ * Three vertices (pixel space) of a small directional arrow/triangle glyph
+ * pointing along `angleRad` — Arrow Marker's own glyph (Phase 3D-6), reusing
+ * Arrow Up/Down's exact "triangle glyph at one anchor" shape with
+ * orientation as the one parameter that varies (`angleRad = -Math.PI/4` is
+ * up-and-to-the-right, matching Arrow Marker's own toolbar icon).
+ */
+export function directionalArrowGlyph(
+  cx: number,
+  cy: number,
+  angleRad: number,
+  size: number,
+  spread = 2.6,
+): { tip: { x: number; y: number }; base1: { x: number; y: number }; base2: { x: number; y: number } } {
+  return {
+    tip: { x: cx + Math.cos(angleRad) * size, y: cy + Math.sin(angleRad) * size },
+    base1: { x: cx + Math.cos(angleRad + spread) * size * 0.7, y: cy + Math.sin(angleRad + spread) * size * 0.7 },
+    base2: { x: cx + Math.cos(angleRad - spread) * size * 0.7, y: cy + Math.sin(angleRad - spread) * size * 0.7 },
+  };
+}
+
+/**
+ * Deterministic sweep-orientation fix (Phase 3D-8 closeout): Sector is
+ * defined by TWO raw radial angles (pivot -> each boundary anchor), and a
+ * naive `ctx.arc(ox, oy, radius, angleA, angleB)` sweeps whichever
+ * direction is "increasing" from angleA to angleB — which flips to the
+ * REFLEX (>180°) side of the pivot depending purely on which anchor the
+ * user happened to place first/second, even though it's logically the
+ * same sector. This picks whichever of the two possible sweep directions
+ * between the pair is <= 180°, independent of argument order — swapping
+ * angleA/angleB always returns the identical (startAngle, endAngle) pair
+ * (mod the pair's own natural degenerate case: exactly 180° apart, where
+ * either half is an equally valid "short way"). Both paintSector and its
+ * hit-test read this SAME function, so they can never disagree.
+ */
+export function normalizeSectorSweep(angleA: number, angleB: number): { startAngle: number; endAngle: number } {
+  const twoPi = Math.PI * 2;
+  const norm = (a: number) => ((a % twoPi) + twoPi) % twoPi;
+  const a = norm(angleA);
+  const b = norm(angleB);
+  let forward = b - a;
+  if (forward < 0) forward += twoPi;
+  if (forward <= Math.PI) return { startAngle: a, endAngle: a + forward };
+  let backward = a - b;
+  if (backward < 0) backward += twoPi;
+  return { startAngle: b, endAngle: b + backward };
+}
+
+/**
+ * True if (px,py) lies within the pie-slice SECTOR centered at (ox,oy) —
+ * inside the radius AND between the two boundary angles (Phase 3D-8's
+ * Sector tool) — a real interior test following the ACTUAL rendered
+ * geometry (radial lines + arc boundary), not a loose bounding box.
+ * `startAngle`/`endAngle` are in radians (`Math.atan2` convention) and may
+ * be given in either order / any wraparound — normalized internally.
+ */
+export function pointInSector(px: number, py: number, ox: number, oy: number, radius: number, startAngle: number, endAngle: number): boolean {
+  const dx = px - ox;
+  const dy = py - oy;
+  const dist = Math.hypot(dx, dy);
+  if (dist > radius) return false;
+  const twoPi = Math.PI * 2;
+  let lo = startAngle;
+  let hi = endAngle;
+  while (hi < lo) hi += twoPi;
+  let a = Math.atan2(dy, dx);
+  while (a < lo) a += twoPi;
+  return a >= lo && a <= hi;
+}

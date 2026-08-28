@@ -108,6 +108,16 @@ async function startDevServer() {
     cwd: repoRoot,
     stdio: "pipe",
     shell: true,
+    // UI-8: /studio now gates on real auth + subscription state (see
+    // src/lib/subscription-status.ts). This suite has no seeded login and
+    // exists purely to check the render PIPELINE, not access control, so it
+    // asks the dev server it spawns for itself to bypass that gate. This
+    // env var is a build-time Vite define read only by
+    // isStudioGateTestBypassed() — it never exists on a real deployment,
+    // and only applies to a server THIS script starts (see the
+    // isServerUp() check above: an already-running server on PORT is reused
+    // as-is, without this variable).
+    env: { ...process.env, VITE_SG_TEST_BYPASS_STUDIO_GATE: "1" },
   });
   const ready = new Promise((resolve, reject) => {
     let out = "";
@@ -131,6 +141,14 @@ async function startDevServer() {
 
 async function loadStudio(page) {
   await page.goto(`${BASE_URL}/studio`, { waitUntil: "domcontentloaded", timeout: 30000 });
+  await page.waitForTimeout(500); // let the client-side access gate (see subscription-status.ts) settle
+  if (/\/(auth|pricing)(\?|$)/.test(page.url())) {
+    throw new Error(
+      `Redirected to ${page.url()} instead of loading Chart Studio — this suite needs the studio access gate ` +
+        `bypassed (VITE_SG_TEST_BYPASS_STUDIO_GATE=1), which only happens on a dev server THIS script starts. ` +
+        `An already-running server on port ${PORT} was reused without it — stop that server and re-run.`,
+    );
+  }
   await page.waitForSelector("text=BTCUSDT", { timeout: 15000 });
   await page.waitForFunction(
     () => /\d{2,3},\d{3}\.\d{2}/.test(document.body.innerText),

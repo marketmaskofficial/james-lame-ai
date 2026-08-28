@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, redirect, useNavigate } from "@tanstack/react-router";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
@@ -57,6 +57,10 @@ import {
   Gauge,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
+import { useSubscription } from "@/hooks/useSubscription";
+import { checkStudioAccess, isStudioGateTestBypassed, isStudioGateLocalPaidBypassed } from "@/lib/subscription-status";
+import { getOnboardingStatus } from "@/lib/profile.functions";
+import { OnboardingFlow } from "@/components/OnboardingFlow";
 import { fetchBars, TIMEFRAMES, timeframeLabel } from "@/lib/marketdata";
 import {
   DEFAULT_FAVORITE_TIMEFRAMES,
@@ -82,8 +86,14 @@ import {
   type ChartTrade,
   type PositionPlan,
   type RenderStats,
+  type MagnetMode,
   DEFAULT_CHART_SETTINGS,
 } from "@/components/studio/StudioChart";
+import { DrawToolbar } from "@/components/studio/DrawToolbar";
+import { DrawingSettingsPopover } from "@/components/studio/DrawingSettingsPopover";
+import { loadDrawingsFor, saveDrawingsFor } from "@/lib/workspace/drawings";
+import { TOOL_BY_ID } from "@/lib/drawing/registry";
+import { recordDrawingChange, undoDrawings, redoDrawings, clearDrawingHistory } from "@/lib/drawing/history";
 import { BrokerConnections } from "@/components/studio/BrokerConnections";
 import { SymbolSearch } from "@/components/studio/SymbolSearch";
 import { WatchlistPanel } from "@/components/studio/WatchlistPanel";
@@ -101,7 +111,7 @@ import {
   updateIndicator,
 } from "@/lib/indicators.functions";
 import { repairSgScript, translateToSgScript } from "@/lib/sgscript.functions";
-import { loadDrawings, saveDrawings, takeStudioHandoff } from "@/lib/studio-handoff";
+import { takeStudioHandoff } from "@/lib/studio-handoff";
 import {
   TradingPanel,
   type OrderDraft,
@@ -199,6 +209,34 @@ import {
 
 
 export const Route = createFileRoute("/studio")({
+  // UI-8: Chart Studio is the paid product surface. `ssr: false` means the
+  // server NEVER renders this route's component or runs its `beforeLoad` —
+  // both are skipped server-side and a neutral shell (`pendingComponent`
+  // below) is sent instead, so a direct/unauthenticated request can never
+  // receive real Studio markup in its initial HTML. This is load-bearing:
+  // the Supabase client used everywhere in this app (see
+  // src/integrations/supabase/client.ts) has no session storage on the
+  // server (no cookie-forwarded session either), so a server-side
+  // `beforeLoad` could never have told a real user apart from a guest
+  // anyway — the only trustworthy place to check auth/subscription state is
+  // the browser, and `ssr:false` is what keeps that check from being
+  // bypassable by simply not waiting for JS.
+  ssr: false,
+  // Client-side gate that runs before the Studio component ever mounts, on
+  // every navigation to this route (including a hard refresh, since
+  // `ssr:false` forces a fresh client-side match). Reads the exact same
+  // source of truth as the `useSubscription` hook (see
+  // src/lib/subscription-status.ts) — not a second entitlement system.
+  // A runtime guard inside the `Studio` component below (StudioAccessGate)
+  // additionally covers the case where auth/subscription state CHANGES while
+  // already mounted (logout, subscription lapsing) — beforeLoad alone only
+  // re-runs on navigation.
+  beforeLoad: async () => {
+    const access = await checkStudioAccess();
+    if (access === "unauthenticated") throw redirect({ to: "/auth" });
+    if (access === "unpaid") throw redirect({ to: "/pricing" });
+  },
+  pendingComponent: StudioLoadingScreen,
   head: () => ({
     meta: [
       { title: "Chart Studio — run your indicators on live charts" },
@@ -220,25 +258,100 @@ export const Route = createFileRoute("/studio")({
   component: Studio,
 });
 
-/** `group` only drives a subtle divider between clusters in the toolbar — it
- * has no effect on tool behaviour. */
-const TOOLS: { id: DrawTool; icon: typeof MousePointer2; label: string; group: string }[] = [
-  { id: "cursor", icon: MousePointer2, label: "Cursor", group: "select" },
-  { id: "select", icon: MousePointer2, label: "Select / move drawings", group: "select" },
-  { id: "trend", icon: TrendingUp, label: "Trend line", group: "shapes" },
-  { id: "ray", icon: Crosshair, label: "Ray", group: "shapes" },
-  { id: "hline", icon: Minus, label: "Horizontal line", group: "shapes" },
-  { id: "vline", icon: Minus, label: "Vertical line", group: "shapes" },
-  { id: "rect", icon: Square, label: "Rectangle", group: "shapes" },
-  { id: "fib", icon: Ruler, label: "Fib retracement", group: "annotate" },
-  { id: "text", icon: TypeIcon, label: "Text", group: "annotate" },
-  { id: "arrow", icon: ArrowUpRight, label: "Arrow", group: "annotate" },
-  { id: "marker", icon: MapPin, label: "Marker", group: "annotate" },
-  { id: "measure", icon: Pencil, label: "Measure", group: "annotate" },
-  { id: "long", icon: TrendingUp, label: "Long position", group: "position" },
-  { id: "short", icon: TrendingDown, label: "Short position", group: "position" },
-  { id: "erase", icon: Trash2, label: "Erase", group: "erase" },
-];
+/** Neutral loading shell shown while the server-skipped route resolves on
+ * the client (see `ssr: false` above) and while the `Studio` gate component
+ * below is still waiting on auth/subscription state. Deliberately renders
+ * nothing about the product itself — no chart, no widgets, no cached data —
+ * so there is never anything for an unpaid/unauthenticated viewer to see
+ * flash by. */
+function StudioLoadingScreen() {
+  return (
+    <div className="flex h-screen w-screen items-center justify-center bg-background text-foreground">
+      <div className="flex flex-col items-center gap-3">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-border border-t-brand" />
+        <p className="text-sm text-muted-foreground">Loading Chart Studio…</p>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Route component: gates the real Studio workspace behind live auth +
+ * subscription state, then renders it. `beforeLoad` above already prevents
+ * an unpaid/unauthenticated user from reaching this component in the first
+ * place on a fresh navigation; this additionally watches for the SAME state
+ * changing while the component stays mounted (sign-out, a subscription
+ * lapsing) via the ordinary reactive hooks (`useAuth`, `useSubscription`)
+ * every other authenticated surface in this app already uses — no second
+ * source of truth, no polling.
+ *
+ * Deliberately a thin wrapper around the pre-existing giant `StudioWorkspace`
+ * component (renamed from `Studio`, otherwise untouched) rather than folding
+ * this logic into it directly: `StudioWorkspace` calls dozens of hooks
+ * unconditionally in a fixed order, so an early return for "not ready yet"
+ * inside that same function would violate the Rules of Hooks the moment
+ * loading state changed between renders.
+ */
+function Studio() {
+  const navigate = useNavigate();
+  const testBypassed = isStudioGateTestBypassed();
+  // Local-dev-only, doubly-guarded (see isStudioGateLocalPaidBypassed's
+  // docstring): unlike `testBypassed` above, this NEVER substitutes for a
+  // real signed-in user below — it only ever widens what counts as "paid"
+  // for a user who already passed the `!!user` check, so a signed-out
+  // visitor is still redirected to /auth exactly as in production.
+  const localPaidBypassed = isStudioGateLocalPaidBypassed();
+  const { user, loading: authLoading } = useAuth();
+  const { isActive: isPaid, loading: subLoading } = useSubscription();
+  const ready = !authLoading && !subLoading;
+  const effectivelyPaid = isPaid || localPaidBypassed;
+  const authorized = testBypassed || (ready && !!user && effectivelyPaid);
+
+  useEffect(() => {
+    if (testBypassed || !ready) return;
+    if (!user) {
+      navigate({ to: "/auth", replace: true });
+      return;
+    }
+    if (!effectivelyPaid) {
+      navigate({ to: "/pricing", replace: true });
+    }
+  }, [testBypassed, ready, user, effectivelyPaid, navigate]);
+
+  // UI-8 task 3: first-run onboarding. Checked once access is confirmed —
+  // `null` = still checking, so the loading shell (not the real product,
+  // not the onboarding flow) shows while this resolves. Fails open on any
+  // error (see getOnboardingStatus's own docstring): a broken/unmigrated
+  // check must never re-trap or block an existing paid user. Skipped
+  // entirely under the render-regression test bypass (see
+  // isStudioGateTestBypassed) since there is no authenticated user to look
+  // an onboarding row up for.
+  const getOnboardingStatusFn = useServerFn(getOnboardingStatus);
+  const [needsOnboarding, setNeedsOnboarding] = useState<boolean | null>(testBypassed ? false : null);
+  useEffect(() => {
+    if (testBypassed || !authorized) return;
+    let cancelled = false;
+    getOnboardingStatusFn()
+      .then((r) => {
+        if (!cancelled) setNeedsOnboarding(!r.hasOnboarded);
+      })
+      .catch(() => {
+        if (!cancelled) setNeedsOnboarding(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [testBypassed, authorized, getOnboardingStatusFn]);
+
+  if (!authorized || needsOnboarding === null) return <StudioLoadingScreen />;
+  if (needsOnboarding) return <OnboardingFlow onDone={() => setNeedsOnboarding(false)} />;
+  return <StudioWorkspace />;
+}
+
+// The old flat TOOLS array (cursor/select/trend/.../erase, one flavor-text
+// "group" per divider) was replaced by the grouped-flyout toolbar
+// (`DrawToolbar.tsx`), which reads its tool list from the shared
+// `src/lib/drawing/registry.ts` instead.
 
 const CHART_TYPES: { id: ChartType; label: string }[] = [
   { id: "candles", label: "Candles" },
@@ -537,7 +650,7 @@ function logRenderOutcome(
 }
 
 
-function Studio() {
+function StudioWorkspace() {
 
   const { user } = useAuth();
   const qc = useQueryClient();
@@ -594,6 +707,22 @@ function Studio() {
   const [chartStatesMap, setChartStatesMap] = useState<Record<string, ChartRuntimeState>>({
     "chart-1": DEFAULT_CHART_RUNTIME_STATE,
   });
+  // Mirrors `chartStatesMap` for synchronous reads from plain event-handler
+  // functions (drawing create/edit/delete/undo/redo below) that must NOT
+  // read state via a `setState` functional updater — see the long comment
+  // above `addDrawing` for why. Kept in sync two ways: unconditionally every
+  // render (covers the common case), AND eagerly inside `setChartField`
+  // itself right when a new value is computed (covers back-to-back mutator
+  // calls within the same synchronous tick, before React has re-rendered).
+  // The eager write is safe to happen more than once for one call — like any
+  // functional `setState` updater, React may invoke this one more than once
+  // for a single commit (e.g. its eager-bailout check on an idle fiber), but
+  // both invocations start from the same `prev` and so compute the same
+  // `nextState`; assigning the same value to a ref twice is harmless. That
+  // is the key distinction from the bug this file fixes: assignment is
+  // idempotent, pushing a history entry is not.
+  const chartStatesMapRef = useRef(chartStatesMap);
+  chartStatesMapRef.current = chartStatesMap;
   const [activeChartInstanceId, setActiveChartInstanceId] = useState("chart-1");
   // Read inside the market-data effect's async .then() to confirm the fetch
   // is still for whichever chart is active NOW before touching the
@@ -613,7 +742,9 @@ function Studio() {
         const cur = prev[instanceId] ?? DEFAULT_CHART_RUNTIME_STATE;
         const nextVal = typeof value === "function" ? (value as (p: ChartRuntimeState[K]) => ChartRuntimeState[K])(cur[field]) : value;
         if (nextVal === cur[field]) return prev;
-        return { ...prev, [instanceId]: { ...cur, [field]: nextVal } };
+        const nextState = { ...prev, [instanceId]: { ...cur, [field]: nextVal } };
+        chartStatesMapRef.current = nextState;
+        return nextState;
       });
     },
     [],
@@ -745,12 +876,19 @@ function Studio() {
   // Prompt handed to the AI panel when the tester asks for missing rules.
   const [aiSeed, setAiSeed] = useState<string | null>(null);
   const drawings = activeChartState.drawings;
-  const setDrawings = useCallback(
-    (v: Drawing[] | ((p: Drawing[]) => Drawing[])) => setChartField(activeChartInstanceId, "drawings", v),
-    [activeChartInstanceId, setChartField],
-  );
   const [selectedDrawing, setSelectedDrawing] = useState<string | null>(null);
   const [objectsOpen, setObjectsOpen] = useState(false);
+  // Drawing-anchor snap strength (distinct from chartSettings.crosshairMagnet,
+  // which only affects the crosshair display, not where a new anchor lands).
+  // One studio-wide value, not per-chart — same rationale as `tool` itself.
+  const [magnet, setMagnet] = useState<MagnetMode>("off");
+  // Which drawing (by id) has its DrawingSettingsPopover open, if any, and
+  // where (VIEWPORT coordinates) it should anchor near — set precisely from
+  // the double-click position when opened that way (StudioChart's
+  // onOpenDrawingSettings), or a sensible fixed near-the-chart default when
+  // opened from the Objects panel's gear icon instead.
+  const [drawingSettingsFor, setDrawingSettingsFor] = useState<string | null>(null);
+  const [drawingSettingsAnchor, setDrawingSettingsAnchor] = useState<{ x: number; y: number }>({ x: 320, y: 110 });
 
   // UI-4c: live, mutable workspace layout tree — source of truth for which
   // widgets are open in the sidebar/dock and in what order.
@@ -807,15 +945,29 @@ function Studio() {
         for (const tab of node.tabs) {
           if (tab.widgetTypeId !== "chart") continue;
           const cfg = tab.chartConfig;
+          const symbol = cfg?.symbol ?? DEFAULT_CHART_RUNTIME_STATE.symbol;
+          const interval = cfg?.interval ?? DEFAULT_CHART_RUNTIME_STATE.interval;
           found[tab.instanceId] = {
             ...DEFAULT_CHART_RUNTIME_STATE,
-            symbol: cfg?.symbol ?? DEFAULT_CHART_RUNTIME_STATE.symbol,
-            interval: cfg?.interval ?? DEFAULT_CHART_RUNTIME_STATE.interval,
+            symbol,
+            interval,
             chartType: (cfg?.chartType as ChartType | undefined) ?? DEFAULT_CHART_RUNTIME_STATE.chartType,
             chartSettings: cfg?.settings
               ? ({ ...DEFAULT_CHART_SETTINGS, ...(cfg.settings as Partial<ChartSettings>) } as ChartSettings)
               : DEFAULT_CHART_RUNTIME_STATE.chartSettings,
             linkMode: cfg?.linkMode ?? DEFAULT_CHART_RUNTIME_STATE.linkMode,
+            // This call REPLACES chartStatesMap wholesale (a plain
+            // setChartStatesMap(found) below, not a merge) — every site that
+            // triggers it (initial load, preset switch, named-layout
+            // switch, cloud sync) would otherwise silently discard each
+            // chart's drawings back to `[]`, since a fresh runtime-state
+            // object built from DEFAULT_CHART_RUNTIME_STATE has no way to
+            // know what was saved. Hydrating from the SAME persisted store
+            // `StudioChart`'s own drawings-persistence effect reads keeps
+            // this one atomic instead of racing that effect's async
+            // setChartField (see the "justHydratedRef" comment further
+            // down for the mount-order race this sidesteps entirely).
+            drawings: loadDrawingsFor(tab.instanceId, symbol, interval) as Drawing[],
           };
         }
         return;
@@ -851,7 +1003,40 @@ function Studio() {
   // back on it without the user having to name/save anything first. Named
   // layouts (layouts[]) are NOT touched by this — they only change when the
   // user explicitly saves again (see saveActiveNamedLayout below).
+  //
+  // UI-8 bugfix: skip this effect's very first (mount) run, AND skip the
+  // persist effect's very first run below, for the same reason. On mount,
+  // EVERY effect in this component fires once in the SAME commit, each
+  // using THAT render's closures — still `layout = PRESETS.beginner` and
+  // `workspaceStore = defaultLocalStore()` (the `useState` initializers),
+  // not yet whatever the load effect above just found via `loadLocalStore()`
+  // (its `setLayout`/`setWorkspaceStore` calls only apply to the NEXT
+  // render; sibling effects in the same commit don't see them). Left
+  // unguarded, this effect used that stale `layout` to blow the real loaded
+  // layout's name back to "Beginner" inside `workspaceStore`, and the
+  // persist effect below then wrote that corrupted value to localStorage —
+  // reproducible even without any onboarding/AI-Builder change involved,
+  // just by switching to any non-Beginner preset via the ordinary Layouts
+  // menu and reloading (confirmed via `git stash` against pre-UI-8 HEAD:
+  // present there too). Because Chart Studio's route can genuinely remount
+  // this whole component more than once during one page load (TanStack
+  // Router's pending -> resolved swap under this route's `ssr: false`,
+  // confirmed via instrumentation), guarding only the mirror effect was not
+  // sufficient by itself — the persist effect's OWN stale first write could
+  // still land on disk before a second mount's load effect ever ran, and
+  // that second mount would then load the corrupted value as if it were the
+  // real saved preference. Guarding both effects' first pass means neither
+  // one ever touches `workspaceStore`/disk before the real loaded value is
+  // in play, on any mount, so nothing is ever written to correct later.
+  // Once `layout`/`workspaceStore` update for real (next render), each
+  // effect reruns anyway (their own dependency), so skipping the mount run
+  // loses nothing.
+  const mirrorMountedRef = useRef(false);
   useEffect(() => {
+    if (!mirrorMountedRef.current) {
+      mirrorMountedRef.current = true;
+      return;
+    }
     setWorkspaceStore((prev) => (prev.currentLayout === layout ? prev : { ...prev, currentLayout: layout }));
   }, [layout]);
 
@@ -859,7 +1044,12 @@ function Studio() {
   // the mirrored scratch slot — whenever any of it changes. The only place
   // that writes to localStorage; every action below just calls
   // setWorkspaceStore and this effect does the actual autosave.
+  const saveMountedRef = useRef(false);
   useEffect(() => {
+    if (!saveMountedRef.current) {
+      saveMountedRef.current = true;
+      return;
+    }
     saveLocalStore(workspaceStore);
   }, [workspaceStore]);
 
@@ -1246,6 +1436,7 @@ function Studio() {
           const { [instanceId]: _removed, ...rest } = prevStates;
           return rest;
         });
+        clearDrawingHistory(instanceId);
         if (activeChartInstanceId === instanceId) {
           const stillThere = findLeafIdHoldingInstance(next.root, instanceId);
           if (!stillThere) {
@@ -1957,37 +2148,219 @@ function Studio() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chartConfigPersistSignature]);
 
-  // ---- drawings persistence ----------------------------------------------
+  // ---- drawings persistence ------------------------------------------------
+  // Generalized across EVERY open chart instance (not just the active one) —
+  // see src/lib/workspace/drawings.ts's doc comment for why the old
+  // active-chart-only, symbol:interval-only version of this could silently
+  // collide or lose non-active charts' drawings. Loading is keyed on each
+  // instance's OWN (instanceId, symbol, interval) triple, tracked in a ref so
+  // it only fires on a genuine symbol/timeframe change for that instance —
+  // never re-fires (and never clobbers in-progress edits) on every
+  // chartStatesMap update, e.g. a live price tick.
+  //
+  // `justHydratedRef` closes a real mount-time data-loss race: on first
+  // mount (and again any time a chart instance is newly added), the LOAD
+  // effect below correctly calls `setChartField(id, "drawings", ...)` with
+  // whatever was in storage — but that's an async state update, so the SAVE
+  // effect, which runs in the SAME commit right after, still sees this
+  // render's STALE `chartStatesMap` (the instance's brand-new, still-empty
+  // `drawings: []`) and would otherwise immediately overwrite the very data
+  // LOAD just fetched with an empty array, a heartbeat before the loaded
+  // value ever reaches a render. Reproduced directly: draw something, reload
+  // — without this guard the drawing survives the in-memory reload (LOAD's
+  // state update does land) but is gone again on the NEXT reload, because
+  // SAVE's stale-empty write already clobbered localStorage right after the
+  // first one. Marking an instance "just hydrated" and skipping exactly its
+  // next SAVE pass (the SAVE effect fires again, with the now-current data,
+  // as soon as LOAD's state update lands on the following render) fixes it
+  // without needing the two effects to somehow run in the same tick.
+  const drawingsLoadTrackRef = useRef<Record<string, string>>({});
+  const justHydratedRef = useRef<Set<string>>(new Set());
+  const chartSymbolIntervalSig = useMemo(
+    () => Object.entries(chartStatesMap).map(([id, s]) => `${id}:${s.symbol}:${s.interval}`).join("|"),
+    [chartStatesMap],
+  );
   useEffect(() => {
-    setDrawings(loadDrawings(symbol, interval) as Drawing[]);
-  }, [symbol, interval]);
-  useEffect(() => {
-    saveDrawings(symbol, interval, drawings);
-  }, [symbol, interval, drawings]);
+    for (const [id, inst] of Object.entries(chartStatesMap)) {
+      const combo = `${inst.symbol}:${inst.interval}`;
+      if (drawingsLoadTrackRef.current[id] === combo) continue;
+      drawingsLoadTrackRef.current[id] = combo;
+      justHydratedRef.current.add(id);
+      setChartField(id, "drawings", loadDrawingsFor(id, inst.symbol, inst.interval) as Drawing[]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chartSymbolIntervalSig]);
 
-  // These four are memoized once ([] deps, same hazard as runCode/recompute
+  const drawingsSaveSig = useMemo(
+    () => JSON.stringify(Object.entries(chartStatesMap).map(([id, s]) => [id, s.symbol, s.interval, s.drawings])),
+    [chartStatesMap],
+  );
+  useEffect(() => {
+    for (const [id, inst] of Object.entries(chartStatesMap)) {
+      if (justHydratedRef.current.has(id)) {
+        // Skip exactly the one pass immediately following this instance's
+        // load — see the doc comment above. The next pass (triggered by
+        // LOAD's own state update changing `drawingsSaveSig`) saves for
+        // real, with the now-current, actually-loaded data.
+        justHydratedRef.current.delete(id);
+        continue;
+      }
+      saveDrawingsFor(id, inst.symbol, inst.interval, inst.drawings);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drawingsSaveSig]);
+
+  // ---- drawing mutators + undo/redo history --------------------------------
+  // These are memoized once ([] deps, same hazard as runCode/recompute
   // above) so they can't close over a fresh per-active-chart `setDrawings`.
   // Route through the stable `setChartField` + `activeChartInstanceIdRef`
   // instead, so a drawing action always lands on whichever chart is
   // actually active at the moment it fires.
+  //
+  // History (src/lib/drawing/history.ts) is a full before/after array
+  // snapshot per committed change. IMPORTANT: `recordDrawingChange` (and
+  // `undoDrawings`/`redoDrawings`, which pop/push those same stacks) are
+  // side-effecting — each call mutates history.ts's module-level stacks by
+  // one entry. They must therefore never be called from INSIDE a functional
+  // `setState` updater passed to `setChartField`/`setChartStatesMap`: React
+  // does not guarantee an updater runs exactly once per commit (e.g. its
+  // eager-bailout optimization calls it once synchronously to check whether
+  // the new state actually differs, then again for the real commit) — fine
+  // for a pure computation like `[...prev, d]` since both calls produce the
+  // same output, but for a side effect like "push a history entry" the
+  // second call is a real, extra mutation, and one Undo would then need two
+  // presses to fully undo one drawing (or leave a stray future entry). This
+  // was confirmed to reproduce on plain Trend Line too, i.e. it's this
+  // shared mechanism, not any one tool.
+  //
+  // The fix: read the pre-change value synchronously from `chartStatesMapRef`
+  // (kept fresh outside of React's render/commit cycle — see its own
+  // comment), compute `after` and call the history side effect exactly once
+  // in this plain function body, then commit with a PLAIN value (not a
+  // function) via `setChartField` — so there is no updater function left for
+  // React to invoke more than once.
+  //
+  // `updateDrawing` also backs StudioChart's per-pointermove drag callback,
+  // which would otherwise record one history entry per animation frame —
+  // `dragCoalesceRef` collapses any burst of updates to the SAME drawing
+  // within 400ms into the single history entry for "the whole drag/edit",
+  // exactly like create/delete/setting-change each already are.
+  const dragCoalesceRef = useRef<{ id: string; lastTs: number } | null>(null);
+  // `chartId` defaults to whichever chart is active, so every existing call
+  // site below that omits it (the active chart's own onAddDrawing/
+  // onRemoveDrawing/onUpdateDrawing wiring) keeps behaving exactly as
+  // before. `renderInactiveChartLeaf` passes its own pane's instanceId
+  // explicitly instead, so a drawing mutation on a non-active pane records
+  // history scoped to THAT pane, not whichever chart happens to be active —
+  // see the doc comment on `renderInactiveChartLeaf` for why that pane's
+  // callbacks must never bypass these shared, history-recording mutators.
   const addDrawing = useCallback(
-    (d: Drawing) => setChartField(activeChartInstanceIdRef.current, "drawings", (prev) => [...prev, d]),
+    (d: Drawing, chartId: string = activeChartInstanceIdRef.current) => {
+      const prev = chartStatesMapRef.current[chartId]?.drawings ?? DEFAULT_CHART_RUNTIME_STATE.drawings;
+      const after = [...prev, d];
+      recordDrawingChange(chartId, prev, after);
+      setChartField(chartId, "drawings", after);
+    },
     [setChartField],
   );
-  const removeDrawing = useCallback((id: string) => {
-    setChartField(activeChartInstanceIdRef.current, "drawings", (prev) => prev.filter((d) => d.id !== id));
+  // Phase 3D-14: deliberately does NOT call deleteChartImage() for a removed
+  // Image drawing's `settings.imagePath`, even though src/lib/storage/
+  // chartImages.ts exposes exactly that function. A `Duplicate`d Image
+  // drawing shares the exact same path as its source, so deleting one
+  // would silently break every other drawing (on this chart OR another)
+  // still pointing at that object. Real cleanup needs reference counting
+  // across every drawing on every chart instance — deliberately out of
+  // scope for this phase; the storage object is simply left behind.
+  const removeDrawing = useCallback((id: string, chartId: string = activeChartInstanceIdRef.current) => {
+    const prev = chartStatesMapRef.current[chartId]?.drawings ?? DEFAULT_CHART_RUNTIME_STATE.drawings;
+    const after = prev.filter((d) => d.id !== id);
+    if (after.length !== prev.length) {
+      recordDrawingChange(chartId, prev, after);
+      setChartField(chartId, "drawings", after);
+    }
     setSelectedDrawing((cur) => (cur === id ? null : cur));
+    setDrawingSettingsFor((cur) => (cur === id ? null : cur));
   }, [setChartField]);
   const updateDrawing = useCallback(
-    (next: Drawing) =>
-      setChartField(activeChartInstanceIdRef.current, "drawings", (prev) => prev.map((d) => (d.id === next.id ? next : d))),
+    (next: Drawing, chartId: string = activeChartInstanceIdRef.current) => {
+      const prev = chartStatesMapRef.current[chartId]?.drawings ?? DEFAULT_CHART_RUNTIME_STATE.drawings;
+      const after = prev.map((d) => (d.id === next.id ? next : d));
+      const now = Date.now();
+      const active = dragCoalesceRef.current;
+      if (!active || active.id !== next.id || now - active.lastTs > 400) {
+        recordDrawingChange(chartId, prev, after);
+      }
+      dragCoalesceRef.current = { id: next.id, lastTs: now };
+      setChartField(chartId, "drawings", after);
+    },
     [setChartField],
   );
   const duplicateDrawing = useCallback((d: Drawing) => {
-    const copy = { ...d, id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}` };
-    setChartField(activeChartInstanceIdRef.current, "drawings", (prev) => [...prev, copy]);
+    const now = Date.now();
+    const copy: Drawing = { ...d, id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, createdAt: now, updatedAt: now };
+    const chartId = activeChartInstanceIdRef.current;
+    const prev = chartStatesMapRef.current[chartId]?.drawings ?? DEFAULT_CHART_RUNTIME_STATE.drawings;
+    const after = [...prev, copy];
+    recordDrawingChange(chartId, prev, after);
+    setChartField(chartId, "drawings", after);
     setSelectedDrawing(copy.id);
   }, [setChartField]);
+
+  // Global drawing controls (lock/hide/delete all, delete selected) — always
+  // scoped to `activeChartInstanceIdRef.current` alone, never touching
+  // indicators, chart data, or another chart instance's drawings.
+  const setAllDrawingsField = useCallback(
+    (field: "locked" | "hidden", value: boolean) => {
+      const chartId = activeChartInstanceIdRef.current;
+      const prev = chartStatesMapRef.current[chartId]?.drawings ?? DEFAULT_CHART_RUNTIME_STATE.drawings;
+      const after = prev.map((d) => ({ ...d, [field]: value, updatedAt: Date.now() }));
+      recordDrawingChange(chartId, prev, after);
+      setChartField(chartId, "drawings", after);
+    },
+    [setChartField],
+  );
+  const deleteAllDrawings = useCallback(() => {
+    const chartId = activeChartInstanceIdRef.current;
+    const prev = chartStatesMapRef.current[chartId]?.drawings ?? DEFAULT_CHART_RUNTIME_STATE.drawings;
+    if (prev.length > 0) {
+      recordDrawingChange(chartId, prev, []);
+      setChartField(chartId, "drawings", []);
+    }
+    setSelectedDrawing(null);
+    setDrawingSettingsFor(null);
+  }, [setChartField]);
+  const undoDrawingsForActive = useCallback(() => {
+    const id = activeChartInstanceIdRef.current;
+    const current = chartStatesMapRef.current[id]?.drawings ?? DEFAULT_CHART_RUNTIME_STATE.drawings;
+    const prevSnapshot = undoDrawings(id, current);
+    if (prevSnapshot !== null) setChartField(id, "drawings", prevSnapshot);
+  }, [setChartField]);
+  const redoDrawingsForActive = useCallback(() => {
+    const id = activeChartInstanceIdRef.current;
+    const current = chartStatesMapRef.current[id]?.drawings ?? DEFAULT_CHART_RUNTIME_STATE.drawings;
+    const nextSnapshot = redoDrawings(id, current);
+    if (nextSnapshot !== null) setChartField(id, "drawings", nextSnapshot);
+  }, [setChartField]);
+
+  // Ctrl/Cmd+Z / Ctrl/Cmd+Shift+Z: undo/redo the ACTIVE chart's drawings
+  // only. Guarded against firing while typing anywhere else in Studio (the
+  // code editor, a text input, a contenteditable) so it never fights those
+  // surfaces' own undo/redo.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const typing =
+        target &&
+        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+      if (typing) return;
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "z") return;
+      e.preventDefault();
+      if (e.shiftKey) redoDrawingsForActive();
+      else undoDrawingsForActive();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undoDrawingsForActive, redoDrawingsForActive]);
 
   // ---- run / add to chart -------------------------------------------------
   const barsLiveRef = useRef<Bar[]>(bars);
@@ -3216,8 +3589,13 @@ function Studio() {
             onAddDrawing={addDrawing}
             onRemoveDrawing={removeDrawing}
             onUpdateDrawing={updateDrawing}
+            userId={user?.id ?? null}
             selectedId={selectedDrawing}
             onSelectDrawing={setSelectedDrawing}
+            onOpenDrawingSettings={(id, screen) => {
+              setDrawingSettingsFor(id);
+              setDrawingSettingsAnchor(screen);
+            }}
             hasOscPane={hasOscPane}
             extraMarkers={backtestMarkers}
             tradeLines={tradeLines}
@@ -3247,6 +3625,8 @@ function Studio() {
             onCrosshair={setCrosshair}
             onReady={onChartReady}
             onRenderStats={handleRenderStats}
+            chartInstanceId={chartInstanceId}
+            magnet={magnet}
           />
         </ChartInstance>
       )}
@@ -3259,7 +3639,29 @@ function Studio() {
           onUpdate={updateDrawing}
           onRemove={removeDrawing}
           onDuplicate={duplicateDrawing}
+          onOpenSettings={(d) => {
+            setDrawingSettingsFor(d.id);
+            setDrawingSettingsAnchor({ x: 320, y: 110 });
+          }}
           onClose={() => setObjectsOpen(false)}
+        />
+      )}
+
+      {drawingSettingsFor && activeChartInstance.drawings.find((d) => d.id === drawingSettingsFor) && (
+        <DrawingSettingsPopover
+          drawing={activeChartInstance.drawings.find((d) => d.id === drawingSettingsFor)!}
+          label={TOOL_BY_ID[activeChartInstance.drawings.find((d) => d.id === drawingSettingsFor)!.tool]?.name ?? "Drawing"}
+          anchor={drawingSettingsAnchor}
+          onChange={updateDrawing}
+          onDuplicate={() => {
+            const d = activeChartInstance.drawings.find((x) => x.id === drawingSettingsFor);
+            if (d) duplicateDrawing(d);
+          }}
+          onRemove={() => {
+            if (drawingSettingsFor) removeDrawing(drawingSettingsFor);
+          }}
+          onClose={() => setDrawingSettingsFor(null)}
+          userId={user?.id ?? null}
         />
       )}
 
@@ -3395,15 +3797,21 @@ function Studio() {
               indicators={inst.indicators}
               tool="cursor"
               drawings={inst.drawings}
-              onAddDrawing={(d) => setChartField(instanceId, "drawings", (prev) => [...prev, d])}
-              onRemoveDrawing={(id) =>
-                setChartField(instanceId, "drawings", (prev) => prev.filter((d) => d.id !== id))
-              }
-              onUpdateDrawing={(updated) =>
-                setChartField(instanceId, "drawings", (prev) =>
-                  prev.map((d) => (d.id === updated.id ? updated : d)),
-                )
-              }
+              // Routed through the SAME history-recording mutators the active
+              // chart uses (see their doc comment above), explicitly scoped to
+              // THIS pane's own instanceId — never bypassed via a raw
+              // setChartField call, which would silently skip
+              // recordDrawingChange and leave this pane with no undo/redo for
+              // the mutation. In practice `tool="cursor"`/`selectedId={null}`/
+              // `onSelectDrawing={() => {}}` just below mean StudioChart never
+              // actually invokes these on an inactive pane today (creation,
+              // drag, and delete-key removal all require a non-cursor tool or
+              // a selection, neither of which this leaf ever has) — but wiring
+              // them correctly here removes the footgun for whenever that
+              // changes, and matches every other mutation path's contract.
+              onAddDrawing={(d) => addDrawing(d, instanceId)}
+              onRemoveDrawing={(id) => removeDrawing(id, instanceId)}
+              onUpdateDrawing={(updated) => updateDrawing(updated, instanceId)}
               selectedId={null}
               onSelectDrawing={() => {}}
               hasOscPane={inst.indicators.some((i) => i.result.plots.some((p) => p.pane === "osc"))}
@@ -3414,6 +3822,8 @@ function Studio() {
               chartType={inst.chartType}
               settings={inst.chartSettings}
               onCrosshair={() => {}}
+              chartInstanceId={instanceId}
+              magnet={magnet}
             />
           </ChartInstance>
         )}
@@ -4975,47 +5385,24 @@ function Studio() {
 
       <div className="flex min-h-0 flex-1">
         {/* drawing rail */}
-        <nav className="flex w-[42px] shrink-0 flex-col items-center gap-0.5 border-r border-border bg-sidebar py-1.5">
-          {TOOLS.map((t, i) => (
-            <Fragment key={t.id}>
-              {i > 0 && t.group !== TOOLS[i - 1].group && (
-                <div className="my-1 h-px w-5 bg-border" />
-              )}
-              <button
-                title={t.label}
-                onClick={() => setTool(t.id)}
-                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[6px] ${
-                  tool === t.id
-                    ? "bg-brand text-brand-foreground"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground"
-                }`}
-              >
-                <t.icon className="h-[18px] w-[18px]" />
-              </button>
-            </Fragment>
-          ))}
-          <div className="my-1 h-px w-5 bg-border" />
-          <button
-            title="Objects & styles"
-            onClick={() => setObjectsOpen((v) => !v)}
-            className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[6px] ${
-              objectsOpen
-                ? "bg-accent text-foreground"
-                : "text-muted-foreground hover:bg-accent hover:text-foreground"
-            }`}
-          >
-            <Layers className="h-[18px] w-[18px]" />
-          </button>
-          {drawings.length > 0 && (
-            <button
-              title="Clear all drawings"
-              onClick={() => setDrawings([])}
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground"
-            >
-              <span className="text-[10px]">clr</span>
-            </button>
-          )}
-        </nav>
+        <DrawToolbar
+          tool={tool}
+          onSelectTool={setTool}
+          magnet={magnet}
+          onSetMagnet={setMagnet}
+          objectsOpen={objectsOpen}
+          onToggleObjects={() => setObjectsOpen((v) => !v)}
+          hasDrawings={drawings.length > 0}
+          hasSelection={Boolean(selectedDrawing)}
+          allLocked={drawings.length > 0 && drawings.every((d) => d.locked)}
+          allHidden={drawings.length > 0 && drawings.every((d) => d.hidden)}
+          onLockAll={() => setAllDrawingsField("locked", true)}
+          onUnlockAll={() => setAllDrawingsField("locked", false)}
+          onHideAll={() => setAllDrawingsField("hidden", true)}
+          onShowAll={() => setAllDrawingsField("hidden", false)}
+          onDeleteSelected={() => selectedDrawing && removeDrawing(selectedDrawing)}
+          onDeleteAll={deleteAllDrawings}
+        />
 
         {/* chart + sidebar, generically rendered from the workspace tree
             (UI-4f-1) -- structure is tree-driven, leaf content/resize

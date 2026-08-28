@@ -1,19 +1,24 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { getStripeEnvironment } from "@/lib/stripe";
 import { useAuth } from "@/hooks/useAuth";
+import { isSubscriptionRowActive, type SubscriptionRow } from "@/lib/subscription-status";
 
-export interface SubscriptionRow {
-  status: string;
-  price_id: string;
-  current_period_end: string | null;
-  cancel_at_period_end: boolean | null;
-}
+export type { SubscriptionRow };
 
 export function useSubscription() {
   const { user } = useAuth();
   const [subscription, setSubscription] = useState<SubscriptionRow | null>(null);
   const [loading, setLoading] = useState(true);
+  // Unique per hook instance, not per user: multiple components (AppNavRail,
+  // the Studio route, etc.) call useSubscription() for the same user at the
+  // same time, and Supabase's realtime client reuses an existing channel
+  // object for a repeated `.channel(sameName)` call - a second instance
+  // calling `.on()` on that already-`.subscribe()`d channel throws ("cannot
+  // add `postgres_changes` callbacks ... after `subscribe()`"). A random
+  // per-instance suffix means every mount gets its own channel, so there's
+  // nothing to collide with.
+  const instanceIdRef = useRef<string>(crypto.randomUUID());
 
   useEffect(() => {
     if (!user) {
@@ -47,7 +52,7 @@ export function useSubscription() {
     load();
 
     const channel = supabase
-      .channel(`subs-${user.id}`)
+      .channel(`subs-${user.id}-${instanceIdRef.current}`)
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "subscriptions", filter: `user_id=eq.${user.id}` },
@@ -61,14 +66,7 @@ export function useSubscription() {
     };
   }, [user]);
 
-  const isActive =
-    !!subscription &&
-    ((["active", "trialing", "past_due"].includes(subscription.status) &&
-      (!subscription.current_period_end ||
-        new Date(subscription.current_period_end) > new Date())) ||
-      (subscription.status === "canceled" &&
-        !!subscription.current_period_end &&
-        new Date(subscription.current_period_end) > new Date()));
+  const isActive = isSubscriptionRowActive(subscription);
 
   return { subscription, isActive, loading };
 }
