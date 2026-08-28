@@ -466,9 +466,25 @@ for (const t of TOOL_DEFS) {
   ];
   const missing = PHASE3D5_NEW_TOOLS.filter((id) => !TOOL_BY_ID[id]?.implemented);
   ok(`every Phase 3D-5 new tool is implemented:true (missing: ${missing.join(",") || "none"})`, missing.length === 0);
+  // Phase 3D-11 (toolbar redesign) split what was one "lines" category into
+  // three distinct toolbar sections (Lines / Channels / Pitchforks) for
+  // clearer discovery — tool ids, capabilities, and interaction gestures are
+  // completely unchanged, only this metadata field moved.
+  const EXPECTED_3D5_CATEGORY = {
+    "info-line": "lines",
+    "trend-angle": "lines",
+    crossline: "lines",
+    "regression-trend": "channels",
+    "flat-channel": "channels",
+    "disjoint-channel": "channels",
+    pitchfork: "pitchforks",
+    "schiff-pitchfork": "pitchforks",
+    "modified-schiff-pitchfork": "pitchforks",
+    "inside-pitchfork": "pitchforks",
+  };
   for (const id of PHASE3D5_NEW_TOOLS) {
     ok(`${id} is in IMPLEMENTED_TOOLS`, IMPLEMENTED_TOOLS.some((t) => t.id === id));
-    ok(`${id} resolves to the "lines" category (Lines/Channels/Pitchforks all share this one toolbar family)`, TOOL_BY_ID[id]?.category === "lines");
+    ok(`${id} resolves to the "${EXPECTED_3D5_CATEGORY[id]}" category`, TOOL_BY_ID[id]?.category === EXPECTED_3D5_CATEGORY[id]);
     ok(`${id} declares stroke capability`, TOOL_BY_ID[id]?.capabilities.stroke === true);
   }
   ok(
@@ -659,6 +675,104 @@ for (const t of TOOL_DEFS) {
   ok("Text declares text capability", TOOL_BY_ID["text"]?.capabilities.text === true);
   ok("Rectangle declares fill capability", TOOL_BY_ID["rect"]?.capabilities.fill === true);
   ok("Horizontal Line has no fill/text/levels capability (stroke-only)", !TOOL_BY_ID["hline"]?.capabilities.fill && !TOOL_BY_ID["hline"]?.capabilities.text && !TOOL_BY_ID["hline"]?.capabilities.levels);
+}
+
+// ---- Phase 3D-11: Toolbar Redesign and Organization ------------------------
+// DrawToolbar.tsx has no logic of its own beyond rendering this registry's
+// data (a rail button per TOOL_GROUPS entry, a flyout row per
+// IMPLEMENTED_TOOLS filtered by category — see its own doc comment), so
+// "every completed category appears", "every completed tool is reachable",
+// and "section headings are correct" are all registry-level facts, tested
+// here exactly like every prior phase's registry coverage. What genuinely
+// can't be exercised without a browser (a real click actually selecting a
+// tool, hover/hydration, scrolling) is covered by this phase's Chromium
+// pass instead — see the phase completion report.
+
+{
+  // The exact 16 sections from the phase brief's SECTION ORGANIZATION, in
+  // order, with their exact visible names (uppercased via CSS in the
+  // flyout header, not in this label string itself).
+  const EXPECTED_GROUPS = [
+    ["lines", "Lines"],
+    ["channels", "Channels"],
+    ["pitchforks", "Pitchforks"],
+    ["fib", "Fibonacci"],
+    ["gann", "Gann"],
+    ["patterns", "Chart Patterns"],
+    ["elliott", "Elliott Waves"],
+    ["cycles", "Cycles"],
+    ["brushes", "Brushes"],
+    ["arrows", "Arrows"],
+    ["shapes", "Shapes"],
+    ["text", "Text and Notes"],
+    ["forecast", "Forecasting"],
+    ["volume", "Volume-Based"],
+    ["measure", "Measurers"],
+    ["content", "Content"],
+  ];
+  ok(
+    "TOOL_GROUPS has exactly the 16 expected sections, in order, with the phase brief's exact section names",
+    JSON.stringify(TOOL_GROUPS.map((g) => [g.id, g.label])) === JSON.stringify(EXPECTED_GROUPS),
+  );
+
+  // Every implemented tool the phase brief's SECTION ORGANIZATION lists,
+  // mapped to the section it must resolve to — a complete map, not a
+  // sample, so a tool silently left in the wrong section (or missing
+  // entirely) is caught.
+  const EXPECTED_SECTION = {
+    trend: "lines", ray: "lines", extended: "lines", "info-line": "lines", "trend-angle": "lines",
+    hline: "lines", hray: "lines", vline: "lines", crossline: "lines",
+    channel: "channels", "regression-trend": "channels", "flat-channel": "channels", "disjoint-channel": "channels",
+    pitchfork: "pitchforks", "schiff-pitchfork": "pitchforks", "modified-schiff-pitchfork": "pitchforks", "inside-pitchfork": "pitchforks",
+    fib: "fib", "fib-ext": "fib", "fib-channel": "fib", "fib-time": "fib", "fib-speed-fan": "fib",
+    "fib-time-trend": "fib", "fib-circles": "fib", "fib-spiral": "fib", "fib-speed-arcs": "fib", "fib-wedge": "fib", pitchfan: "fib",
+    "gann-box": "gann", "gann-square-fixed": "gann", "gann-square": "gann", "gann-fan": "gann",
+    xabcd: "patterns", cypher: "patterns", "head-shoulders": "patterns", abcd: "patterns", "triangle-pattern": "patterns", "three-drives": "patterns",
+    "elliott-impulse": "elliott", "elliott-correction": "elliott", "elliott-triangle": "elliott", "elliott-double-combo": "elliott", "elliott-triple-combo": "elliott",
+    "cyclic-lines": "cycles", "time-cycles": "cycles", "sine-line": "cycles",
+    brush: "brushes", highlighter: "brushes",
+    arrow: "arrows", "arrow-up": "arrows", "arrow-down": "arrows", "arrow-marker": "arrows",
+    rect: "shapes", circle: "shapes", triangle: "shapes", "rotated-rect": "shapes", ellipse: "shapes",
+    polyline: "shapes", path: "shapes", arc: "shapes", curve: "shapes", "double-curve": "shapes",
+    text: "text", marker: "text", "price-note": "text", pin: "text", table: "text",
+    callout: "text", comment: "text", "price-label": "text", signpost: "text", "flag-mark": "text",
+    long: "forecast", short: "forecast", forecast: "forecast", "bars-pattern": "forecast", "ghost-feed": "forecast", sector: "forecast",
+    vwap: "volume", "vp-fixed": "volume", "vp-anchored": "volume",
+    "price-range": "measure", "date-range": "measure", measure: "measure",
+  };
+  const ids = Object.keys(EXPECTED_SECTION);
+  ok(`the phase brief's SECTION ORGANIZATION lists exactly ${ids.length} implemented tools, matching IMPLEMENTED_TOOLS' count of tools outside the deferred "content" family`, ids.length === IMPLEMENTED_TOOLS.filter((t) => t.category !== "content").length);
+  const wrongSection = ids.filter((id) => TOOL_BY_ID[id]?.category !== EXPECTED_SECTION[id]);
+  ok(`every tool resolves to its exact SECTION ORGANIZATION section (wrong: ${wrongSection.join(",") || "none"})`, wrongSection.length === 0);
+  const notReachable = ids.filter((id) => !IMPLEMENTED_TOOLS.some((t) => t.id === id));
+  ok(`every one of those tools is reachable via IMPLEMENTED_TOOLS (missing: ${notReachable.join(",") || "none"})`, notReachable.length === 0);
+
+  // Image/Post/Idea must never leak into the toolbar as fake working
+  // drawings — the deferred "content" family must contribute zero
+  // implemented tools (DrawToolbar.tsx filters a family out entirely once
+  // its implemented-tool count is zero).
+  ok(
+    "the deferred Content family (Image/Post/Idea) contributes zero implemented tools — never rendered as a fake working section",
+    IMPLEMENTED_TOOLS.filter((t) => t.category === "content").length === 0,
+  );
+  ok("Image/Icon/Emoji are still declared but explicitly implemented:false", ["image", "content-icon", "emoji"].every((id) => TOOL_BY_ID[id]?.implemented === false));
+
+  // Spot-check icon distinctness for the specific collisions this phase's
+  // redesign was required to resolve (not an exhaustive uniqueness
+  // requirement — some sharing between genuinely near-identical tools, e.g.
+  // the four Pitchfork variants or the Elliott family, is intentional).
+  ok("Trend Line no longer shares an icon with Long Position", TOOL_BY_ID["trend"]?.icon !== TOOL_BY_ID["long"]?.icon);
+  ok("Note no longer shares an icon with Pin", TOOL_BY_ID["marker"]?.icon !== TOOL_BY_ID["pin"]?.icon);
+  ok("Comment no longer shares an icon with Callout", TOOL_BY_ID["comment"]?.icon !== TOOL_BY_ID["callout"]?.icon);
+  ok("Price Note, Price Label, and Signpost are three distinct icons", new Set([TOOL_BY_ID["price-note"]?.icon, TOOL_BY_ID["price-label"]?.icon, TOOL_BY_ID["signpost"]?.icon]).size === 3);
+  ok("Rotated Rectangle no longer shares an icon with Flat Top/Bottom", TOOL_BY_ID["rotated-rect"]?.icon !== TOOL_BY_ID["flat-channel"]?.icon);
+  ok("Arc, Fib Speed Resistance Arcs, and Sector are three distinct icons (previously all shared Compass)", new Set([TOOL_BY_ID["arc"]?.icon, TOOL_BY_ID["fib-speed-arcs"]?.icon, TOOL_BY_ID["sector"]?.icon]).size === 3);
+  ok("Curve no longer shares an icon with Polyline", TOOL_BY_ID["curve"]?.icon !== TOOL_BY_ID["polyline"]?.icon);
+  ok("Double Curve no longer shares an icon with Curve", TOOL_BY_ID["double-curve"]?.icon !== TOOL_BY_ID["curve"]?.icon);
+  ok("Vertical Line no longer shares an icon with Horizontal Line", TOOL_BY_ID["vline"]?.icon !== TOOL_BY_ID["hline"]?.icon);
+  ok("Crossline no longer shares an icon with the Gann grid tools", TOOL_BY_ID["crossline"]?.icon !== TOOL_BY_ID["gann-box"]?.icon);
+  ok("Price Range, Date Range, and Date + Price Range are three distinct icons (previously all shared Ruler)", new Set([TOOL_BY_ID["price-range"]?.icon, TOOL_BY_ID["date-range"]?.icon, TOOL_BY_ID["measure"]?.icon]).size === 3);
+  ok("Arrow Marker no longer shares an icon with Arrow", TOOL_BY_ID["arrow-marker"]?.icon !== TOOL_BY_ID["arrow"]?.icon);
 }
 
 // ---- summary ----------------------------------------------------------------

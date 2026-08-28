@@ -18,7 +18,7 @@
  * "hidden until real" is both the safer and the simpler rule.
  */
 
-import { createElement, type ComponentType } from "react";
+import { createElement, type ComponentType, type ReactElement } from "react";
 import {
   MousePointer2,
   TrendingUp,
@@ -34,30 +34,39 @@ import {
   Square,
   Circle,
   Triangle,
-  Pencil,
   Highlighter,
-  LineChart,
   CandlestickChart,
   Waves,
   Hash,
-  Compass,
   Fan,
   Activity,
-  RotateCw,
   Rows,
   BarChart2,
   RectangleHorizontal,
   Spline,
-  Hexagon,
   StickyNote,
   MessageSquare,
+  MessageCircle,
   Tag,
+  Tags,
+  Signpost as SignpostIcon,
   Flag,
   Image,
   Smile,
   Table,
   Ghost,
   PenTool,
+  Crosshair,
+  SeparatorVertical,
+  MoveDiagonal,
+  Columns3,
+  Waypoints,
+  Diamond,
+  PieChart,
+  Navigation,
+  Scan,
+  Brush,
+  Grid3x3,
 } from "lucide-react";
 import type { DrawTool, DrawStyle } from "@/components/studio/StudioChart";
 
@@ -92,8 +101,152 @@ function EllipseGlyph({ className }: { className?: string }) {
   );
 }
 
+/**
+ * Phase 3D-11 (toolbar redesign): a small factory for the rest of this
+ * file's tool-specific glyphs, so each one is just its own list of SVG
+ * primitives rather than repeating EllipseGlyph's full outer-`<svg>`
+ * boilerplate. Every glyph below shares the exact same viewBox/stroke
+ * conventions as EllipseGlyph and lucide's own icons, so they sit at
+ * identical size/weight next to every other toolbar tile.
+ */
+function glyph(children: (h: typeof createElement) => ReactElement[]) {
+  return function Glyph({ className }: { className?: string }) {
+    return createElement(
+      "svg",
+      { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round", className },
+      ...children(createElement),
+    );
+  };
+}
+
+// Trendline: a diagonal line between two visible anchor points — distinct
+// from Ray's one-open-end continuation and Extended Line's both-ends
+// continuation below.
+const TrendlineGlyph = glyph((h) => [
+  h("line", { x1: 5, y1: 19, x2: 19, y2: 5 }),
+  h("circle", { cx: 5, cy: 19, r: 1.6, fill: "currentColor", stroke: "none" }),
+  h("circle", { cx: 19, cy: 5, r: 1.6, fill: "currentColor", stroke: "none" }),
+]);
+
+// Ray: one fixed anchor, the other end left open — "continues in one
+// direction" rather than Trendline's two fixed endpoints.
+const RayGlyph = glyph((h) => [h("line", { x1: 5, y1: 19, x2: 20, y2: 4 }), h("circle", { cx: 5, cy: 19, r: 1.6, fill: "currentColor", stroke: "none" })]);
+
+// Horizontal Ray: same "one fixed anchor, open continuation" idea as Ray,
+// forced horizontal — distinct from Horizontal Line's plain stroke.
+const HRayGlyph = glyph((h) => [h("line", { x1: 4, y1: 12, x2: 21, y2: 12 }), h("circle", { cx: 4, cy: 12, r: 1.6, fill: "currentColor", stroke: "none" })]);
+
+// Parallel Channel / Fib Channel: two parallel diagonal rails.
+const ParallelChannelGlyph = glyph((h) => [
+  h("line", { x1: 4, y1: 17, x2: 14, y2: 7 }),
+  h("line", { x1: 9, y1: 19, x2: 19, y2: 9 }),
+]);
+
+// Regression Trend: the fitted center line plus its two dashed channel
+// rails — distinct from a plain parallel channel's two solid rails.
+const RegressionGlyph = glyph((h) => [
+  h("line", { x1: 4, y1: 11, x2: 20, y2: 1, strokeDasharray: "2 2.5" }),
+  h("line", { x1: 4, y1: 17, x2: 20, y2: 7 }),
+  h("line", { x1: 4, y1: 23, x2: 20, y2: 13, strokeDasharray: "2 2.5" }),
+]);
+
+// Pitchfork family: a literal handle-and-tines trident, not an abstract fan
+// — recognizably distinct from the Fan icon shared by the fan/wedge tools.
+const PitchforkGlyph = glyph((h) => [
+  h("line", { x1: 12, y1: 22, x2: 12, y2: 10 }),
+  h("line", { x1: 6, y1: 10, x2: 18, y2: 10 }),
+  h("line", { x1: 6, y1: 10, x2: 6, y2: 2 }),
+  h("line", { x1: 12, y1: 10, x2: 12, y2: 2 }),
+  h("line", { x1: 18, y1: 10, x2: 18, y2: 2 }),
+]);
+
+// Fib Retracement / Trend-Based Fib Extension: stacked horizontal levels of
+// varying length, the actual shape a retracement/extension draws.
+const FibLevelsGlyph = glyph((h) => [
+  h("line", { x1: 3, y1: 5, x2: 21, y2: 5 }),
+  h("line", { x1: 3, y1: 10, x2: 17, y2: 10 }),
+  h("line", { x1: 3, y1: 15, x2: 21, y2: 15 }),
+  h("line", { x1: 3, y1: 20, x2: 13, y2: 20 }),
+]);
+
+// Fib Time Zone / Trend-Based Fib Time: evenly-spaced vertical interval
+// lines (widening gaps hinting at the Fibonacci sequence they mark).
+const FibTimeZoneGlyph = glyph((h) => [
+  h("line", { x1: 2, y1: 3, x2: 2, y2: 21 }),
+  h("line", { x1: 7, y1: 3, x2: 7, y2: 21 }),
+  h("line", { x1: 13, y1: 3, x2: 13, y2: 21 }),
+  h("line", { x1: 21, y1: 3, x2: 21, y2: 21 }),
+]);
+
+// Fib Circles: concentric rings sharing one center — distinct from Fib
+// Speed Resistance Arcs' quarter-arcs below.
+const FibCirclesGlyph = glyph((h) => [
+  h("circle", { cx: 12, cy: 12, r: 9 }),
+  h("circle", { cx: 12, cy: 12, r: 5.5 }),
+  h("circle", { cx: 12, cy: 12, r: 2.5 }),
+]);
+
+// Fib Speed Resistance Arcs: concentric quarter-arcs from one corner — the
+// tool's actual "half-arc on one side of the anchor" geometry.
+const FibArcsGlyph = glyph((h) => [
+  h("path", { d: "M3 15 A6 6 0 0 1 9 21" }),
+  h("path", { d: "M3 9 A12 12 0 0 1 15 21" }),
+  h("path", { d: "M3 3 A18 18 0 0 1 21 21" }),
+]);
+
+// Fib Spiral: an actual inward spiral, not the generic "refresh" circular
+// arrow a rotate icon would suggest.
+const FibSpiralGlyph = glyph((h) => [
+  h("path", { d: "M12 12 Q13 9 11 8 Q7 7 6 11 Q5 16 10 17 Q16 18 18 12 Q20 5 12 3" }),
+]);
+
+// Head and Shoulders: a simplified three-hump silhouette (shoulder taller
+// than baseline, head taller than both shoulders) — distinct from every
+// other zigzag pattern tool's generic Waypoints icon.
+const HeadShouldersGlyph = glyph((h) => [h("path", { d: "M2 18 L6 10 L10 17 L13 4 L16 17 L20 10 L22 18" })]);
+
+// Arc: a single open bow with no endpoint markers — Curve below adds
+// endpoint + control-point dots to distinguish its editable-control-point
+// geometry from this simpler 2-anchor bulge.
+const ArcGlyph = glyph((h) => [h("path", { d: "M4 18 Q12 2 20 18" })]);
+
+// Curve: one bend with two fixed endpoints (filled dots) and a visible
+// control point (hollow dot) — the genuinely editable 3rd anchor Arc lacks.
+const CurveGlyph = glyph((h) => [
+  h("path", { d: "M4 19 Q12 3 20 19" }),
+  h("circle", { cx: 4, cy: 19, r: 1.6, fill: "currentColor", stroke: "none" }),
+  h("circle", { cx: 20, cy: 19, r: 1.6, fill: "currentColor", stroke: "none" }),
+  h("circle", { cx: 12, cy: 8, r: 1.3, fill: "none" }),
+]);
+
+// Double Curve: a genuine S-curve (two bends) between two fixed endpoints —
+// visually distinct from Curve's single bow.
+const DoubleCurveGlyph = glyph((h) => [
+  h("path", { d: "M4 19 C9 5 15 19 20 5" }),
+  h("circle", { cx: 4, cy: 19, r: 1.6, fill: "currentColor", stroke: "none" }),
+  h("circle", { cx: 20, cy: 5, r: 1.6, fill: "currentColor", stroke: "none" }),
+]);
+
+// Price Range: a vertical measurement between two opposing horizontal caps
+// (an "I-beam"), like a vertical ruler — Date Range below is its horizontal
+// mirror.
+const PriceRangeGlyph = glyph((h) => [
+  h("line", { x1: 12, y1: 4, x2: 12, y2: 20 }),
+  h("line", { x1: 7, y1: 4, x2: 17, y2: 4 }),
+  h("line", { x1: 7, y1: 20, x2: 17, y2: 20 }),
+]);
+
+// Date Range: the horizontal mirror of Price Range's vertical measurement.
+const DateRangeGlyph = glyph((h) => [
+  h("line", { x1: 4, y1: 12, x2: 20, y2: 12 }),
+  h("line", { x1: 4, y1: 7, x2: 4, y2: 17 }),
+  h("line", { x1: 20, y1: 7, x2: 20, y2: 17 }),
+]);
+
 export type ToolGroupId =
   | "lines"
+  | "channels"
+  | "pitchforks"
   | "fib"
   | "gann"
   | "patterns"
@@ -108,24 +261,32 @@ export type ToolGroupId =
   | "measure"
   | "content";
 
-/** Family display order for the two-column grid — matches the phase brief's
- * "TOOL FAMILIES" list exactly, so a reviewer can check off one against the
- * other line by line. Cursor/Select isn't in here: it gets two dedicated
- * slots at the top of the rail, not a grid tile (see `DrawToolbar.tsx`). */
+/** Family display order and section names for the toolbar's expanded menu —
+ * matches Phase 3D-11's "SECTION ORGANIZATION" list exactly, so a reviewer
+ * can check one against the other line by line. Cursor/Select isn't in
+ * here: it gets two dedicated slots at the top of the rail, not a section
+ * (see `DrawToolbar.tsx`).
+ *
+ * Phase 3D-11 split what was one "lines" category (Lines/Channels/
+ * Pitchforks) into three separate sections for clearer discovery — this is
+ * a metadata-only change (see each split tool's `category` below); no tool
+ * id, capability, or persisted drawing data changed. */
 export const TOOL_GROUPS: { id: ToolGroupId; label: string }[] = [
-  { id: "lines", label: "Trend / Line Tools" },
-  { id: "fib", label: "Fibonacci Tools" },
-  { id: "gann", label: "Gann Tools" },
-  { id: "patterns", label: "Pattern Tools" },
+  { id: "lines", label: "Lines" },
+  { id: "channels", label: "Channels" },
+  { id: "pitchforks", label: "Pitchforks" },
+  { id: "fib", label: "Fibonacci" },
+  { id: "gann", label: "Gann" },
+  { id: "patterns", label: "Chart Patterns" },
   { id: "elliott", label: "Elliott Waves" },
   { id: "cycles", label: "Cycles" },
-  { id: "forecast", label: "Forecast / Measurement" },
-  { id: "volume", label: "Volume-Based Tools" },
-  { id: "brushes", label: "Brush / Freehand" },
+  { id: "brushes", label: "Brushes" },
   { id: "arrows", label: "Arrows" },
   { id: "shapes", label: "Shapes" },
-  { id: "text", label: "Text / Notes" },
-  { id: "measure", label: "Measurement" },
+  { id: "text", label: "Text and Notes" },
+  { id: "forecast", label: "Forecasting" },
+  { id: "volume", label: "Volume-Based" },
+  { id: "measure", label: "Measurers" },
   { id: "content", label: "Content" },
 ];
 
@@ -232,9 +393,9 @@ export const TOOL_DEFS: ToolDef[] = [
   { id: "select", name: "Select / move", category: "select", icon: MousePointer2, interactionType: "point", anchorCount: 0, capabilities: {}, defaultStyle: {}, implemented: true },
 
   // ---- Trend / Line Tools ---------------------------------------------------
-  { id: "trend", name: "Trend Line", category: "lines", icon: TrendingUp, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
-  { id: "ray", name: "Ray", category: "lines", icon: ArrowUpRight, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
-  { id: "extended", name: "Extended Line", category: "lines", icon: ArrowUpRight, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "trend", name: "Trend Line", category: "lines", icon: TrendlineGlyph, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "ray", name: "Ray", category: "lines", icon: RayGlyph, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "extended", name: "Extended Line", category: "lines", icon: MoveDiagonal, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
   // Info Line / Trend Angle (Phase 3D-5 audit): identical 2-anchor drag
   // geometry to Trend Line above (reused verbatim, see StudioChart.tsx's
   // shared trend/ray/extended render branch) — the ONE difference is an
@@ -243,34 +404,34 @@ export const TOOL_DEFS: ToolDef[] = [
   { id: "info-line", name: "Info Line", category: "lines", icon: Ruler, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
   { id: "trend-angle", name: "Trend Angle", category: "lines", icon: Activity, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
   { id: "hline", name: "Horizontal Line", category: "lines", icon: Minus, interactionType: "point", anchorCount: 1, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
-  { id: "hray", name: "Horizontal Ray", category: "lines", icon: Minus, interactionType: "point", anchorCount: 1, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
-  { id: "vline", name: "Vertical Line", category: "lines", icon: Minus, interactionType: "point", anchorCount: 1, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "hray", name: "Horizontal Ray", category: "lines", icon: HRayGlyph, interactionType: "point", anchorCount: 1, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "vline", name: "Vertical Line", category: "lines", icon: SeparatorVertical, interactionType: "point", anchorCount: 1, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
   // Crossline: a single click (like Horizontal/Vertical Line above) that
   // draws BOTH a full horizontal and full vertical line through the one
   // anchor — genuinely its own tool, not an alias of either.
-  { id: "crossline", name: "Crossline", category: "lines", icon: Hash, interactionType: "point", anchorCount: 1, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
-  { id: "channel", name: "Parallel Channel", category: "lines", icon: GitBranch, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, fill: true }, defaultStyle: { ...LINE_DEFAULT, fillOpacity: 0.08 }, implemented: true },
+  { id: "crossline", name: "Crossline", category: "lines", icon: Crosshair, interactionType: "point", anchorCount: 1, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "channel", name: "Parallel Channel", category: "channels", icon: ParallelChannelGlyph, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, fill: true }, defaultStyle: { ...LINE_DEFAULT, fillOpacity: 0.08 }, implemented: true },
   // Regression Trend (Phase 3D-5): genuine ordinary-least-squares linear
   // regression over every bar's close price within [p1.time, p2.time] (see
   // calc.ts's computeLinearRegression) — NOT a generic channel with the
   // rails substituted in. The channel bounds are the fitted line offset by
   // a multiple of the residual standard deviation, the conventional
   // "regression channel" construction.
-  { id: "regression-trend", name: "Regression Trend", category: "lines", icon: Spline, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true, fill: true }, defaultStyle: { ...LINE_DEFAULT, fillOpacity: 0.08 }, implemented: true },
+  { id: "regression-trend", name: "Regression Trend", category: "channels", icon: RegressionGlyph, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true, fill: true }, defaultStyle: { ...LINE_DEFAULT, fillOpacity: 0.08 }, implemented: true },
   // Flat Top/Bottom: the SAME 3-anchor drag-then-click creation gesture as
   // Parallel Channel above (added to that exact code path, not a second
   // one) and the SAME "sloped rail + offset rail + fill" render shape —
   // its one geometric difference is that the second rail is forced
   // HORIZONTAL at the third anchor's price, not parallel-offset to the
   // sloped rail (see StudioChart.tsx's paintFlatChannel).
-  { id: "flat-channel", name: "Flat Top/Bottom", category: "lines", icon: RectangleHorizontal, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, fill: true }, defaultStyle: { ...LINE_DEFAULT, fillOpacity: 0.08 }, implemented: true },
+  { id: "flat-channel", name: "Flat Top/Bottom", category: "channels", icon: RectangleHorizontal, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, fill: true }, defaultStyle: { ...LINE_DEFAULT, fillOpacity: 0.08 }, implemented: true },
   // Disjoint Channel: two INDEPENDENT 2-point rails (anchors 0-1 and 2-3),
   // deliberately not required to be parallel — reuses Phase 3D-1's shared
   // labeled multi-anchor primitive (MULTI_ANCHOR_PATTERN_TOOLS) with a
   // non-sequential segment override, exactly like Triangle Pattern's own
   // converging-trendline topology, rather than a fifth bespoke
   // creation/render/hit-test path. No anchor labels (nothing to name).
-  { id: "disjoint-channel", name: "Disjoint Channel", category: "lines", icon: GitBranch, interactionType: "multi-click", anchorCount: 4, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "disjoint-channel", name: "Disjoint Channel", category: "channels", icon: GitBranch, interactionType: "multi-click", anchorCount: 4, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
   // Pitchfork family (Phase 3D-5): Standard (Andrews'), Schiff, Modified
   // Schiff, and Inside all share ONE geometry model (calc.ts's
   // pitchforkHandle/pitchforkTarget/pitchforkTeethAnchors + StudioChart.tsx's
@@ -279,24 +440,24 @@ export const TOOL_DEFS: ToolDef[] = [
   // differ. All four use the SAME 3-anchor multi-click gesture as Fib
   // Wedge/Pitchfan above (P0/P1/P2 stored as p1/p2/points[0], identical
   // convention).
-  { id: "pitchfork", name: "Pitchfork", category: "lines", icon: Fan, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
-  { id: "schiff-pitchfork", name: "Schiff Pitchfork", category: "lines", icon: Fan, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
-  { id: "modified-schiff-pitchfork", name: "Modified Schiff Pitchfork", category: "lines", icon: Fan, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
-  { id: "inside-pitchfork", name: "Inside Pitchfork", category: "lines", icon: Fan, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "pitchfork", name: "Pitchfork", category: "pitchforks", icon: PitchforkGlyph, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "schiff-pitchfork", name: "Schiff Pitchfork", category: "pitchforks", icon: PitchforkGlyph, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "modified-schiff-pitchfork", name: "Modified Schiff Pitchfork", category: "pitchforks", icon: PitchforkGlyph, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "inside-pitchfork", name: "Inside Pitchfork", category: "pitchforks", icon: PitchforkGlyph, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
 
   // ---- Fibonacci Tools ------------------------------------------------------
   // One reusable Fib engine (src/lib/drawing/calc.ts's FibLevel/computeFibLevels)
   // backs every Fib tool — variants below differ only in anchor count/shape,
   // never in a second parallel level-math implementation.
-  { id: "fib", name: "Fibonacci Retracement", category: "fib", icon: Ruler, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true, levels: true, extendRight: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: true },
+  { id: "fib", name: "Fibonacci Retracement", category: "fib", icon: FibLevelsGlyph, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true, levels: true, extendRight: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: true },
   // Trend-Based Fib Extension (Phase 3C): A->B measures the move, C is the
   // projection anchor — see src/lib/drawing/calc.ts's computeFibExtensionLevels.
   // 3 anchors via the same p1/p2/points[0] shape Channel/Triangle already use.
-  { id: "fib-ext", name: "Trend-Based Fib Extension", category: "fib", icon: Ruler, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, levels: true, extendRight: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: true },
+  { id: "fib-ext", name: "Trend-Based Fib Extension", category: "fib", icon: FibLevelsGlyph, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, levels: true, extendRight: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: true },
   // Fib Channel (Phase 3C): the pre-existing Parallel Channel's exact
   // trend + width-anchor geometry, with Fibonacci-ratio-spaced parallel
   // rails instead of one single offset — see geometry.ts's fibChannelLevelOffset.
-  { id: "fib-channel", name: "Fib Channel", category: "fib", icon: Ruler, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, fill: true, levels: true }, defaultStyle: { color: "#e6b800", width: 1, fillOpacity: 0.08 }, implemented: true },
+  { id: "fib-channel", name: "Fib Channel", category: "fib", icon: ParallelChannelGlyph, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, fill: true, levels: true }, defaultStyle: { color: "#e6b800", width: 1, fillOpacity: 0.08 }, implemented: true },
   // Fib Time Zone (Phase 3C-2): first anchor is the fixed start (level 0),
   // second anchor establishes the base time interval (level 1 sits exactly
   // on it) — every other enabled level is a whole Fibonacci-sequence
@@ -305,7 +466,7 @@ export const TOOL_DEFS: ToolDef[] = [
   // `levelValueKind: "sequence"` and `reverseAnchors: false` per their doc
   // comments above — a time-zone level is a whole-number multiple, not a
   // ratio, and p1 is a fixed origin, not a symmetric endpoint.
-  { id: "fib-time", name: "Fib Time Zone", category: "fib", icon: Ruler, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true, levels: true, reverseAnchors: false, levelValueKind: "sequence" }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: true },
+  { id: "fib-time", name: "Fib Time Zone", category: "fib", icon: FibTimeZoneGlyph, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true, levels: true, reverseAnchors: false, levelValueKind: "sequence" }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: true },
   // Fib Speed Resistance Fan (Phase 3C-2): p1 is the shared ray origin (like
   // Fib Wedge's pivot), p2 measures the trend move — each enabled ratio's
   // ray passes through a fraction of that move's PRICE extent taken at p2's
@@ -320,7 +481,7 @@ export const TOOL_DEFS: ToolDef[] = [
   // shared verbatim with Fib Time Zone. `levelValueKind: "sequence"` for the
   // same reason as Fib Time Zone: these levels are whole-number multiples,
   // never a ratio/percentage.
-  { id: "fib-time-trend", name: "Trend-Based Fib Time", category: "fib", icon: Ruler, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, levels: true, levelValueKind: "sequence" }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: true },
+  { id: "fib-time-trend", name: "Trend-Based Fib Time", category: "fib", icon: FibTimeZoneGlyph, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, levels: true, levelValueKind: "sequence" }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: true },
   // Fib Circles (Phase 3C-4): concentric Fibonacci-ratio ellipse rings
   // centered on p1, radii scaled by the p1->p2 pixel extent on each axis
   // independently (see StudioChart.tsx's paintFibCircles) — correct under
@@ -329,7 +490,7 @@ export const TOOL_DEFS: ToolDef[] = [
   // distToEllipseRing (ring edge, not filled interior). `levels: true`
   // reuses the exact same per-level enable/color/custom-value UI as every
   // other Fib tool with zero popover changes.
-  { id: "fib-circles", name: "Fib Circles", category: "fib", icon: Circle, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true, levels: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: true },
+  { id: "fib-circles", name: "Fib Circles", category: "fib", icon: FibCirclesGlyph, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true, levels: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: true },
   // Fib Spiral (Phase 3C-4): a genuine logarithmic (golden-ratio) spiral —
   // see geometry.ts's new fibSpiralPoints, a deterministic parametric point
   // sequence sampled at a fixed angular step, rendered as one continuous
@@ -337,19 +498,19 @@ export const TOOL_DEFS: ToolDef[] = [
   // per-segment distToSegment over that same point sequence. No `levels`
   // capability: unlike the ring/ray Fib tools, a spiral has no discrete
   // Fibonacci-ratio levels to toggle/color independently.
-  { id: "fib-spiral", name: "Fib Spiral", category: "fib", icon: RotateCw, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: true },
+  { id: "fib-spiral", name: "Fib Spiral", category: "fib", icon: FibSpiralGlyph, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: true },
   // Fib Speed Resistance Arcs (Phase 3C-4): the same concentric-ring
   // geometry as Fib Circles just above, but each ring is drawn (and
   // hit-tested) as only the half-arc on the side of p1 that p2 sits on
   // (see paintFibSpeedArcs's upperHalf convention) — genuine arc geometry,
   // not full circles with a fake mask.
-  { id: "fib-speed-arcs", name: "Fib Speed Resistance Arcs", category: "fib", icon: Compass, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true, levels: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: true },
+  { id: "fib-speed-arcs", name: "Fib Speed Resistance Arcs", category: "fib", icon: FibArcsGlyph, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true, levels: true }, defaultStyle: { color: "#e6b800", width: 1 }, implemented: true },
   // Fib Wedge (Phase 3C): a real radial ray fan from a shared pivot (A),
   // Pitchfan-style — each ray passes through a Fibonacci-ratio point along
   // the B->C segment (see calc.ts's lerpMarketPoint). NOT parallel horizontal
   // lines. `reverseAnchors: false` because p1 here is the pivot, not a
   // symmetric endpoint (see ToolCapabilities.reverseAnchors's doc comment).
-  { id: "fib-wedge", name: "Fib Wedge", category: "fib", icon: Triangle, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, fill: true, levels: true, reverseAnchors: false }, defaultStyle: { color: "#e6b800", width: 1, fillOpacity: 0.08 }, implemented: true },
+  { id: "fib-wedge", name: "Fib Wedge", category: "fib", icon: Fan, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, fill: true, levels: true, reverseAnchors: false }, defaultStyle: { color: "#e6b800", width: 1, fillOpacity: 0.08 }, implemented: true },
   // Pitchfan (Phase 3C-3): the exact same pivot-ray-fan geometry as Fib
   // Wedge just above (see paintFibWedge's own doc comment — it was already
   // named "Pitchfan-style" back in Phase 3C) — shared verbatim via a
@@ -368,12 +529,12 @@ export const TOOL_DEFS: ToolDef[] = [
   // (real sloped rays, not a grid) but reuses the exact same `levels`
   // capability/settings UI every prior fan tool already has — no new
   // capability flag, no custom settings UI for any of the four.
-  { id: "gann-box", name: "Gann Box", category: "gann", icon: Hash, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "gann-box", name: "Gann Box", category: "gann", icon: Grid3x3, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
   // Gann Square Fixed: a single click (registry's own `point`/anchorCount
   // 1) — distinct CREATION gesture from Gann Square's drag below, even
   // though both render/hit-test through the identical shared grid.
-  { id: "gann-square-fixed", name: "Gann Square Fixed", category: "gann", icon: Hash, interactionType: "point", anchorCount: 1, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
-  { id: "gann-square", name: "Gann Square", category: "gann", icon: Hash, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "gann-square-fixed", name: "Gann Square Fixed", category: "gann", icon: Grid3x3, interactionType: "point", anchorCount: 1, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "gann-square", name: "Gann Square", category: "gann", icon: Grid3x3, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
   // Gann Fan: p1 is the shared ray pivot (not a symmetric endpoint), same
   // `reverseAnchors: false` reasoning as Fib Speed Resistance Fan/Fib
   // Wedge above.
@@ -390,26 +551,26 @@ export const TOOL_DEFS: ToolDef[] = [
   // `text` was dropped from these: that capability is a free-typed label
   // BODY (font/align/background) meant for the Text/Note tools, not the
   // fixed X/A/B/C/D-style labels these patterns actually need.
-  { id: "xabcd", name: "XABCD", category: "patterns", icon: LineChart, interactionType: "multi-click", anchorCount: 5, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "xabcd", name: "XABCD", category: "patterns", icon: Waypoints, interactionType: "multi-click", anchorCount: 5, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
   // Cypher: identical X->A->B->C->D geometry/zigzag to XABCD just above —
   // kept a fully distinct tool id (per spec) even though it shares every
   // byte of render/hit-test/creation code, the same way Fib Wedge/Pitchfan
   // already share code under two separate ids.
-  { id: "cypher", name: "Cypher", category: "patterns", icon: LineChart, interactionType: "multi-click", anchorCount: 5, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "cypher", name: "Cypher", category: "patterns", icon: Waypoints, interactionType: "multi-click", anchorCount: 5, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
   // Head and Shoulders: 5 anchors — Left Shoulder -> Head -> Right Shoulder
   // (a 3-point zigzag) PLUS an independent 2-point neckline (N1/N2), not a
   // continuation of that zigzag — see patternSegments' head-shoulders
   // override in StudioChart.tsx.
-  { id: "head-shoulders", name: "Head and Shoulders", category: "patterns", icon: LineChart, interactionType: "multi-click", anchorCount: 5, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
-  { id: "abcd", name: "ABCD", category: "patterns", icon: LineChart, interactionType: "multi-click", anchorCount: 4, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "head-shoulders", name: "Head and Shoulders", category: "patterns", icon: HeadShouldersGlyph, interactionType: "multi-click", anchorCount: 5, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "abcd", name: "ABCD", category: "patterns", icon: Waypoints, interactionType: "multi-click", anchorCount: 4, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
   // Triangle Pattern: 4 anchors forming two CONVERGING trendlines (0->2 and
   // 1->3 — see patternSegments' triangle-pattern override), not a 0-1-2-3
   // zigzag and not the unrelated 3-anchor geometric "Triangle" shape tool.
-  { id: "triangle-pattern", name: "Triangle Pattern", category: "patterns", icon: LineChart, interactionType: "multi-click", anchorCount: 4, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "triangle-pattern", name: "Triangle Pattern", category: "patterns", icon: Waypoints, interactionType: "multi-click", anchorCount: 4, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
   // Three Drives: a plain 6-anchor zigzag (three drive legs + two
   // retracement legs) — the default patternSegments topology, same as
   // XABCD/Cypher/ABCD, just with a longer label set.
-  { id: "three-drives", name: "Three Drives", category: "patterns", icon: LineChart, interactionType: "multi-click", anchorCount: 6, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "three-drives", name: "Three Drives", category: "patterns", icon: Waypoints, interactionType: "multi-click", anchorCount: 6, capabilities: { stroke: true, anchorLabel: true }, defaultStyle: LINE_DEFAULT, implemented: true },
 
   // ---- Elliott Waves (Phase 3D-2) ------------------------------------------
   // Extends Phase 3D-1's shared labeled multi-anchor primitive (see
@@ -450,13 +611,13 @@ export const TOOL_DEFS: ToolDef[] = [
   // calc.ts's cyclicLineTimes/timeCyclesTimes, which both tools read from
   // the exact same interval, differing only in repeat policy (see those
   // functions' own doc comments).
-  { id: "cyclic-lines", name: "Cyclic Lines", category: "cycles", icon: RotateCw, interactionType: "multi-click", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
-  { id: "time-cycles", name: "Time Cycles", category: "cycles", icon: RotateCw, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "cyclic-lines", name: "Cyclic Lines", category: "cycles", icon: Columns3, interactionType: "multi-click", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "time-cycles", name: "Time Cycles", category: "cycles", icon: Columns3, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
   // Sine Line: a genuine parametric curve (calc.ts's sineLinePoints) — p1 is
   // the wave's trough, p2 the very next peak (half a period apart), both
   // sitting exactly on the rendered curve. Plain p1/p2 storage like the two
   // tools above; only the curve itself is new geometry.
-  { id: "sine-line", name: "Sine Line", category: "cycles", icon: Activity, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "sine-line", name: "Sine Line", category: "cycles", icon: Waves, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
 
   // ---- Forecast / Trading Measurement --------------------------------------
   // Chart planning/measurement only — never wired to broker execution.
@@ -493,7 +654,7 @@ export const TOOL_DEFS: ToolDef[] = [
   // their two angles (see StudioChart.tsx's paintSector). Hit-tests the
   // ACTUAL sector interior (geometry.ts's pointInSector: inside the radius
   // AND between the two angles), not a bounding box.
-  { id: "sector", name: "Sector", category: "forecast", icon: Compass, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, fill: true }, defaultStyle: { ...LINE_DEFAULT, fillOpacity: 0.14 }, implemented: true },
+  { id: "sector", name: "Sector", category: "forecast", icon: PieChart, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, fill: true }, defaultStyle: { ...LINE_DEFAULT, fillOpacity: 0.14 }, implemented: true },
 
   // ---- Volume-Based Tools ---------------------------------------------------
   // Real loaded OHLCV only — never fabricates volume (see calc.ts anchoredVwap).
@@ -518,7 +679,7 @@ export const TOOL_DEFS: ToolDef[] = [
   { id: "vp-anchored", name: "Anchored Volume Profile", category: "volume", icon: BarChart2, interactionType: "point", anchorCount: 1, capabilities: { fill: true, volumeProfile: true }, defaultStyle: { color: "#4da3ff" }, implemented: true },
 
   // ---- Brush / Freehand -----------------------------------------------------
-  { id: "brush", name: "Brush", category: "brushes", icon: Pencil, interactionType: "freehand", anchorCount: "unlimited", capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 2 }, implemented: true },
+  { id: "brush", name: "Brush", category: "brushes", icon: Brush, interactionType: "freehand", anchorCount: "unlimited", capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 2 }, implemented: true },
   { id: "highlighter", name: "Highlighter", category: "brushes", icon: Highlighter, interactionType: "freehand", anchorCount: "unlimited", capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 10 }, implemented: true },
 
   // ---- Arrows ---------------------------------------------------------------
@@ -531,7 +692,7 @@ export const TOOL_DEFS: ToolDef[] = [
   // Reuses that exact "triangle glyph at one anchor" render primitive with
   // a different fixed orientation (diagonal, matching its own toolbar icon)
   // as the one parameter that varies — see StudioChart.tsx's render branch.
-  { id: "arrow-marker", name: "Arrow Marker", category: "arrows", icon: ArrowUpRight, interactionType: "point", anchorCount: 1, capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 1.5 }, implemented: true },
+  { id: "arrow-marker", name: "Arrow Marker", category: "arrows", icon: Navigation, interactionType: "point", anchorCount: 1, capabilities: { stroke: true }, defaultStyle: { color: "#e6b800", width: 1.5 }, implemented: true },
 
   // ---- Shapes ---------------------------------------------------------------
   { id: "rect", name: "Rectangle", category: "shapes", icon: Square, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true, fill: true }, defaultStyle: { ...LINE_DEFAULT, fillOpacity: 0.14 }, implemented: true },
@@ -543,7 +704,7 @@ export const TOOL_DEFS: ToolDef[] = [
   // — but CLOSED into a 4-corner quadrilateral (p1, p2, rail2.p2, rail2.p1)
   // instead of two open rails. This is what gives it genuine oriented/
   // rotated geometry distinct from the axis-aligned Rectangle above.
-  { id: "rotated-rect", name: "Rotated Rectangle", category: "shapes", icon: RectangleHorizontal, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, fill: true }, defaultStyle: { ...LINE_DEFAULT, fillOpacity: 0.14 }, implemented: true },
+  { id: "rotated-rect", name: "Rotated Rectangle", category: "shapes", icon: Diamond, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true, fill: true }, defaultStyle: { ...LINE_DEFAULT, fillOpacity: 0.14 }, implemented: true },
   // Ellipse (Phase 3A): reuses Circle's existing free-drag renderer 1:1 —
   // both anchors define a bounding box, rx/ry come from that box's half-
   // width/half-height, so an ellipse was already reachable by dragging
@@ -573,11 +734,11 @@ export const TOOL_DEFS: ToolDef[] = [
   // (recomputed fresh each render, never persisted; only p1/p2 are
   // canonical), since a 2-anchor tool has no third point to shape the bend
   // with (unlike Curve below).
-  { id: "arc", name: "Arc", category: "shapes", icon: Compass, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "arc", name: "Arc", category: "shapes", icon: ArcGlyph, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
   // Curve (Phase 3D-6): quadratic Bezier from p1 to p2 with points[0] as a
   // genuinely user-editable control point (one real bend) — the SAME
   // 3-anchor multi-click gesture as Fib Wedge/Pitchfork above.
-  { id: "curve", name: "Curve", category: "shapes", icon: Spline, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "curve", name: "Curve", category: "shapes", icon: CurveGlyph, interactionType: "multi-click", anchorCount: 3, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
   // Double Curve (Phase 3D-6): a CUBIC Bezier through all 4 anchors
   // (start/control1/control2/end) — genuinely distinct math from Curve's
   // quadratic (a cubic can bend twice, an S-shape a quadratic cannot
@@ -587,11 +748,11 @@ export const TOOL_DEFS: ToolDef[] = [
   // anchor-count-from-label-length convention and the already
   // index-aware per-vertex drag it provides for free) with its own cubic
   // render/hit-test in place of the generic zigzag.
-  { id: "double-curve", name: "Double Curve", category: "shapes", icon: Hexagon, interactionType: "multi-click", anchorCount: 4, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "double-curve", name: "Double Curve", category: "shapes", icon: DoubleCurveGlyph, interactionType: "multi-click", anchorCount: 4, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
 
   // ---- Text / Notes -----------------------------------------------------
   { id: "text", name: "Text", category: "text", icon: TypeIcon, interactionType: "point", anchorCount: 1, capabilities: { text: true }, defaultStyle: { color: "#e8eaf0" }, implemented: true },
-  { id: "marker", name: "Note", category: "text", icon: MapPin, interactionType: "point", anchorCount: 1, capabilities: { text: true }, defaultStyle: { color: "#e6b800" }, implemented: true },
+  { id: "marker", name: "Note", category: "text", icon: StickyNote, interactionType: "point", anchorCount: 1, capabilities: { text: true }, defaultStyle: { color: "#e6b800" }, implemented: true },
   // Price Note (Phase 3D-7): its ONE genuine requirement is that the
   // displayed price is DERIVED from p1.price fresh every render (see
   // StudioChart.tsx's render branch), never a persisted formatted string —
@@ -599,7 +760,7 @@ export const TOOL_DEFS: ToolDef[] = [
   // value. A small "note page" glyph (drawAnnotationGlyph) is its one
   // visual difference from plain Note; the optional text still flows
   // through the exact same shared drawTextLabel.
-  { id: "price-note", name: "Price Note", category: "text", icon: StickyNote, interactionType: "point", anchorCount: 1, capabilities: { text: true }, defaultStyle: { color: "#e6b800" }, implemented: true },
+  { id: "price-note", name: "Price Note", category: "text", icon: Tag, interactionType: "point", anchorCount: 1, capabilities: { text: true }, defaultStyle: { color: "#e6b800" }, implemented: true },
   // Pin: the SAME single-anchor point-tool architecture as Note, but with
   // its own genuine teardrop/pin glyph (drawAnnotationGlyph) instead of
   // Note's plain dot — the "custom pin glyph" the old note here said was
@@ -616,13 +777,13 @@ export const TOOL_DEFS: ToolDef[] = [
   { id: "callout", name: "Callout", category: "text", icon: MessageSquare, interactionType: "drag", anchorCount: 2, capabilities: { text: true, stroke: true }, defaultStyle: { color: "#e6b800" }, implemented: true },
   // Comment: single-anchor, its own speech-bubble glyph — genuinely
   // visually distinct from Text (no glyph) and Note (a plain dot).
-  { id: "comment", name: "Comment", category: "text", icon: MessageSquare, interactionType: "point", anchorCount: 1, capabilities: { text: true }, defaultStyle: { color: "#e6b800" }, implemented: true },
+  { id: "comment", name: "Comment", category: "text", icon: MessageCircle, interactionType: "point", anchorCount: 1, capabilities: { text: true }, defaultStyle: { color: "#e6b800" }, implemented: true },
   // Price Label: same "derive the price from p1.price fresh every render,
   // never persist a formatted string" requirement as Price Note above, with
   // its own tag-shaped glyph.
-  { id: "price-label", name: "Price Label", category: "text", icon: Tag, interactionType: "point", anchorCount: 1, capabilities: { text: true }, defaultStyle: { color: "#e6b800" }, implemented: true },
+  { id: "price-label", name: "Price Label", category: "text", icon: Tags, interactionType: "point", anchorCount: 1, capabilities: { text: true }, defaultStyle: { color: "#e6b800" }, implemented: true },
   // Signpost: single-anchor, its own post-and-sign glyph.
-  { id: "signpost", name: "Signpost", category: "text", icon: Tag, interactionType: "point", anchorCount: 1, capabilities: { text: true }, defaultStyle: { color: "#e6b800" }, implemented: true },
+  { id: "signpost", name: "Signpost", category: "text", icon: SignpostIcon, interactionType: "point", anchorCount: 1, capabilities: { text: true }, defaultStyle: { color: "#e6b800" }, implemented: true },
   // Flag Mark: single-anchor, its own flag-on-a-pole glyph — a real
   // parameterized shape in the SAME shared drawAnnotationGlyph as Pin/
   // Signpost/Comment/Price Note/Price Label (one function, one `shape`
@@ -630,9 +791,9 @@ export const TOOL_DEFS: ToolDef[] = [
   { id: "flag-mark", name: "Flag Mark", category: "text", icon: Flag, interactionType: "point", anchorCount: 1, capabilities: { text: true }, defaultStyle: { color: "#e6b800" }, implemented: true },
 
   // ---- Measurement ------------------------------------------------------
-  { id: "price-range", name: "Price Range", category: "measure", icon: Ruler, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
-  { id: "date-range", name: "Date Range", category: "measure", icon: Ruler, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
-  { id: "measure", name: "Date + Price Range", category: "measure", icon: Ruler, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "price-range", name: "Price Range", category: "measure", icon: PriceRangeGlyph, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "date-range", name: "Date Range", category: "measure", icon: DateRangeGlyph, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
+  { id: "measure", name: "Date + Price Range", category: "measure", icon: Scan, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: true },
   { id: "ruler", name: "Ruler / Measure", category: "measure", icon: Ruler, interactionType: "drag", anchorCount: 2, capabilities: { stroke: true }, defaultStyle: LINE_DEFAULT, implemented: false, note: "Same measurement as Date + Price Range above — no distinct geometry to add without duplicating it." },
 
   // ---- Content (architecture-ready only, lowest priority) -----------------
