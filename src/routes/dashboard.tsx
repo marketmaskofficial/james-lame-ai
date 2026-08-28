@@ -8,8 +8,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useSubscription } from "@/hooks/useSubscription";
 import { checkStudioAccess, isStudioGateTestBypassed, isStudioGateLocalPaidBypassed } from "@/lib/subscription-status";
 import { AppNavRail } from "@/components/AppNavRail";
-import { listTradingAccounts } from "@/lib/trading.functions";
-import { listClosedTrades } from "@/lib/dashboard.functions";
+import { listDashboardAccounts, listClosedTrades } from "@/lib/dashboard.functions";
 import {
   computeDashboardMetrics,
   cumulativePnlSeries,
@@ -114,7 +113,7 @@ function dayEndUtc(day: string): string {
 }
 
 function DashboardWorkspace() {
-  const listAccountsFn = useServerFn(listTradingAccounts);
+  const listAccountsFn = useServerFn(listDashboardAccounts);
   const listClosedTradesFn = useServerFn(listClosedTrades);
 
   const [accountId, setAccountId] = useState<string | null>(null);
