@@ -109,18 +109,17 @@ export const listExecutionsForPosition = createServerFn({ method: "GET" })
   });
 
 /** The (at most one, in practice) real journal entry linked to a closed
- * position, read-only — no editing/creation here (that stays exclusively
- * `saveJournalEntry` in `journal.functions.ts`, untouched by Phase 4D).
- * `journal_entries.position_id` has no uniqueness constraint, so this reads
- * the most recent match by `created_at` rather than assuming exactly one
- * row exists. */
+ * position, read-only fields the Trade Explorer's editable journal editor
+ * (`saveTradeJournalForPosition`, below) actually shows.
+ * `journal_entries.position_id` has no uniqueness constraint (see the
+ * Phase 4E audit — a partial unique index is deferred to a future
+ * migration), so this reads the most recent match by `created_at` rather
+ * than assuming exactly one row exists. */
 export type JournalEntryForPosition = {
   id: string;
   notes: string;
   session: string | null;
-  timeframe: string | null;
-  indicator_name: string | null;
-  created_at: string;
+  updated_at: string;
 };
 
 export const getJournalEntryForPosition = createServerFn({ method: "GET" })
@@ -129,7 +128,7 @@ export const getJournalEntryForPosition = createServerFn({ method: "GET" })
   .handler(async ({ data, context }) => {
     const { data: rows, error } = await context.supabase
       .from("journal_entries")
-      .select("id, notes, session, timeframe, indicator_name, created_at")
+      .select("id, notes, session, updated_at")
       .eq("position_id", data.positionId)
       .eq("user_id", context.userId)
       .order("created_at", { ascending: false })
@@ -137,4 +136,108 @@ export const getJournalEntryForPosition = createServerFn({ method: "GET" })
       .returns<JournalEntryForPosition[]>();
     if (error) throw new Error(error.message);
     return rows?.[0] ?? null;
+  });
+
+const JOURNAL_SESSION_VALUES = ["asia", "london", "overlap", "newYork", "offHours"] as const;
+
+const saveTradeJournalSchema = z.object({
+  positionId: z.string().uuid(),
+  accountId: z.string().uuid(),
+  symbol: z.string().trim().min(1).max(30),
+  notes: z.string().max(8000),
+  session: z.enum(JOURNAL_SESSION_VALUES).nullable(),
+});
+
+/**
+ * Phase 4E-1 — the Trade Explorer journal editor's dedicated write path.
+ * Deliberately NOT a thin wrapper around the generic `saveJournalEntry`
+ * (`journal.functions.ts`), which performs a full-row overwrite (every
+ * column, including ones this editor has no opinion on, gets rewritten to
+ * `null` if omitted) and has no position-ownership check of its own — both
+ * wrong for this narrow, position-scoped feature. See the Phase 4E audit.
+ *
+ * This editor owns exactly two fields: `notes` and `session`. On UPDATE it
+ * writes ONLY those two columns — `timeframe`, `side`, `qty`,
+ * `entry_price`, `exit_price`, `realized_pnl`, `indicator_name`,
+ * `signal_id`, and `chart_state` are never touched, so a future phase that
+ * starts populating those via a different path can never be silently
+ * clobbered by a Trade Explorer journal save. On INSERT it additionally
+ * sets the required linkage/identity fields (`user_id`, `account_id`,
+ * `position_id`, `symbol`).
+ *
+ * DUPLICATE PREVENTION (application-level, per the audit): the database
+ * has no unique constraint on `(user_id, position_id)` yet — a future
+ * partial unique index (`WHERE position_id IS NOT NULL`) is the real,
+ * race-proof fix and is deliberately deferred, not added here. Until then,
+ * this handler enforces "one entry per position" itself: it looks up the
+ * most recent existing row for `(user_id, position_id)` and UPDATEs it if
+ * found, INSERTs only if none exists. This does not close a race between
+ * two concurrent saves for a brand-new position (both could pass the
+ * "none exists" check before either inserts), but it does guarantee that
+ * repeatedly pressing Save on an already-loaded entry never creates a
+ * second row — the actual failure mode this phase must prevent.
+ */
+export type TradeJournalEntry = {
+  id: string;
+  notes: string;
+  session: string | null;
+  updated_at: string;
+};
+
+export const saveTradeJournalForPosition = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((i: unknown) => saveTradeJournalSchema.parse(i))
+  .handler(async ({ data, context }) => {
+    // Explicit ownership check (belt-and-suspenders alongside RLS, matching
+    // this codebase's own convention elsewhere): a position_id supplied by
+    // the client is only ever accepted if it resolves to a row the caller
+    // actually owns. RLS on `trade_positions` ("Users view own positions")
+    // already makes a mismatched id resolve to zero rows here regardless —
+    // this check makes that guarantee explicit in the feature's own code
+    // rather than relying solely on the table-level policy.
+    const { data: position, error: positionError } = await context.supabase
+      .from("trade_positions")
+      .select("id")
+      .eq("id", data.positionId)
+      .eq("user_id", context.userId)
+      .maybeSingle();
+    if (positionError) throw new Error(positionError.message);
+    if (!position) throw new Error("Position not found for the current user.");
+
+    const { data: existingRows, error: existingError } = await context.supabase
+      .from("journal_entries")
+      .select("id")
+      .eq("position_id", data.positionId)
+      .eq("user_id", context.userId)
+      .order("created_at", { ascending: false })
+      .limit(1);
+    if (existingError) throw new Error(existingError.message);
+    const existing = existingRows?.[0];
+
+    if (existing) {
+      const { data: saved, error } = await context.supabase
+        .from("journal_entries")
+        .update({ notes: data.notes, session: data.session })
+        .eq("id", existing.id)
+        .eq("user_id", context.userId)
+        .select("id, notes, session, updated_at")
+        .single();
+      if (error) throw new Error(error.message);
+      return saved as TradeJournalEntry;
+    }
+
+    const { data: saved, error } = await context.supabase
+      .from("journal_entries")
+      .insert({
+        user_id: context.userId,
+        account_id: data.accountId,
+        position_id: data.positionId,
+        symbol: data.symbol,
+        notes: data.notes,
+        session: data.session,
+      })
+      .select("id, notes, session, updated_at")
+      .single();
+    if (error) throw new Error(error.message);
+    return saved as TradeJournalEntry;
   });
