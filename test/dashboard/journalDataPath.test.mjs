@@ -70,12 +70,19 @@ function bodyOf(name) {
 }
 
 // ---- explicit position-ownership check before any journal write ----------
+// Phase 4E-2 extracted this into a shared `requireOwnedPosition` helper
+// (reused by every metadata/terms/screenshot/AI-review write path, not
+// just this one) rather than duplicating the check per function — so the
+// property is checked in two parts: the helper itself does the real
+// trade_positions + user_id check, and saveTradeJournalForPosition's own
+// body actually calls it.
 {
-  const body = bodyOf("saveTradeJournalForPosition");
   ok(
-    "saveTradeJournalForPosition explicitly verifies the position belongs to the caller (trade_positions + user_id) before writing",
-    /from\(\s*["']trade_positions["']\s*\)[\s\S]{0,200}\.eq\(\s*["']user_id["']/.test(body),
+    "the shared requireOwnedPosition helper checks trade_positions scoped by user_id",
+    /async function requireOwnedPosition\([\s\S]{0,300}?from\(\s*["']trade_positions["']\s*\)[\s\S]{0,200}\.eq\(\s*["']user_id["']/.test(src),
   );
+  const body = bodyOf("saveTradeJournalForPosition");
+  ok("saveTradeJournalForPosition calls requireOwnedPosition before writing", /requireOwnedPosition\(/.test(body));
 }
 
 // ---- explicit user scoping on the write path (belt-and-suspenders
@@ -83,9 +90,10 @@ function bodyOf(name) {
 {
   const body = bodyOf("saveTradeJournalForPosition");
   ok(
-    "the existing-entry lookup is explicitly scoped by user_id (not relying on RLS alone)",
-    /from\(\s*["']journal_entries["']\)[\s\S]{0,200}\.eq\(\s*["']user_id["']/.test(body),
+    "the shared findExistingJournalEntryId helper scopes its journal_entries lookup by user_id (not relying on RLS alone)",
+    /async function findExistingJournalEntryId\([\s\S]{0,400}?from\(\s*["']journal_entries["']\)[\s\S]{0,200}\.eq\(\s*["']user_id["']/.test(src),
   );
+  ok("saveTradeJournalForPosition calls findExistingJournalEntryId", /findExistingJournalEntryId\(/.test(body));
   ok(
     "the UPDATE path is explicitly scoped by user_id (not just by id)",
     /\.update\(\{[\s\S]{0,200}\}\)[\s\S]{0,120}\.eq\(\s*["']user_id["']/.test(body),
@@ -120,12 +128,87 @@ function bodyOf(name) {
 // ---- one-entry-per-position discipline: looks up the most recent existing
 // row before deciding insert vs. update, and never deletes legacy duplicates
 {
-  const body = bodyOf("saveTradeJournalForPosition");
   ok(
-    "looks up the existing entry ordered by created_at desc, limited to the most recent (defensive against legacy duplicates)",
-    /order\(\s*["']created_at["']\s*,\s*\{\s*ascending:\s*false\s*\}\s*\)[\s\S]{0,40}\.limit\(\s*1\s*\)/.test(body),
+    "the shared findExistingJournalEntryId helper orders by created_at desc, limited to the most recent (defensive against legacy duplicates)",
+    /async function findExistingJournalEntryId\([\s\S]{0,600}?order\(\s*["']created_at["']\s*,\s*\{\s*ascending:\s*false\s*\}\s*\)[\s\S]{0,40}\.limit\(\s*1\s*\)/.test(
+      src,
+    ),
   );
+  const body = bodyOf("saveTradeJournalForPosition");
   ok("never issues a delete on journal_entries (no destructive duplicate cleanup)", !/\.from\(\s*["']journal_entries["']\)[\s\S]{0,400}\.delete\(/.test(body));
+}
+
+// ---- Phase 4E-2: taxonomy (Setup/Strategy/Mistakes/Emotion/Tags) --------
+{
+  ok("saveJournalTerms is exported as a function", typeof tradesFns.saveJournalTerms === "function");
+  ok(
+    "saveJournalTerms is wired through requireSupabaseAuth",
+    /saveJournalTerms\s*=\s*createServerFn\([^)]*\)\s*\.middleware\(\[requireSupabaseAuth\]\)/.test(src),
+  );
+  const body = bodyOf("saveJournalTerms");
+  ok("saveJournalTerms exists in source", body !== null);
+  ok("saveJournalTerms verifies position ownership before writing any term", /requireOwnedPosition\(/.test(body));
+  ok(
+    "saveJournalTerms scopes its taxonomy-term lookup by user_id (never a cross-user term reuse)",
+    /from\(\s*["']journal_taxonomy_terms["'][^)]*\)[\s\S]{0,200}\.eq\(\s*["']user_id["']/.test(body),
+  );
+  ok(
+    "saveJournalTerms scopes the entry-terms delete by user_id",
+    /journal_entry_terms["'][^)]*\)[\s\S]{0,100}\.delete\(\)[\s\S]{0,200}\.eq\(\s*["']user_id["']/.test(body),
+  );
+  ok(
+    "saveJournalTerms writes user_id on every new journal_entry_terms row (never trusts client-supplied ownership)",
+    /journal_entry_id:\s*entryId,\s*term_id:\s*termId,\s*user_id:\s*context\.userId/.test(body),
+  );
+}
+
+// ---- Phase 4E-2: screenshots — ownership, mapping, storage scoping ------
+{
+  for (const name of ["listJournalScreenshots", "recordJournalScreenshot", "deleteJournalScreenshot"]) {
+    ok(`${name} is exported as a function`, typeof tradesFns[name] === "function");
+    ok(`${name} is wired through requireSupabaseAuth`, new RegExp(`${name}\\s*=\\s*createServerFn\\([^)]*\\)\\s*\\.middleware\\(\\[requireSupabaseAuth\\]\\)`).test(src));
+  }
+
+  const recordBody = bodyOf("recordJournalScreenshot");
+  ok("recordJournalScreenshot verifies position ownership before linking a screenshot", /requireOwnedPosition\(/.test(recordBody));
+  ok("recordJournalScreenshot maps the screenshot to its journal entry (journal_entry_id) and the caller (user_id)", /journal_entry_id:\s*entryId,\s*user_id:\s*context\.userId/.test(recordBody));
+
+  const deleteBody = bodyOf("deleteJournalScreenshot");
+  ok(
+    "deleteJournalScreenshot only resolves a screenshot scoped by both its id AND the caller's user_id",
+    /from\(\s*["']journal_screenshots["'][^)]*\)[\s\S]{0,150}\.eq\(\s*["']id["'][\s\S]{0,80}\.eq\(\s*["']user_id["']/.test(deleteBody),
+  );
+  ok("deleteJournalScreenshot removes the storage object before deleting the DB row (no orphaned files)", /storage[\s\S]{0,40}\.remove\(/.test(deleteBody));
+
+  const listBody = bodyOf("listJournalScreenshots");
+  ok(
+    "listJournalScreenshots scopes its query by user_id (never a cross-user screenshot read)",
+    /from\(\s*["']journal_screenshots["'][^)]*\)[\s\S]{0,200}\.eq\(\s*["']user_id["']/.test(listBody),
+  );
+}
+
+// ---- Phase 4E-2: AI Trade Review — usage accounting + persistence -------
+{
+  for (const name of ["generateJournalAiReview", "getLatestJournalAiReview"]) {
+    ok(`${name} is exported as a function`, typeof tradesFns[name] === "function");
+    ok(`${name} is wired through requireSupabaseAuth`, new RegExp(`${name}\\s*=\\s*createServerFn\\([^)]*\\)\\s*\\.middleware\\(\\[requireSupabaseAuth\\]\\)`).test(src));
+  }
+
+  const genBody = bodyOf("generateJournalAiReview");
+  ok("generateJournalAiReview verifies position ownership before calling the model", /requireOwnedPosition\(/.test(genBody));
+  ok("generateJournalAiReview records AI usage accounting (recordAiUsage)", /recordAiUsage\(/.test(genBody));
+  ok('generateJournalAiReview accounts under the "journal_review" operation', /operation:\s*["']journal_review["']/.test(genBody));
+  ok(
+    "generateJournalAiReview persists the review as a NEW row (insert, never update) — supports history/regeneration",
+    /["']journal_ai_reviews["'][\s\S]{0,120}\.insert\(/.test(genBody) && !/["']journal_ai_reviews["'][\s\S]{0,300}\.update\(/.test(genBody),
+  );
+  ok("generateJournalAiReview never sends image/screenshot data to the model", !/image|screenshot/i.test(genBody.replace(/\/\/.*$/gm, "")));
+
+  const latestBody = bodyOf("getLatestJournalAiReview");
+  ok(
+    "getLatestJournalAiReview scopes its query by user_id and returns only the most recent review",
+    /from\(\s*["']journal_ai_reviews["'][^)]*\)[\s\S]{0,200}\.eq\(\s*["']user_id["'][\s\S]{0,150}\.limit\(\s*1\s*\)/.test(latestBody),
+  );
 }
 
 // ---- summary ----------------------------------------------------------------

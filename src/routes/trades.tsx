@@ -2,7 +2,7 @@ import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { AlertTriangle, ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight, Loader2, NotebookText } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useSubscription } from "@/hooks/useSubscription";
 import { checkStudioAccess, isStudioGateTestBypassed, isStudioGateLocalPaidBypassed } from "@/lib/subscription-status";
@@ -11,7 +11,18 @@ import { MetricCard, toneOf } from "@/components/dashboard/MetricCard";
 import { listDashboardAccounts } from "@/lib/dashboard.functions";
 import { listClosedTradesPage, MAX_FETCH_ROWS } from "@/lib/trades.functions";
 import { classifyTrade, netPnlForTrade, SESSION_LABELS, type ClosedTrade, type TradeClassification } from "@/lib/dashboard/metrics";
-import { summarizeTrades, tradeDurationMs, formatDuration, type Direction, type Outcome, type SessionFilter, type SortDir, type SortKey } from "@/lib/dashboard/tradeExplorer";
+import {
+  summarizeTrades,
+  tradeDurationMs,
+  formatDuration,
+  type Direction,
+  type Outcome,
+  type SessionFilter,
+  type JournalFilter,
+  type SortDir,
+  type SortKey,
+  type TradeExplorerRow,
+} from "@/lib/dashboard/tradeExplorer";
 import { EnvBadge } from "@/components/studio/AccountBar";
 import { TradeDetailDrawer, type TradeDetailDrawerHandle } from "@/components/trades/TradeDetailDrawer";
 
@@ -32,6 +43,7 @@ type TradesSearch = {
   direction?: Direction;
   outcome?: Outcome;
   session?: SessionFilter;
+  journal?: JournalFilter;
   sortKey?: SortKey;
   sortDir?: SortDir;
   page?: number;
@@ -41,6 +53,7 @@ type TradesSearch = {
 const VALID_DIRECTIONS = new Set(["all", "long", "short"]);
 const VALID_OUTCOMES = new Set(["all", "win", "loss", "breakeven"]);
 const VALID_SESSIONS = new Set(["all", "asia", "london", "overlap", "newYork", "offHours"]);
+const VALID_JOURNAL_FILTERS = new Set(["all", "journaled", "notJournaled"]);
 const VALID_SORT_KEYS = new Set(["closedAt", "symbol", "netPnl", "duration"]);
 const VALID_PAGE_SIZES = new Set([25, 50, 100]);
 
@@ -64,6 +77,7 @@ export const Route = createFileRoute("/trades")({
     direction: VALID_DIRECTIONS.has(search.direction as string) ? (search.direction as Direction) : undefined,
     outcome: VALID_OUTCOMES.has(search.outcome as string) ? (search.outcome as Outcome) : undefined,
     session: VALID_SESSIONS.has(search.session as string) ? (search.session as SessionFilter) : undefined,
+    journal: VALID_JOURNAL_FILTERS.has(search.journal as string) ? (search.journal as JournalFilter) : undefined,
     sortKey: VALID_SORT_KEYS.has(search.sortKey as string) ? (search.sortKey as SortKey) : undefined,
     sortDir: search.sortDir === "asc" || search.sortDir === "desc" ? search.sortDir : undefined,
     page: typeof search.page === "number" && search.page >= 1 ? Math.floor(search.page) : undefined,
@@ -193,6 +207,7 @@ function TradesWorkspace() {
   const direction = search.direction ?? "all";
   const outcome = search.outcome ?? "all";
   const session = search.session ?? "all";
+  const journal = search.journal ?? "all";
   const sortKey = search.sortKey ?? "closedAt";
   const sortDir = search.sortDir ?? "desc";
   const page = search.page ?? 1;
@@ -241,7 +256,7 @@ function TradesWorkspace() {
     if (symbolInput !== symbol) updateSearch({ symbol: symbolInput || undefined });
   }
 
-  const hasActiveFilters = Boolean(symbol || from || to || direction !== "all" || outcome !== "all" || session !== "all");
+  const hasActiveFilters = Boolean(symbol || from || to || direction !== "all" || outcome !== "all" || session !== "all" || journal !== "all");
 
   function clearFilters() {
     navigate({
@@ -251,7 +266,7 @@ function TradesWorkspace() {
   }
 
   const tradesQuery = useQuery({
-    queryKey: ["trades-page", accountId, symbol, from, to, direction, outcome, session, sortKey, sortDir, page, pageSize],
+    queryKey: ["trades-page", accountId, symbol, from, to, direction, outcome, session, journal, sortKey, sortDir, page, pageSize],
     queryFn: () =>
       listTradesPageFn({
         data: {
@@ -262,6 +277,7 @@ function TradesWorkspace() {
           direction,
           outcome,
           session,
+          journal,
           sortKey,
           sortDir,
           page,
@@ -272,7 +288,7 @@ function TradesWorkspace() {
     placeholderData: keepPreviousData,
   });
 
-  const rows = tradesQuery.data?.rows ?? [];
+  const rows: TradeExplorerRow[] = tradesQuery.data?.rows ?? [];
   const summary = useMemo(() => summarizeTrades(rows), [rows]);
 
   function handleSort(key: SortKey) {
@@ -388,6 +404,17 @@ function TradesWorkspace() {
               ))}
             </select>
 
+            <select
+              aria-label="Journal"
+              className="rounded-md border border-border bg-background px-2 py-1 text-xs"
+              value={journal}
+              onChange={(e) => updateSearch({ journal: e.target.value as JournalFilter })}
+            >
+              <option value="all">All journal</option>
+              <option value="journaled">Journaled</option>
+              <option value="notJournaled">Not Journaled</option>
+            </select>
+
             {hasActiveFilters && (
               <button type="button" className="rounded-md px-1.5 py-1 text-xs text-muted-foreground hover:text-foreground" onClick={clearFilters}>
                 Clear filters
@@ -451,7 +478,7 @@ function TradesBody({
   accountsQuery: { isLoading: boolean; isError: boolean; error: unknown; data: unknown[] | undefined };
   tradesQuery: { isLoading: boolean; isError: boolean; error: unknown };
   accountId: string | null;
-  rows: ClosedTrade[];
+  rows: TradeExplorerRow[];
   summary: ReturnType<typeof summarizeTrades>;
   hasActiveFilters: boolean;
   clearFilters: () => void;
@@ -542,6 +569,9 @@ function TradesBody({
                     Duration
                   </Th>
                   <th className="px-2 py-2 text-right font-medium">Result</th>
+                  <th className="px-1.5 py-2 text-center font-medium" title="Journal">
+                    <NotebookText className="mx-auto h-3 w-3 text-muted-foreground/60" />
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -575,6 +605,12 @@ function TradesBody({
                       </td>
                       <td className="hidden px-2 py-1.5 text-right tabular-nums text-muted-foreground lg:table-cell">{formatDuration(tradeDurationMs(t))}</td>
                       <td className={`px-2 py-1.5 text-right font-semibold ${toneClassFor(cls)}`}>{resultLabel(cls)}</td>
+                      <td className="px-1.5 py-1.5 text-center">
+                        <NotebookText
+                          className={`mx-auto h-3.5 w-3.5 ${t.hasJournal ? "fill-brand/20 text-brand" : "text-muted-foreground/30"}`}
+                          aria-label={t.hasJournal ? "Journal exists" : "Not journaled"}
+                        />
+                      </td>
                     </tr>
                   );
                 })}
@@ -605,6 +641,7 @@ function TradesBody({
                         {t.side === "buy" ? "Long" : "Short"}
                       </span>
                       <span className="truncate font-medium">{t.symbol}</span>
+                      {t.hasJournal && <NotebookText className="h-3 w-3 shrink-0 fill-brand/20 text-brand" aria-hidden="true" />}
                     </div>
                     <span className="text-[10px] text-muted-foreground">{formatClosedUtc(t.closedAt)}</span>
                   </div>

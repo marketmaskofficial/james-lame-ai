@@ -15,6 +15,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
  * (src/lib/spec/explain.ts) is pure client-side templating over the
  * existing spec, it never calls the model, so there is no AI usage to
  * record for it.
+ *   - journal_review -> Phase 4E-2's Trade Journal "Generate AI Review"
+ *     (src/lib/trades.functions.ts's `generateJournalAiReview`)
  */
 export type AiOperation =
   | "build"
@@ -23,7 +25,8 @@ export type AiOperation =
   | "translate"
   | "repair"
   | "analyze"
-  | "generate";
+  | "generate"
+  | "journal_review";
 
 export interface AiUsageTokens {
   promptTokens?: number | null;
