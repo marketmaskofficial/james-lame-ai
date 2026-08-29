@@ -133,6 +133,17 @@ export function paginate(trades: ClosedTrade[], page: number, pageSize: number):
   return { rows, totalCount, page: clampedPage, pageSize, totalPages };
 }
 
+/** True when the SQL fetch hit `cap` exactly — the signal that there may be
+ * more matching trades beyond what reached this function's in-memory
+ * filter/sort/paginate pipeline (see `trades.functions.ts`'s
+ * `MAX_FETCH_ROWS` doc comment). A fetch landing exactly on the cap by
+ * coincidence (rather than being cut off) is indistinguishable from a real
+ * truncation with a `.limit()`-based fetch, so this errs toward disclosing
+ * possible truncation rather than silently under-reporting. */
+export function isTruncated(fetchedCount: number, cap: number): boolean {
+  return fetchedCount >= cap;
+}
+
 export type TradeExplorerQuery = ClosedTradeFilter & {
   direction: Direction;
   outcome: Outcome;

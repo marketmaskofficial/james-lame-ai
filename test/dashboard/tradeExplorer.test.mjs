@@ -16,6 +16,7 @@ import {
   paginate,
   queryClosedTrades,
   summarizeTrades,
+  isTruncated,
 } from "../../src/lib/dashboard/tradeExplorer.ts";
 
 let pass = 0;
@@ -245,6 +246,13 @@ const defaultQuery = {
     winRatePct: null,
     avgTrade: null,
   });
+}
+
+// ==== isTruncated: the 2000-row cap disclosure flag
+{
+  ok("isTruncated: fetch below the cap is not truncated", isTruncated(1999, 2000) === false);
+  ok("isTruncated: fetch exactly at the cap is treated as truncated", isTruncated(2000, 2000) === true);
+  ok("isTruncated: an empty fetch is never truncated", isTruncated(0, 2000) === false);
 }
 
 // ---- summary ----------------------------------------------------------------

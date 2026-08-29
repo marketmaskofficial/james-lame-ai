@@ -2,7 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { CLOSED_TRADE_VIEW_SELECT, mapClosedTradeViewRow, type ClosedTradeViewRow } from "@/lib/dashboard.functions";
-import { queryClosedTrades, type Direction, type Outcome, type SessionFilter, type SortDir, type SortKey } from "@/lib/dashboard/tradeExplorer";
+import { isTruncated, queryClosedTrades, type Direction, type Outcome, type SessionFilter, type SortDir, type SortKey } from "@/lib/dashboard/tradeExplorer";
 
 /**
  * Phase 4D — Trade Explorer server functions. Same rules as
@@ -26,7 +26,7 @@ import { queryClosedTrades, type Direction, type Outcome, type SessionFilter, ty
  * set/count may be incomplete, rather than silently under-reporting.
  */
 
-const MAX_FETCH_ROWS = 2000;
+export const MAX_FETCH_ROWS = 2000;
 
 const querySchema = z.object({
   accountId: z.string().uuid(),
@@ -59,7 +59,7 @@ export const listClosedTradesPage = createServerFn({ method: "GET" })
     if (error) throw new Error(error.message);
 
     const trades = (rows ?? []).map(mapClosedTradeViewRow);
-    const truncated = trades.length === MAX_FETCH_ROWS;
+    const truncated = isTruncated(trades.length, MAX_FETCH_ROWS);
 
     const result = queryClosedTrades(trades, {
       accountId: data.accountId,

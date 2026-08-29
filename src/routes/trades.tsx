@@ -9,7 +9,7 @@ import { checkStudioAccess, isStudioGateTestBypassed, isStudioGateLocalPaidBypas
 import { AppNavRail } from "@/components/AppNavRail";
 import { MetricCard, toneOf } from "@/components/dashboard/MetricCard";
 import { listDashboardAccounts } from "@/lib/dashboard.functions";
-import { listClosedTradesPage } from "@/lib/trades.functions";
+import { listClosedTradesPage, MAX_FETCH_ROWS } from "@/lib/trades.functions";
 import { classifyTrade, netPnlForTrade, SESSION_LABELS, type ClosedTrade, type TradeClassification } from "@/lib/dashboard/metrics";
 import { summarizeTrades, tradeDurationMs, formatDuration, type Direction, type Outcome, type SessionFilter, type SortDir, type SortKey } from "@/lib/dashboard/tradeExplorer";
 import { EnvBadge } from "@/components/studio/AccountBar";
@@ -149,6 +149,18 @@ function toneClassFor(cls: TradeClassification): string {
   return cls === "win" ? "text-emerald-400" : cls === "loss" ? "text-red-400" : "text-foreground";
 }
 
+/** Explicit accessible name for a mobile trade card — the desktop table's
+ * `<tr>` rows carry the same information as visible cell text, but a
+ * mobile card's content is only readable via its layout, not exposed as a
+ * single accessible name by default. Built from the trade's own real
+ * values, not a generic "Open trade details". */
+function mobileTradeCardLabel(t: ClosedTrade): string {
+  const net = netPnlForTrade(t);
+  const direction = t.side === "buy" ? "Long" : "Short";
+  const sign = net >= 0 ? "+" : "-";
+  return `Open ${t.symbol} ${direction} trade closed ${formatClosedUtc(t.closedAt)}, net P&L ${sign}${money(Math.abs(net))}`;
+}
+
 /**
  * AUDIT FINDING (Phase 4D, confirmed against real hosted data, not guessed):
  * `ClosedTrade.qty` — `trade_positions.qty` — is the position's REMAINING
@@ -208,6 +220,14 @@ function TradesWorkspace() {
 
   function updateSearch(patch: Partial<TradesSearch>, resetPage = true) {
     navigate({ search: (prev) => ({ ...prev, ...patch, page: resetPage ? 1 : (patch.page ?? prev.page) }), replace: true });
+  }
+
+  /** Shared by both the symbol input's form-submit (Enter) and its onBlur —
+   * guarded so a value that hasn't actually changed never triggers a
+   * second, redundant navigation/refetch regardless of which event (or
+   * both, in sequence) fires. */
+  function applySymbolFilter() {
+    if (symbolInput !== symbol) updateSearch({ symbol: symbolInput || undefined });
   }
 
   const hasActiveFilters = Boolean(symbol || from || to || direction !== "all" || outcome !== "all" || session !== "all");
@@ -282,16 +302,25 @@ function TradesWorkspace() {
               {activeAccount && <EnvBadge env={activeAccount.environment} />}
             </div>
 
-            <input
-              type="text"
-              aria-label="Symbol"
-              placeholder="Exact symbol"
-              value={symbolInput}
-              onChange={(e) => setSymbolInput(e.target.value.toUpperCase())}
-              onBlur={() => symbolInput !== symbol && updateSearch({ symbol: symbolInput || undefined })}
-              onKeyDown={(e) => e.key === "Enter" && updateSearch({ symbol: symbolInput || undefined })}
-              className="w-28 rounded-md border border-border bg-background px-2 py-1 text-xs"
-            />
+            {/* A real <form onSubmit> is the standard, reliable way to
+                capture "Enter pressed in this text field" — a raw
+                onKeyDown check for e.key === "Enter" was observed to be
+                inconsistent during QA. `applySymbolFilter` is shared with
+                onBlur and guards on "did the value actually change" so
+                Enter-then-blur (or blur-then-Enter) can never fire two
+                navigations for the same value. `contents` keeps the form
+                itself out of the surrounding flex layout. */}
+            <form onSubmit={(e) => { e.preventDefault(); applySymbolFilter(); }} className="contents">
+              <input
+                type="text"
+                aria-label="Symbol"
+                placeholder="Exact symbol"
+                value={symbolInput}
+                onChange={(e) => setSymbolInput(e.target.value.toUpperCase())}
+                onBlur={applySymbolFilter}
+                className="w-28 rounded-md border border-border bg-background px-2 py-1 text-xs"
+              />
+            </form>
 
             <input
               type="date"
@@ -547,6 +576,7 @@ function TradesBody({
                   key={t.positionId}
                   type="button"
                   onClick={() => onSelectTrade(t)}
+                  aria-label={mobileTradeCardLabel(t)}
                   className="flex items-center justify-between gap-2 rounded-md border border-border bg-card px-3 py-2.5 text-left text-xs"
                 >
                   <div className="flex min-w-0 flex-col gap-1">
@@ -574,12 +604,17 @@ function TradesBody({
             })}
           </div>
 
+          {pagination?.truncated && (
+            <div className="rounded-md border border-amber-900/50 bg-amber-950/20 px-3 py-2 text-[11px] text-amber-300">
+              Showing results from the first {MAX_FETCH_ROWS.toLocaleString("en-US")} matching trades. Narrow your filters for complete results.
+            </div>
+          )}
+
           {pagination && (
             <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted-foreground">
               <div>
-                {(page - 1) * pageSize + 1}–{Math.min(page * pageSize, pagination.totalCount)} of {pagination.totalCount}
-                {pagination.truncated ? "+" : ""}
-                {pagination.truncated && <span className="ml-1">(showing the most recent matches)</span>}
+                {(page - 1) * pageSize + 1}–{Math.min(page * pageSize, pagination.totalCount)} of{" "}
+                {pagination.truncated ? `at least ${pagination.totalCount}` : pagination.totalCount}
               </div>
               <div className="flex items-center gap-2">
                 <select
