@@ -370,7 +370,11 @@ export type GroupSummary = {
   isLowSample: boolean;
 };
 
-function summarizeGroup(trades: ClosedTrade[]): GroupSummary {
+/** Exported so `src/lib/dashboard/journalAnalytics.ts` (Phase 4F) can reuse
+ * this exact aggregation as the base of its own `summarizeJournalGroup`,
+ * rather than reimplementing net P&L / win-loss-breakeven counting a second
+ * time. */
+export function summarizeGroup(trades: ClosedTrade[]): GroupSummary {
   const tradeCount = trades.length;
   if (tradeCount === 0) {
     return { netPnl: 0, tradeCount: 0, wins: 0, losses: 0, winRatePct: null, avgNetTrade: 0, isLowSample: false };
@@ -504,7 +508,10 @@ export const SESSION_LABELS: Record<TradingSession, string> = {
   offHours: "Off Hours",
 };
 
-const SESSION_ORDER: TradingSession[] = ["asia", "london", "overlap", "newYork", "offHours"];
+/** Exported so `src/lib/dashboard/journalAnalytics.ts` (Phase 4F) can lay
+ * out the manually-entered journal session breakdown in the exact same
+ * fixed order, without redeclaring this list a second time. */
+export const SESSION_ORDER: TradingSession[] = ["asia", "london", "overlap", "newYork", "offHours"];
 
 /**
  * Fixed, mutually-exclusive UTC-hour session windows — Asia 00:00–06:59,
