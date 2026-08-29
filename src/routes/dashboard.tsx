@@ -21,6 +21,8 @@ import { MetricCard, toneOf } from "@/components/dashboard/MetricCard";
 import { CumulativePnlChart, DailyPnlChart, DerivedBalanceChart, DrawdownChart } from "@/components/dashboard/DashboardCharts";
 import { TradingCalendar } from "@/components/dashboard/TradingCalendar";
 import { PerformanceBreakdowns } from "@/components/dashboard/PerformanceBreakdowns";
+import { PerformanceScore } from "@/components/dashboard/PerformanceScore";
+import { computePerformanceScore } from "@/lib/dashboard/performanceScore";
 import { EnvBadge } from "@/components/studio/AccountBar";
 
 // Phase 4A: Trading Dashboard is gated exactly like Chart Studio — same
@@ -162,6 +164,10 @@ function DashboardWorkspace() {
     [trades, activeAccount],
   );
   const drawdown = useMemo(() => computeDrawdown(balanceSeries), [balanceSeries]);
+  const performanceScore = useMemo(
+    () => computePerformanceScore(metrics, daily, drawdown.maxDrawdownPct, drawdown.currentDrawdownPct),
+    [metrics, daily, drawdown],
+  );
 
   // Phase 4B-1: the Trading Calendar deliberately queries its own month
   // window instead of the header's date range (see TradingCalendar.tsx's
@@ -258,6 +264,7 @@ function DashboardWorkspace() {
             daily={daily}
             balanceSeries={balanceSeries}
             drawdown={drawdown}
+            performanceScore={performanceScore}
             fetchCalendarMonth={fetchCalendarMonth}
             onSelectCalendarDay={handleSelectCalendarDay}
           />
@@ -278,6 +285,7 @@ function DashboardBody({
   daily,
   balanceSeries,
   drawdown,
+  performanceScore,
   fetchCalendarMonth,
   onSelectCalendarDay,
 }: {
@@ -291,6 +299,7 @@ function DashboardBody({
   daily: ReturnType<typeof dailyPnlSeries>;
   balanceSeries: ReturnType<typeof derivedBalanceSeries>;
   drawdown: ReturnType<typeof computeDrawdown>;
+  performanceScore: ReturnType<typeof computePerformanceScore>;
   fetchCalendarMonth: (args: { accountId: string; symbol?: string; fromUtc: string; toUtc: string }) => Promise<ClosedTrade[]>;
   onSelectCalendarDay: (dayUtc: string) => void;
 }) {
@@ -343,6 +352,12 @@ function DashboardBody({
           </div>
         </>
       )}
+
+      {/* Phase 4B-2: rendered regardless of the header date-range's own
+          trades.length, same as the calendar/breakdowns below — a
+          zero-decisive-trade result renders its own honest "Not enough
+          decisive trades" state rather than disappearing. */}
+      <PerformanceScore result={performanceScore} />
 
       {/* Phase 4B-1: the calendar intentionally has its own month window
           (see TradingCalendar.tsx) so it still renders here even when the
