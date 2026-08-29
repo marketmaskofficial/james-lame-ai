@@ -45,12 +45,24 @@ function StatRow({ label, group }: { label: string; group: GroupSummary }) {
           ? "text-red-400"
           : "text-foreground";
   return (
-    <div className="flex items-center justify-between gap-2 border-b border-border/60 py-1 text-xs last:border-b-0">
-      <span className="min-w-0 truncate font-medium">{label}</span>
-      <div className="flex shrink-0 items-center gap-2.5 tabular-nums sm:gap-3">
+    // flex-wrap so a narrow row (e.g. 375px mobile) can drop the numeric
+    // stats to their own line rather than squeezing the label. The label
+    // group is deliberately NOT `flex-1`/`min-w-0` — that combination is
+    // what previously let it get compressed to a sliver instead of
+    // wrapping (a flex-basis-0 item with min-w-0 has no floor, so it
+    // shrinks arbitrarily small rather than triggering a wrap). Left at
+    // its natural content width, it wraps to its own line the moment it
+    // and the numeric stats no longer both fit — `ml-auto` on the stats
+    // group keeps them right-aligned whether they share the label's line
+    // or land on their own line below it.
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border/60 py-1 text-xs last:border-b-0">
+      <div className="flex items-center gap-1.5">
+        <span className="truncate font-medium">{label}</span>
         {group.isLowSample && (
-          <span className="rounded bg-muted px-1 py-0.5 text-[9px] uppercase tracking-wide text-muted-foreground">Low sample</span>
+          <span className="shrink-0 rounded bg-muted px-1 py-0.5 text-[9px] uppercase tracking-wide text-muted-foreground">Low sample</span>
         )}
+      </div>
+      <div className="ml-auto flex shrink-0 items-center gap-2.5 tabular-nums sm:gap-3">
         <span className="w-14 text-right text-muted-foreground">{group.tradeCount === 0 ? "—" : `${group.tradeCount} trd`}</span>
         <span className="w-10 text-right text-muted-foreground">{group.winRatePct == null ? "—" : `${group.winRatePct.toFixed(0)}%`}</span>
         <span className={`w-16 text-right font-semibold ${toneClass}`}>{group.tradeCount === 0 ? "—" : money(group.netPnl)}</span>
@@ -63,7 +75,7 @@ function HourBars({ hours }: { hours: HourOfDayPerformance[] }) {
   const maxAbs = Math.max(1, ...hours.map((h) => Math.abs(h.netPnl)));
   return (
     <div>
-      <div className="flex h-14 items-end gap-0.5">
+      <div className="flex h-24 items-end gap-0.5">
         {hours.map((h) => {
           const heightPct = h.tradeCount === 0 ? 4 : Math.max(6, (Math.abs(h.netPnl) / maxAbs) * 100);
           const toneClass =

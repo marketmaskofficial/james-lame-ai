@@ -10,7 +10,7 @@ import type { PerformanceScoreResult } from "@/lib/dashboard/performanceScore";
  * nothing here recomputes or estimates anything.
  */
 
-const RING_SIZE = 148;
+const RING_SIZE = 124;
 const RING_STROKE = 10;
 const RING_RADIUS = (RING_SIZE - RING_STROKE) / 2;
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
@@ -76,7 +76,13 @@ function ScoreRing({ result }: { result: PerformanceScoreResult }) {
   const offset = RING_CIRCUMFERENCE * (1 - (score ?? 0) / 100);
 
   return (
-    <div className="flex flex-col items-center gap-1.5">
+    // Capped to roughly the ring's own width at sm+ (where this sits beside
+    // the bars column) so the confidence badge's text can never force this
+    // whole block — and therefore the bars column next to it — wider than
+    // the ring itself; the badge/trade-count row below wraps within that
+    // cap instead. Unconstrained on mobile, where it stacks full-width
+    // above the bars and nothing else competes for the row's space.
+    <div className="flex flex-col items-center gap-1.5 sm:w-36">
       <div className="relative" style={{ width: RING_SIZE, height: RING_SIZE }}>
         <svg width={RING_SIZE} height={RING_SIZE} className="-rotate-90">
           <circle cx={RING_SIZE / 2} cy={RING_SIZE / 2} r={RING_RADIUS} strokeWidth={RING_STROKE} className="fill-none stroke-muted" />
@@ -106,9 +112,9 @@ function ScoreRing({ result }: { result: PerformanceScoreResult }) {
         <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
           {score == null ? "Not enough decisive trades" : "Performance Score"}
         </div>
-        <div className="mt-1.5 flex items-center justify-center gap-1.5">
+        <div className="mt-1.5 flex flex-wrap items-center justify-center gap-1.5">
           <span
-            className={`rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-widest ${
+            className={`rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide ${
               CONFIDENCE_TONE_CLASS[result.confidence.label] ?? "border-border bg-muted/30 text-muted-foreground"
             }`}
           >
@@ -129,11 +135,18 @@ function CategoryBar({ label, weight, score }: { label: string; weight: string; 
   const tone = toneFor(displayScore);
   return (
     <div>
-      <div className="flex items-baseline justify-between text-xs">
-        <span className="font-medium">
-          {label} <span className="text-muted-foreground">· {weight}</span>
+      {/* Weight lives beside the score, not appended to the label — a long
+          category name like "Risk Management" plus its "· 25%" suffix was
+          the exact combination that wrapped awkwardly in a narrow column
+          (e.g. ~1024px viewport). Splitting them lets the label stay on one
+          line at realistic widths and only ever truncates as a last
+          resort, while the score stays reliably right-aligned. */}
+      <div className="flex items-baseline justify-between gap-2 text-xs">
+        <span className="min-w-0 truncate font-medium">{label}</span>
+        <span className="flex shrink-0 items-baseline gap-1.5">
+          <span className="text-[9px] text-muted-foreground">{weight}</span>
+          <span className={`tabular-nums font-semibold ${TEXT_TONE_CLASS[tone]}`}>{displayScore == null ? "—" : displayScore}</span>
         </span>
-        <span className={`tabular-nums font-semibold ${TEXT_TONE_CLASS[tone]}`}>{displayScore == null ? "—" : displayScore}</span>
       </div>
       <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted/40">
         <div className={`h-full rounded-full ${BAR_TONE_CLASS[tone]}`} style={{ width: `${displayScore ?? 0}%` }} />
@@ -158,11 +171,11 @@ export function PerformanceScore({ result }: { result: PerformanceScoreResult })
   const { categories, detail } = result;
   return (
     <div className="rounded-md border border-border bg-card p-2.5">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-2.5">
         <div className="flex justify-center sm:shrink-0">
           <ScoreRing result={result} />
         </div>
-        <div className="flex flex-1 flex-col justify-center gap-2">
+        <div className="flex min-w-0 flex-1 flex-col justify-center gap-2">
           <CategoryBar label="Profitability" weight="30%" score={categories.profitability} />
           <CategoryBar label="Risk Management" weight="25%" score={categories.riskManagement} />
           <CategoryBar label="Consistency" weight="20%" score={categories.consistency} />

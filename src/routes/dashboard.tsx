@@ -18,7 +18,8 @@ import {
   type ClosedTrade,
 } from "@/lib/dashboard/metrics";
 import { MetricCard, toneOf } from "@/components/dashboard/MetricCard";
-import { CumulativePnlChart, DailyPnlChart, DerivedBalanceChart, DrawdownChart } from "@/components/dashboard/DashboardCharts";
+import { PerformanceChartTabs } from "@/components/dashboard/PerformanceChartTabs";
+import { RecentTrades } from "@/components/dashboard/RecentTrades";
 import { TradingCalendar } from "@/components/dashboard/TradingCalendar";
 import { PerformanceBreakdowns } from "@/components/dashboard/PerformanceBreakdowns";
 import { PerformanceScore } from "@/components/dashboard/PerformanceScore";
@@ -332,39 +333,39 @@ function DashboardBody({
           No closed trades in this period.
         </div>
       ) : (
-        <>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-8">
-            <MetricCard label="Net P&L" value={money(metrics.netPnl)} tone={toneOf(metrics.netPnl)} />
-            <MetricCard label="Trade Win %" value={pct(metrics.winRatePct)} tone={toneOf(metrics.winRatePct == null ? null : metrics.winRatePct - 50)} />
-            <MetricCard label="Profit Factor" value={ratio(metrics.profitFactor)} tone={toneOf(metrics.profitFactor == null ? null : metrics.profitFactor - 1)} />
-            <MetricCard label="Day Win %" value={pct(metrics.dayWinRatePct)} tone={toneOf(metrics.dayWinRatePct == null ? null : metrics.dayWinRatePct - 50)} />
-            <MetricCard label="Avg Winning Trade" value={metrics.avgWinningTrade == null ? "—" : money(metrics.avgWinningTrade)} tone="positive" />
-            <MetricCard label="Avg Losing Trade" value={metrics.avgLosingTrade == null ? "—" : money(metrics.avgLosingTrade)} tone="negative" />
-            <MetricCard label="Avg Win/Loss Ratio" value={ratio(metrics.avgWinLossRatio)} tone={toneOf(metrics.avgWinLossRatio == null ? null : metrics.avgWinLossRatio - 1)} />
-            <MetricCard label="Total Trades" value={String(metrics.totalTrades)} />
-          </div>
-
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-            <CumulativePnlChart points={cumulative} />
-            <DailyPnlChart points={daily} />
-            <DerivedBalanceChart points={balanceSeries} />
-            <DrawdownChart points={drawdown.curve} maxDrawdownPct={drawdown.maxDrawdownPct} currentDrawdownPct={drawdown.currentDrawdownPct} />
-          </div>
-        </>
+        // Phase 4C: the six KPIs a trader checks first, one row on
+        // sufficiently wide desktops. Avg Winning/Losing Trade moved out of
+        // this primary row (see RecentTrades' header) — still shown, just
+        // no longer competing for top-row space with these six.
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+          <MetricCard label="Net P&L" value={money(metrics.netPnl)} tone={toneOf(metrics.netPnl)} />
+          <MetricCard label="Trade Win %" value={pct(metrics.winRatePct)} tone={toneOf(metrics.winRatePct == null ? null : metrics.winRatePct - 50)} />
+          <MetricCard label="Profit Factor" value={ratio(metrics.profitFactor)} tone={toneOf(metrics.profitFactor == null ? null : metrics.profitFactor - 1)} />
+          <MetricCard label="Avg Win/Loss Ratio" value={ratio(metrics.avgWinLossRatio)} tone={toneOf(metrics.avgWinLossRatio == null ? null : metrics.avgWinLossRatio - 1)} />
+          <MetricCard label="Total Trades" value={String(metrics.totalTrades)} />
+          <MetricCard label="Day Win %" value={pct(metrics.dayWinRatePct)} tone={toneOf(metrics.dayWinRatePct == null ? null : metrics.dayWinRatePct - 50)} />
+        </div>
       )}
 
-      {/* Phase 4B-2: rendered regardless of the header date-range's own
-          trades.length, same as the calendar/breakdowns below — a
-          zero-decisive-trade result renders its own honest "Not enough
-          decisive trades" state rather than disappearing. */}
-      <PerformanceScore result={performanceScore} />
+      {/* Phase 4C workstation row 1: Performance Score (~1/3) + the
+          consolidated 4-in-1 chart workspace (~2/3). Both already have
+          their own honest empty/low-history states, so — like the
+          Calendar/Breakdowns below — this row renders regardless of
+          trades.length rather than disappearing behind the banner above. */}
+      <div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-[1fr_2fr]">
+        <PerformanceScore result={performanceScore} />
+        <PerformanceChartTabs cumulative={cumulative} daily={daily} balanceSeries={balanceSeries} drawdown={drawdown} />
+      </div>
 
-      {/* Phase 4B-1: the calendar intentionally has its own month window
-          (see TradingCalendar.tsx) so it still renders here even when the
-          header's date-range filter above has zero trades in range. */}
-      <TradingCalendar accountId={accountId} symbol={symbol} fetchMonth={fetchCalendarMonth} onSelectDay={onSelectCalendarDay} />
+      {/* Phase 4C workstation row 2: Recent Trades (~1/3, reusing the same
+          already-loaded `trades`) + the Trading Calendar (~2/3, its own
+          month-window query — see TradingCalendar.tsx's doc comment). */}
+      <div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-[1fr_2fr]">
+        <RecentTrades trades={trades} avgWinningTrade={metrics.avgWinningTrade} avgLosingTrade={metrics.avgLosingTrade} />
+        <TradingCalendar accountId={accountId} symbol={symbol} fetchMonth={fetchCalendarMonth} onSelectDay={onSelectCalendarDay} />
+      </div>
 
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
         <PerformanceBreakdowns trades={trades} />
       </div>
     </div>

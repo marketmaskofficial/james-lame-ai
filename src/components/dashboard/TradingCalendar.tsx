@@ -138,7 +138,7 @@ export function TradingCalendar({
                   key={key}
                   disabled={!hasTrades}
                   onClick={() => onSelectDay(key)}
-                  className={`flex h-16 flex-col items-start justify-between rounded-md border p-1 text-left text-[10px] transition sm:h-20 md:h-24 lg:h-28 ${toneClass} ${
+                  className={`flex h-14 flex-col items-start justify-between rounded-md border p-1 text-left text-[10px] transition sm:h-16 md:h-[70px] lg:h-20 ${toneClass} ${
                     hasTrades ? "cursor-pointer hover:opacity-80" : "cursor-default"
                   }`}
                 >
