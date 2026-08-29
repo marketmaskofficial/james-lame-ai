@@ -138,7 +138,7 @@ export function TradingCalendar({
                   key={key}
                   disabled={!hasTrades}
                   onClick={() => onSelectDay(key)}
-                  className={`flex aspect-square flex-col items-start justify-between rounded-md border p-1.5 text-left text-[10px] transition ${toneClass} ${
+                  className={`flex h-16 flex-col items-start justify-between rounded-md border p-1 text-left text-[10px] transition sm:h-20 md:h-24 lg:h-28 ${toneClass} ${
                     hasTrades ? "cursor-pointer hover:opacity-80" : "cursor-default"
                   }`}
                 >
@@ -146,7 +146,7 @@ export function TradingCalendar({
                   {hasTrades && (
                     <span className="w-full truncate font-semibold tabular-nums">
                       {bucket!.netPnl >= 0 ? "+" : "-"}$
-                      {Math.abs(bucket!.netPnl).toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                      {Math.abs(bucket!.netPnl).toLocaleString("en-US", { maximumFractionDigits: 2 })}
                     </span>
                   )}
                   {hasTrades && (

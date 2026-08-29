@@ -144,7 +144,7 @@ function ChartCard({ title, note, children }: { title: string; note?: string; ch
         <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{title}</div>
         {note && <div className="truncate text-[10px] text-muted-foreground">{note}</div>}
       </div>
-      <div className="mt-2 h-40">{children}</div>
+      <div className="mt-2 h-32">{children}</div>
     </div>
   );
 }
@@ -153,7 +153,7 @@ function EmptyChartNote({ label }: { label: string }) {
   return (
     <div className="rounded-md border border-border bg-card p-3">
       <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
-      <div className="flex h-40 items-center justify-center text-xs text-muted-foreground">Not enough data yet</div>
+      <div className="flex h-32 items-center justify-center text-xs text-muted-foreground">Not enough data yet</div>
     </div>
   );
 }

@@ -19,14 +19,14 @@ import {
  * here computes P&L or win rate itself.
  */
 
-const money = (n: number) => `${n < 0 ? "-" : "+"}$${Math.abs(n).toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+const money = (n: number) => `${n < 0 ? "-" : "+"}$${Math.abs(n).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
 
 function SectionCard({ title, note, children }: { title: string; note?: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-md border border-border bg-card p-3">
+    <div className="rounded-md border border-border bg-card p-2.5">
       <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{title}</div>
       {note && <div className="mt-1 text-[10px] leading-snug text-muted-foreground">{note}</div>}
-      <div className="mt-2">{children}</div>
+      <div className="mt-1.5">{children}</div>
     </div>
   );
 }
@@ -45,7 +45,7 @@ function StatRow({ label, group }: { label: string; group: GroupSummary }) {
           ? "text-red-400"
           : "text-foreground";
   return (
-    <div className="flex items-center justify-between gap-2 border-b border-border/60 py-1.5 text-xs last:border-b-0">
+    <div className="flex items-center justify-between gap-2 border-b border-border/60 py-1 text-xs last:border-b-0">
       <span className="min-w-0 truncate font-medium">{label}</span>
       <div className="flex shrink-0 items-center gap-2.5 tabular-nums sm:gap-3">
         {group.isLowSample && (
@@ -63,7 +63,7 @@ function HourBars({ hours }: { hours: HourOfDayPerformance[] }) {
   const maxAbs = Math.max(1, ...hours.map((h) => Math.abs(h.netPnl)));
   return (
     <div>
-      <div className="flex h-20 items-end gap-0.5">
+      <div className="flex h-14 items-end gap-0.5">
         {hours.map((h) => {
           const heightPct = h.tradeCount === 0 ? 4 : Math.max(6, (Math.abs(h.netPnl) / maxAbs) * 100);
           const toneClass =
@@ -101,6 +101,10 @@ export function PerformanceBreakdowns({ trades }: { trades: ClosedTrade[] }) {
   const hours = useMemo(() => byHourOfDay(trades), [trades]);
   const sessions = useMemo(() => bySession(trades), [trades]);
 
+  // Ordered (and the parent grid kept to a max of 2 columns, see
+  // dashboard.tsx) so no section is ever left alone in a row with empty
+  // cells beside it: Symbol+Direction pair, Day of Week+Session pair, then
+  // Hour of Day spans the full width last.
   return (
     <>
       <SectionCard title="Performance by Symbol">
@@ -119,12 +123,6 @@ export function PerformanceBreakdowns({ trades }: { trades: ClosedTrade[] }) {
         ))}
       </SectionCard>
 
-      <div className="md:col-span-2 xl:col-span-3">
-        <SectionCard title="Hour of Day (UTC)">
-          <HourBars hours={hours} />
-        </SectionCard>
-      </div>
-
       <SectionCard
         title="Approximate Trading Session"
         note="Approximate sessions based on fixed UTC windows. DST and market-specific hours may shift actual session boundaries."
@@ -133,6 +131,12 @@ export function PerformanceBreakdowns({ trades }: { trades: ClosedTrade[] }) {
           <StatRow key={s.session} label={s.label} group={s} />
         ))}
       </SectionCard>
+
+      <div className="md:col-span-2">
+        <SectionCard title="Hour of Day (UTC)">
+          <HourBars hours={hours} />
+        </SectionCard>
+      </div>
     </>
   );
 }

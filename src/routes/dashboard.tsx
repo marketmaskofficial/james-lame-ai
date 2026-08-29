@@ -349,7 +349,7 @@ function DashboardBody({
           header's date-range filter above has zero trades in range. */}
       <TradingCalendar accountId={accountId} symbol={symbol} fetchMonth={fetchCalendarMonth} onSelectDay={onSelectCalendarDay} />
 
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
         <PerformanceBreakdowns trades={trades} />
       </div>
     </div>
