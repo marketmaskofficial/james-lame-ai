@@ -1,5 +1,5 @@
 import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { AlertTriangle, ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
@@ -13,7 +13,7 @@ import { listClosedTradesPage, MAX_FETCH_ROWS } from "@/lib/trades.functions";
 import { classifyTrade, netPnlForTrade, SESSION_LABELS, type ClosedTrade, type TradeClassification } from "@/lib/dashboard/metrics";
 import { summarizeTrades, tradeDurationMs, formatDuration, type Direction, type Outcome, type SessionFilter, type SortDir, type SortKey } from "@/lib/dashboard/tradeExplorer";
 import { EnvBadge } from "@/components/studio/AccountBar";
-import { TradeDetailDrawer } from "@/components/trades/TradeDetailDrawer";
+import { TradeDetailDrawer, type TradeDetailDrawerHandle } from "@/components/trades/TradeDetailDrawer";
 
 /**
  * Phase 4D — Trade Explorer (`/trades`). Gated exactly like Studio/
@@ -202,6 +202,17 @@ function TradesWorkspace() {
   useEffect(() => setSymbolInput(symbol), [symbol]);
 
   const [selectedTrade, setSelectedTrade] = useState<ClosedTrade | null>(null);
+  const drawerRef = useRef<TradeDetailDrawerHandle>(null);
+
+  /** The single gate every row/card click goes through — the drawer itself
+   * decides whether it's safe to switch (no unsaved journal edits) or
+   * whether to show the discard-confirmation dialog first. `selectedTrade`
+   * only ever changes once the drawer has said it's safe to, so the parent
+   * and the drawer can never disagree about which trade is showing. */
+  function handleSelectTrade(next: ClosedTrade) {
+    if (drawerRef.current) drawerRef.current.confirmDiscardThen(() => setSelectedTrade(next));
+    else setSelectedTrade(next);
+  }
 
   const listAccountsFn = useServerFn(listDashboardAccounts);
   const listTradesPageFn = useServerFn(listClosedTradesPage);
@@ -397,7 +408,7 @@ function TradesWorkspace() {
             sortKey={sortKey}
             sortDir={sortDir}
             onSort={handleSort}
-            onSelectTrade={setSelectedTrade}
+            onSelectTrade={handleSelectTrade}
             isRefetching={isRefetching}
             pagination={tradesQuery.data}
             page={page}
@@ -408,7 +419,12 @@ function TradesWorkspace() {
         </div>
       </div>
 
-      <TradeDetailDrawer trade={selectedTrade} accountLabel={activeAccount?.label ?? null} onOpenChange={(open) => !open && setSelectedTrade(null)} />
+      <TradeDetailDrawer
+        ref={drawerRef}
+        trade={selectedTrade}
+        accountLabel={activeAccount?.label ?? null}
+        onOpenChange={(open) => !open && setSelectedTrade(null)}
+      />
     </div>
   );
 }
