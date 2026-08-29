@@ -63,6 +63,27 @@ export function filterBySession(trades: ClosedTrade[], session: SessionFilter): 
   return trades.filter((t) => tradeSession(t) === session);
 }
 
+/** Phase 4E-2 — "journaled"/"not journaled" filter. `journaledIds` is the
+ * one batched lookup `listClosedTradesPage` performs (never N+1) over the
+ * already-fetched trade set; this function is pure and just consults it. */
+export type JournalFilter = "all" | "journaled" | "notJournaled";
+
+export function filterByJournalStatus(trades: ClosedTrade[], filter: JournalFilter, journaledIds: ReadonlySet<string>): ClosedTrade[] {
+  if (filter === "all") return trades;
+  const wantJournaled = filter === "journaled";
+  return trades.filter((t) => journaledIds.has(t.positionId) === wantJournaled);
+}
+
+export type TradeExplorerRow = ClosedTrade & { hasJournal: boolean };
+
+/** Tags each row with whether it has a journal entry — applied only to the
+ * final, already-paginated page of rows (the journal indicator only needs
+ * to know about currently-displayed positions), not the whole filtered
+ * set. */
+export function tagJournalStatus(trades: ClosedTrade[], journaledIds: ReadonlySet<string>): TradeExplorerRow[] {
+  return trades.map((t) => ({ ...t, hasJournal: journaledIds.has(t.positionId) }));
+}
+
 /** Trade duration in whole milliseconds (`closedAt - openedAt`). Clamped at
  * 0 defensively — a real closed position's `closedAt` is always at or after
  * its `openedAt`, but this never displays a nonsensical negative duration
@@ -148,18 +169,27 @@ export type TradeExplorerQuery = ClosedTradeFilter & {
   direction: Direction;
   outcome: Outcome;
   session: SessionFilter;
+  /** Optional/defaulted to "all" so every pre-Phase-4E-2 call site (and
+   * this file's own existing tests) that doesn't pass it keeps behaving
+   * exactly as before. */
+  journalFilter?: JournalFilter;
   sortKey: SortKey;
   sortDir: SortDir;
   page: number;
   pageSize: number;
 };
 
+export type PaginatedTradeRows = Omit<PaginatedTrades, "rows"> & { rows: TradeExplorerRow[] };
+
 /**
  * The one entry point `listClosedTradesPage` (and this file's own tests)
  * use to go from a raw `ClosedTrade[]` all the way to a final page:
  * account/symbol/date (via `metrics.ts`'s own `filterClosedTrades` — not a
  * second implementation of those filters) → direction → outcome → session
- * → sort → paginate, in that fixed order, every time.
+ * → journal status → sort → paginate, in that fixed order, every time.
+ * Every returned row is tagged with `hasJournal` from the same
+ * `journaledIds` set used for the filter — one batched lookup serves both
+ * the filter and the Trade Explorer's journal indicator column, never N+1.
  *
  * The server function ALSO pushes account/date/symbol down to SQL for real
  * scale (see `trades.functions.ts`), so in production this step re-applies
@@ -169,13 +199,15 @@ export type TradeExplorerQuery = ClosedTradeFilter & {
  * every filter type is exercised by a single, fully pure, fully tested
  * code path with no live database required.
  */
-export function queryClosedTrades(trades: ClosedTrade[], query: TradeExplorerQuery): PaginatedTrades {
+export function queryClosedTrades(trades: ClosedTrade[], query: TradeExplorerQuery, journaledIds: ReadonlySet<string> = new Set()): PaginatedTradeRows {
   let result = filterClosedTrades(trades, query);
   result = filterByDirection(result, query.direction);
   result = filterByOutcome(result, query.outcome);
   result = filterBySession(result, query.session);
+  result = filterByJournalStatus(result, query.journalFilter ?? "all", journaledIds);
   result = sortTrades(result, query.sortKey, query.sortDir);
-  return paginate(result, query.page, query.pageSize);
+  const paginated = paginate(result, query.page, query.pageSize);
+  return { ...paginated, rows: tagJournalStatus(paginated.rows, journaledIds) };
 }
 
 export type ExplorerSummary = {
