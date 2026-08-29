@@ -361,7 +361,7 @@ function DashboardBody({
           already-loaded `trades`) + the Trading Calendar (~2/3, its own
           month-window query — see TradingCalendar.tsx's doc comment). */}
       <div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-[1fr_2fr]">
-        <RecentTrades trades={trades} avgWinningTrade={metrics.avgWinningTrade} avgLosingTrade={metrics.avgLosingTrade} />
+        <RecentTrades trades={trades} avgWinningTrade={metrics.avgWinningTrade} avgLosingTrade={metrics.avgLosingTrade} accountId={accountId} />
         <TradingCalendar accountId={accountId} symbol={symbol} fetchMonth={fetchCalendarMonth} onSelectDay={onSelectCalendarDay} />
       </div>
 

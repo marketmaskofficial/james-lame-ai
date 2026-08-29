@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import { classifyTrade, netPnlForTrade, type ClosedTrade } from "@/lib/dashboard/metrics";
 
 /**
@@ -41,10 +42,15 @@ export function RecentTrades({
   trades,
   avgWinningTrade,
   avgLosingTrade,
+  accountId,
 }: {
   trades: ClosedTrade[];
   avgWinningTrade: number | null;
   avgLosingTrade: number | null;
+  /** Passed through to the Trade Explorer link so "View All Trades" opens
+   * on the same account already selected here, instead of Trade Explorer
+   * defaulting back to the first account. */
+  accountId: string | null;
 }) {
   const recent = [...trades].sort((a, b) => b.closedAt.localeCompare(a.closedAt)).slice(0, RECENT_TRADES_LIMIT);
 
@@ -93,18 +99,15 @@ export function RecentTrades({
         )}
       </div>
 
-      {/* No real Trade Explorer route exists yet — a visually disabled,
-          accessible action rather than a fake destination or dead link. */}
+      {/* Phase 4D: a real destination now that /trades exists. */}
       <div className="mt-2 border-t border-border/60 pt-2">
-        <button
-          type="button"
-          disabled
-          aria-disabled="true"
-          title="Trade Explorer is not available yet"
-          className="w-full cursor-not-allowed rounded-md border border-border/60 py-1.5 text-center text-[10px] uppercase tracking-wide text-muted-foreground/50"
+        <Link
+          to="/trades"
+          search={accountId ? { accountId } : undefined}
+          className="block w-full rounded-md border border-border/60 py-1.5 text-center text-[10px] uppercase tracking-wide text-muted-foreground transition hover:border-border hover:text-foreground"
         >
           View All Trades
-        </button>
+        </Link>
       </div>
     </div>
   );

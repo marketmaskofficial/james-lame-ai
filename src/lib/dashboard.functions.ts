@@ -23,7 +23,10 @@ import type { ClosedTrade } from "@/lib/dashboard/metrics";
  * should depend on the OMS's write-capable admin client at all.
  */
 
-const SELECT =
+/** Exported so `src/lib/trades.functions.ts` (Phase 4D's Trade Explorer)
+ * can query the exact same `v_closed_trades` columns without redeclaring
+ * this list — one column set, one place it can drift out of sync. */
+export const CLOSED_TRADE_VIEW_SELECT =
   "position_id, user_id, account_id, symbol, side, qty, avg_entry, realized_pnl, opened_at, closed_at, commission, fill_count, exit_price";
 
 /**
@@ -128,6 +131,27 @@ export const listDashboardAccounts = createServerFn({ method: "GET" })
  * schema, confirmed by direct SQL Editor query — it's purely a matter of
  * this repo's generated types catching up).
  */
+/** Shared row→model mapping — exported so `trades.functions.ts` maps the
+ * exact same view row to the exact same `ClosedTrade` shape rather than
+ * re-implementing this conversion a second time. */
+export function mapClosedTradeViewRow(r: ClosedTradeViewRow): ClosedTrade {
+  return {
+    positionId: r.position_id,
+    userId: r.user_id,
+    accountId: r.account_id,
+    symbol: r.symbol,
+    side: r.side,
+    qty: Number(r.qty),
+    avgEntry: Number(r.avg_entry),
+    realizedPnl: Number(r.realized_pnl),
+    openedAt: r.opened_at,
+    closedAt: r.closed_at,
+    commission: Number(r.commission),
+    fillCount: Number(r.fill_count),
+    exitPrice: r.exit_price == null ? null : Number(r.exit_price),
+  };
+}
+
 export const listClosedTrades = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .inputValidator((i: unknown) =>
@@ -143,7 +167,7 @@ export const listClosedTrades = createServerFn({ method: "GET" })
   .handler(async ({ data, context }) => {
     let q = context.supabase
       .from("v_closed_trades" as never)
-      .select(SELECT)
+      .select(CLOSED_TRADE_VIEW_SELECT)
       .eq("account_id", data.accountId)
       .order("closed_at", { ascending: true });
     if (data.symbol) q = q.eq("symbol", data.symbol);
@@ -151,21 +175,5 @@ export const listClosedTrades = createServerFn({ method: "GET" })
     if (data.toUtc) q = q.lte("closed_at", data.toUtc);
     const { data: rows, error } = await q.returns<ClosedTradeViewRow[]>();
     if (error) throw new Error(error.message);
-    return (rows ?? []).map(
-      (r): ClosedTrade => ({
-        positionId: r.position_id,
-        userId: r.user_id,
-        accountId: r.account_id,
-        symbol: r.symbol,
-        side: r.side,
-        qty: Number(r.qty),
-        avgEntry: Number(r.avg_entry),
-        realizedPnl: Number(r.realized_pnl),
-        openedAt: r.opened_at,
-        closedAt: r.closed_at,
-        commission: Number(r.commission),
-        fillCount: Number(r.fill_count),
-        exitPrice: r.exit_price == null ? null : Number(r.exit_price),
-      }),
-    );
+    return (rows ?? []).map(mapClosedTradeViewRow);
   });

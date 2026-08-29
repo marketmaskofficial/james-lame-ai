@@ -16,6 +16,7 @@ import { Route as AuthRouteImport } from './routes/auth'
 import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as PricingRouteImport } from './routes/pricing'
 import { Route as StudioRouteImport } from './routes/studio'
+import { Route as TradesRouteImport } from './routes/trades'
 import { Route as ApiGenerateRouteImport } from './routes/api/generate'
 import { Route as ApiKlinesRouteImport } from './routes/api/klines'
 import { Route as CheckoutReturnRouteImport } from './routes/checkout.return'
@@ -56,6 +57,11 @@ const PricingRoute = PricingRouteImport.update({
 const StudioRoute = StudioRouteImport.update({
   id: '/studio',
   path: '/studio',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TradesRoute = TradesRouteImport.update({
+  id: '/trades',
+  path: '/trades',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiGenerateRoute = ApiGenerateRouteImport.update({
@@ -99,6 +105,7 @@ export interface FileRoutesByFullPath {
   '/dashboard': typeof DashboardRoute
   '/pricing': typeof PricingRoute
   '/studio': typeof StudioRoute
+  '/trades': typeof TradesRoute
   '/api/generate': typeof ApiGenerateRoute
   '/api/klines': typeof ApiKlinesRoute
   '/checkout/return': typeof CheckoutReturnRoute
@@ -114,6 +121,7 @@ export interface FileRoutesByTo {
   '/dashboard': typeof DashboardRoute
   '/pricing': typeof PricingRoute
   '/studio': typeof StudioRoute
+  '/trades': typeof TradesRoute
   '/api/generate': typeof ApiGenerateRoute
   '/api/klines': typeof ApiKlinesRoute
   '/checkout/return': typeof CheckoutReturnRoute
@@ -130,6 +138,7 @@ export interface FileRoutesById {
   '/dashboard': typeof DashboardRoute
   '/pricing': typeof PricingRoute
   '/studio': typeof StudioRoute
+  '/trades': typeof TradesRoute
   '/api/generate': typeof ApiGenerateRoute
   '/api/klines': typeof ApiKlinesRoute
   '/checkout/return': typeof CheckoutReturnRoute
@@ -147,6 +156,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/pricing'
     | '/studio'
+    | '/trades'
     | '/api/generate'
     | '/api/klines'
     | '/checkout/return'
@@ -162,6 +172,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/pricing'
     | '/studio'
+    | '/trades'
     | '/api/generate'
     | '/api/klines'
     | '/checkout/return'
@@ -177,6 +188,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/pricing'
     | '/studio'
+    | '/trades'
     | '/api/generate'
     | '/api/klines'
     | '/checkout/return'
@@ -193,6 +205,7 @@ export interface RootRouteChildren {
   DashboardRoute: typeof DashboardRoute
   PricingRoute: typeof PricingRoute
   StudioRoute: typeof StudioRoute
+  TradesRoute: typeof TradesRoute
   ApiGenerateRoute: typeof ApiGenerateRoute
   ApiKlinesRoute: typeof ApiKlinesRoute
   CheckoutReturnRoute: typeof CheckoutReturnRoute
@@ -252,6 +265,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof StudioRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/trades': {
+      id: '/trades'
+      path: '/trades'
+      fullPath: '/trades'
+      preLoaderRoute: typeof TradesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/generate': {
       id: '/api/generate'
       path: '/api/generate'
@@ -305,6 +325,7 @@ const rootRouteChildren: RootRouteChildren = {
   DashboardRoute: DashboardRoute,
   PricingRoute: PricingRoute,
   StudioRoute: StudioRoute,
+  TradesRoute: TradesRoute,
   ApiGenerateRoute: ApiGenerateRoute,
   ApiKlinesRoute: ApiKlinesRoute,
   CheckoutReturnRoute: CheckoutReturnRoute,
