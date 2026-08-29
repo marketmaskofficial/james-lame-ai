@@ -63,7 +63,7 @@ function HourBars({ hours }: { hours: HourOfDayPerformance[] }) {
   const maxAbs = Math.max(1, ...hours.map((h) => Math.abs(h.netPnl)));
   return (
     <div>
-      <div className="flex h-14 items-end gap-0.5">
+      <div className="flex h-24 items-end gap-0.5">
         {hours.map((h) => {
           const heightPct = h.tradeCount === 0 ? 4 : Math.max(6, (Math.abs(h.netPnl) / maxAbs) * 100);
           const toneClass =

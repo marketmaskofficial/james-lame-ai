@@ -10,7 +10,7 @@ import type { PerformanceScoreResult } from "@/lib/dashboard/performanceScore";
  * nothing here recomputes or estimates anything.
  */
 
-const RING_SIZE = 148;
+const RING_SIZE = 124;
 const RING_STROKE = 10;
 const RING_RADIUS = (RING_SIZE - RING_STROKE) / 2;
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
