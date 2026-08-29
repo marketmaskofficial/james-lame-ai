@@ -27,6 +27,13 @@ import {
   dailyPnlSeries,
   derivedBalanceSeries,
   computeDrawdown,
+  calendarDayBuckets,
+  bySymbol,
+  byDirection,
+  byDayOfWeek,
+  byHourOfDay,
+  bySession,
+  sessionForUtcHour,
 } from "../../src/lib/dashboard/metrics.ts";
 
 let pass = 0;
@@ -313,6 +320,202 @@ function trade(overrides) {
   const acctAOnly = filterClosedTrades(closedTrades, { accountId: "acct-A" });
   eq("filtering the derived set by accountId isolates acct-A from acct-B", acctAOnly.map((t) => t.positionId), ["p1", "p2"]);
   ok("acct-A's filtered set never includes acct-B's P&L", !acctAOnly.some((t) => t.realizedPnl === 999));
+}
+
+// ==== Phase 4B-1: Trading Calendar + Performance Breakdowns ================
+
+// ---- calendarDayBuckets: commission-adjusted, per-UTC-day aggregation -----
+{
+  const trades = [
+    trade({ positionId: "p1", realizedPnl: 100, commission: 20, closedAt: "2026-03-05T08:00:00.000Z" }), // net 80, win
+    trade({ positionId: "p2", realizedPnl: -30, commission: 5, closedAt: "2026-03-05T18:00:00.000Z" }), // net -35, loss
+    trade({ positionId: "p3", realizedPnl: 10, commission: 0, closedAt: "2026-03-06T09:00:00.000Z" }), // net 10, win
+  ];
+  const buckets = calendarDayBuckets(trades);
+  eq("calendarDayBuckets produces one bucket per UTC day with trades, sorted ascending", buckets.map((b) => b.day), [
+    "2026-03-05",
+    "2026-03-06",
+  ]);
+  const day1 = buckets[0];
+  close("calendarDayBuckets net P&L is commission-adjusted, matching netPnlForTrade", day1.netPnl, 80 - 35);
+  eq("calendarDayBuckets trade count per day", day1.tradeCount, 2);
+  eq("calendarDayBuckets wins/losses per day", [day1.wins, day1.losses], [1, 1]);
+  eq("calendarDayBuckets([]) is empty", calendarDayBuckets([]), []);
+}
+{
+  // One breakeven-only day must still appear (isLowSample true, winRatePct not applicable here since
+  // calendarDayBuckets doesn't expose winRatePct as its own concern beyond GroupSummary — but wins/losses must both be 0).
+  const trades = [trade({ positionId: "p1", realizedPnl: 5, commission: 5, closedAt: "2026-04-01T00:00:00.000Z" })];
+  const [bucket] = calendarDayBuckets(trades);
+  eq("calendarDayBuckets: a lone breakeven trade counts as neither a win nor a loss", [bucket.wins, bucket.losses], [0, 0]);
+  close("calendarDayBuckets: breakeven day net P&L is exactly zero", bucket.netPnl, 0);
+}
+
+// ---- bySymbol: grouping, sorted by net P&L descending ----------------------
+{
+  const trades = [
+    trade({ positionId: "p1", symbol: "ESZ6", realizedPnl: 50, commission: 0 }),
+    trade({ positionId: "p2", symbol: "NQZ6", realizedPnl: 200, commission: 0 }),
+    trade({ positionId: "p3", symbol: "ESZ6", realizedPnl: -10, commission: 0 }),
+  ];
+  const bySym = bySymbol(trades);
+  eq("bySymbol sorts by net P&L descending", bySym.map((s) => s.symbol), ["NQZ6", "ESZ6"]);
+  const es = bySym.find((s) => s.symbol === "ESZ6");
+  close("bySymbol aggregates net P&L across every trade for that symbol", es.netPnl, 40);
+  eq("bySymbol trade count", es.tradeCount, 2);
+  ok("bySymbol: a 2-trade group is flagged low sample (< 5 trades)", es.isLowSample === true);
+  eq("bySymbol([]) is empty", bySymbol([]), []);
+}
+
+// ---- byDirection: read directly from `side`, never inferred from P&L ------
+{
+  const trades = [
+    trade({ positionId: "p1", side: "buy", realizedPnl: 100, commission: 0 }), // long, win
+    trade({ positionId: "p2", side: "buy", realizedPnl: -20, commission: 0 }), // long, loss
+    trade({ positionId: "p3", side: "sell", realizedPnl: -999, commission: 0 }), // short, loss (would look like a "long win" if P&L-inferred)
+  ];
+  const dirs = byDirection(trades);
+  eq("byDirection always returns both Long and Short, in that order", dirs.map((d) => d.direction), ["long", "short"]);
+  const long = dirs.find((d) => d.direction === "long");
+  const short = dirs.find((d) => d.direction === "short");
+  eq("byDirection: long group is built from side='buy' trades only", long.tradeCount, 2);
+  close("byDirection: long net P&L", long.netPnl, 80);
+  eq("byDirection: short group is built from side='sell' trades only, not misclassified by its P&L sign", short.tradeCount, 1);
+  close("byDirection: short net P&L", short.netPnl, -999);
+  eq("byDirection with zero trades still returns both sides at zero, not omitted", byDirection([]).map((d) => d.tradeCount), [0, 0]);
+}
+
+// ---- byDayOfWeek: fixed Monday..Sunday order, zero-trade days included -----
+{
+  // 2026-03-02 is a Monday (UTC); 2026-03-04 is a Wednesday (UTC).
+  const trades = [
+    trade({ positionId: "p1", realizedPnl: 50, commission: 0, closedAt: "2026-03-02T12:00:00.000Z" }),
+    trade({ positionId: "p2", realizedPnl: -10, commission: 0, closedAt: "2026-03-04T12:00:00.000Z" }),
+  ];
+  const days = byDayOfWeek(trades);
+  eq("byDayOfWeek always returns exactly 7 entries in Monday..Sunday order", days.map((d) => d.label), [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+  ]);
+  const monday = days.find((d) => d.label === "Monday");
+  const wednesday = days.find((d) => d.label === "Wednesday");
+  const tuesday = days.find((d) => d.label === "Tuesday");
+  close("byDayOfWeek: Monday net P&L from the UTC-Monday trade", monday.netPnl, 50);
+  close("byDayOfWeek: Wednesday net P&L from the UTC-Wednesday trade", wednesday.netPnl, -10);
+  eq("byDayOfWeek: a day with zero trades stays in the list (neutral, not removed)", tuesday.tradeCount, 0);
+  ok("byDayOfWeek: zero-trade day is not flagged low sample", tuesday.isLowSample === false);
+}
+
+// ---- byHourOfDay: all 24 UTC hours always present --------------------------
+{
+  const trades = [
+    trade({ positionId: "p1", realizedPnl: 40, commission: 0, closedAt: "2026-01-01T09:15:00.000Z" }), // hour 9
+    trade({ positionId: "p2", realizedPnl: -5, commission: 0, closedAt: "2026-01-01T09:45:00.000Z" }), // also hour 9
+  ];
+  const hours = byHourOfDay(trades);
+  eq("byHourOfDay always returns all 24 UTC hours", hours.length, 24);
+  eq("byHourOfDay hours are 0..23 in order", hours.map((h) => h.hourUtc), Array.from({ length: 24 }, (_, i) => i));
+  const hour9 = hours.find((h) => h.hourUtc === 9);
+  close("byHourOfDay: both trades in the same UTC hour are aggregated together", hour9.netPnl, 35);
+  eq("byHourOfDay: an inactive hour has zero trades, not omitted", hours.find((h) => h.hourUtc === 0).tradeCount, 0);
+}
+
+// ---- sessionForUtcHour: mutually-exclusive fixed UTC boundaries ------------
+{
+  eq("00:00 UTC (midnight) -> Asia", sessionForUtcHour(0), "asia");
+  eq("06:59 UTC (hour 6) -> Asia", sessionForUtcHour(6), "asia");
+  eq("07:00 UTC (hour 7) -> London", sessionForUtcHour(7), "london");
+  eq("11:59 UTC (hour 11) -> London", sessionForUtcHour(11), "london");
+  eq("12:00 UTC (hour 12) -> London/New York Overlap", sessionForUtcHour(12), "overlap");
+  eq("15:59 UTC (hour 15) -> London/New York Overlap", sessionForUtcHour(15), "overlap");
+  eq("16:00 UTC (hour 16) -> New York", sessionForUtcHour(16), "newYork");
+  eq("20:59 UTC (hour 20) -> New York", sessionForUtcHour(20), "newYork");
+  eq("21:00 UTC (hour 21) -> Off Hours", sessionForUtcHour(21), "offHours");
+  eq("23:00 UTC (hour 23) -> Off Hours", sessionForUtcHour(23), "offHours");
+  // Every hour of the day must map to exactly one of the five sessions (no gaps, no overlap).
+  const allSessions = new Set(Array.from({ length: 24 }, (_, h) => sessionForUtcHour(h)));
+  eq("sessionForUtcHour covers exactly the 5 defined sessions across all 24 hours", [...allSessions].sort(), [
+    "asia",
+    "london",
+    "newYork",
+    "offHours",
+    "overlap",
+  ]);
+}
+
+// ---- bySession: classification uses closedAt, never journal_entries.session
+{
+  const trades = [
+    trade({ positionId: "p1", realizedPnl: 20, commission: 0, closedAt: "2026-01-01T00:30:00.000Z" }), // asia
+    trade({ positionId: "p2", realizedPnl: 30, commission: 0, closedAt: "2026-01-01T08:00:00.000Z" }), // london
+    trade({ positionId: "p3", realizedPnl: -10, commission: 0, closedAt: "2026-01-01T13:00:00.000Z" }), // overlap
+    trade({ positionId: "p4", realizedPnl: 40, commission: 0, closedAt: "2026-01-01T17:00:00.000Z" }), // new york
+    trade({ positionId: "p5", realizedPnl: -5, commission: 0, closedAt: "2026-01-01T22:00:00.000Z" }), // off hours
+  ];
+  const sessions = bySession(trades);
+  eq("bySession always returns all 5 sessions in a fixed order", sessions.map((s) => s.session), [
+    "asia",
+    "london",
+    "overlap",
+    "newYork",
+    "offHours",
+  ]);
+  eq("bySession: total trades across all sessions equals the input, never double-counted", sessions.reduce((s, x) => s + x.tradeCount, 0), 5);
+  close("bySession: Asia bucket net P&L", sessions.find((s) => s.session === "asia").netPnl, 20);
+  close("bySession: New York bucket net P&L", sessions.find((s) => s.session === "newYork").netPnl, 40);
+  eq("bySession([]) still returns all 5 sessions at zero trades, not omitted", bySession([]).map((s) => s.tradeCount), [0, 0, 0, 0, 0]);
+}
+
+// ---- low-sample flag: consistent across every breakdown, never fabricated -
+{
+  const fourTrades = Array.from({ length: 4 }, (_, i) => trade({ positionId: `p${i}`, symbol: "ESZ6", realizedPnl: 10 }));
+  const fiveTrades = Array.from({ length: 5 }, (_, i) => trade({ positionId: `p${i}`, symbol: "NQZ6", realizedPnl: 10 }));
+  const combined = bySymbol([...fourTrades, ...fiveTrades]);
+  ok("bySymbol: exactly 4 trades is flagged low sample", combined.find((s) => s.symbol === "ESZ6").isLowSample === true);
+  ok("bySymbol: exactly 5 trades is NOT flagged low sample", combined.find((s) => s.symbol === "NQZ6").isLowSample === false);
+  ok(
+    "bySymbol: the actual statistics are still present for a low-sample group, never hidden",
+    combined.find((s) => s.symbol === "ESZ6").netPnl === 40,
+  );
+}
+
+// ---- one-trade and empty-input sanity across every new breakdown ----------
+{
+  const one = [trade({ positionId: "p1", realizedPnl: 15, commission: 5, closedAt: "2026-05-04T10:00:00.000Z" })]; // Monday, hour 10, London session
+  eq("calendarDayBuckets with one trade", calendarDayBuckets(one).length, 1);
+  eq("bySymbol with one trade", bySymbol(one).length, 1);
+  eq("byDirection with one trade still returns both sides", byDirection(one).length, 2);
+  eq("byDayOfWeek with one trade still returns all 7 days", byDayOfWeek(one).length, 7);
+  eq("byHourOfDay with one trade still returns all 24 hours", byHourOfDay(one).length, 24);
+  eq("bySession with one trade still returns all 5 sessions", bySession(one).length, 5);
+
+  eq("calendarDayBuckets([]) length", calendarDayBuckets([]).length, 0);
+  eq("bySymbol([]) length", bySymbol([]).length, 0);
+  eq("byDirection([]) length (both sides still present)", byDirection([]).length, 2);
+  eq("byDayOfWeek([]) length (all 7 days still present)", byDayOfWeek([]).length, 7);
+  eq("byHourOfDay([]) length (all 24 hours still present)", byHourOfDay([]).length, 24);
+  eq("bySession([]) length (all 5 sessions still present)", bySession([]).length, 5);
+}
+
+// ---- multi-symbol account-isolation continues to hold through breakdowns --
+{
+  // Same account-isolation guarantee as the existing deriveClosedTrades test, exercised
+  // through the new grouping functions: filtering by account BEFORE grouping must never
+  // let another account's trades leak into a symbol/session/day bucket.
+  const positions = [
+    { id: "p1", userId: "u1", accountId: "acct-A", symbol: "ESZ6", side: "buy", qty: 0, avgEntry: 100, realizedPnl: 10, status: "closed", openedAt: "t0", closedAt: "2026-01-01T08:00:00.000Z" },
+    { id: "p2", userId: "u1", accountId: "acct-B", symbol: "ESZ6", side: "buy", qty: 0, avgEntry: 100, realizedPnl: 999, status: "closed", openedAt: "t0", closedAt: "2026-01-01T08:30:00.000Z" },
+  ];
+  const closedTrades = deriveClosedTrades(positions, []);
+  const acctAOnly = filterClosedTrades(closedTrades, { accountId: "acct-A" });
+  const sym = bySymbol(acctAOnly);
+  eq("account isolation holds when grouping by symbol after filtering", sym.length, 1);
+  close("account isolation: acct-B's P&L never leaks into acct-A's symbol group", sym[0].netPnl, 10);
 }
 
 // ---- summary ----------------------------------------------------------------

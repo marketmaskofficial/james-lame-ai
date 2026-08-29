@@ -343,3 +343,202 @@ export function computeDrawdown(balanceSeries: BalancePoint[]): DrawdownResult {
     currentDrawdownPct: last.drawdownPct,
   };
 }
+
+/**
+ * Phase 4B-1: Trading Calendar + Performance Breakdowns.
+ *
+ * Every function below is a pure grouping over `ClosedTrade[]`, built on the
+ * exact same `netPnlForTrade`/`classifyTrade`/`utcDayKey` primitives Phase 4A
+ * already established — no second P&L or win/loss definition is introduced
+ * here. `summarizeGroup` is the one shared aggregation used by every
+ * breakdown so "net P&L", "win rate", etc. can never drift between them.
+ */
+
+export type GroupSummary = {
+  netPnl: number;
+  tradeCount: number;
+  wins: number;
+  losses: number;
+  /** wins / (wins + losses) × 100, breakeven excluded — same convention as
+   * `computeDashboardMetrics`. `null` when there are no decisive trades. */
+  winRatePct: number | null;
+  avgNetTrade: number;
+  /** Fewer than 5 trades — see the Phase 4B-1 audit's "low-sample safety"
+   * requirement. Never hides or fabricates data, only flags it. Always
+   * `false` for an empty (zero-trade) group — "no trades" is a distinct
+   * state from "too few trades to trust". */
+  isLowSample: boolean;
+};
+
+function summarizeGroup(trades: ClosedTrade[]): GroupSummary {
+  const tradeCount = trades.length;
+  if (tradeCount === 0) {
+    return { netPnl: 0, tradeCount: 0, wins: 0, losses: 0, winRatePct: null, avgNetTrade: 0, isLowSample: false };
+  }
+  let netPnl = 0;
+  let wins = 0;
+  let losses = 0;
+  for (const t of trades) {
+    const net = netPnlForTrade(t);
+    netPnl += net;
+    const cls = classifyTrade(t);
+    if (cls === "win") wins++;
+    else if (cls === "loss") losses++;
+  }
+  const decisive = wins + losses;
+  return {
+    netPnl,
+    tradeCount,
+    wins,
+    losses,
+    winRatePct: decisive > 0 ? (wins / decisive) * 100 : null,
+    avgNetTrade: netPnl / tradeCount,
+    isLowSample: tradeCount < 5,
+  };
+}
+
+export type CalendarDayBucket = GroupSummary & { day: string };
+
+/** One bucket per UTC calendar day that has at least one closed trade,
+ * sorted ascending. Days with zero trades are simply absent — the calendar
+ * UI fills the rest of the month grid itself. Reuses `utcDayKey`, the same
+ * UTC day boundary `dailyPnlSeries`/`dayWinRate` already use. */
+export function calendarDayBuckets(trades: ClosedTrade[]): CalendarDayBucket[] {
+  const byDay = new Map<string, ClosedTrade[]>();
+  for (const t of trades) {
+    const key = utcDayKey(t.closedAt);
+    const list = byDay.get(key);
+    if (list) list.push(t);
+    else byDay.set(key, [t]);
+  }
+  return [...byDay.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([day, list]) => ({ day, ...summarizeGroup(list) }));
+}
+
+export type SymbolPerformance = GroupSummary & { symbol: string };
+
+/** Sorted by net P&L descending — best-performing symbol first. */
+export function bySymbol(trades: ClosedTrade[]): SymbolPerformance[] {
+  const bySym = new Map<string, ClosedTrade[]>();
+  for (const t of trades) {
+    const list = bySym.get(t.symbol);
+    if (list) list.push(t);
+    else bySym.set(t.symbol, [t]);
+  }
+  return [...bySym.entries()]
+    .map(([symbol, list]) => ({ symbol, ...summarizeGroup(list) }))
+    .sort((a, b) => b.netPnl - a.netPnl);
+}
+
+export type TradeDirection = "long" | "short";
+export type DirectionPerformance = GroupSummary & { direction: TradeDirection };
+
+/** Long = `side === "buy"`, Short = `side === "sell"` — read directly off
+ * the OMS's own side field, never inferred from whether the trade won or
+ * lost. Always returns both entries, even at zero trades, so the UI has a
+ * stable Long/Short layout regardless of data. */
+export function byDirection(trades: ClosedTrade[]): DirectionPerformance[] {
+  const longs = trades.filter((t) => t.side === "buy");
+  const shorts = trades.filter((t) => t.side === "sell");
+  return [
+    { direction: "long", ...summarizeGroup(longs) },
+    { direction: "short", ...summarizeGroup(shorts) },
+  ];
+}
+
+export type DayOfWeekPerformance = GroupSummary & { dayOfWeek: number; label: string };
+
+const DOW_LABELS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+/** `Date#getUTCDay()` values (0=Sunday..6=Saturday) reordered to Monday-first
+ * to match `DOW_LABELS`. */
+const DOW_ORDER = [1, 2, 3, 4, 5, 6, 0];
+
+/** Monday through Sunday, UTC — always 7 entries in that fixed order, even
+ * for days with zero trades, so the calendar-day ordering never reshuffles
+ * based on which days happen to have data. */
+export function byDayOfWeek(trades: ClosedTrade[]): DayOfWeekPerformance[] {
+  const buckets = new Map<number, ClosedTrade[]>();
+  for (const t of trades) {
+    const dow = new Date(t.closedAt).getUTCDay();
+    const list = buckets.get(dow);
+    if (list) list.push(t);
+    else buckets.set(dow, [t]);
+  }
+  return DOW_ORDER.map((dow, i) => ({
+    dayOfWeek: dow,
+    label: DOW_LABELS[i],
+    ...summarizeGroup(buckets.get(dow) ?? []),
+  }));
+}
+
+export type HourOfDayPerformance = GroupSummary & { hourUtc: number };
+
+/** All 24 UTC hours (0-23), always present so a 24-bar visualization stays
+ * continuous — hours with no closed trades simply show a zero/empty bucket.
+ * Explicitly UTC; there is no per-account trading timezone in this schema
+ * (see the Phase 4B audit), so this must never be presented as the viewer's
+ * local time. */
+export function byHourOfDay(trades: ClosedTrade[]): HourOfDayPerformance[] {
+  const buckets = new Map<number, ClosedTrade[]>();
+  for (const t of trades) {
+    const hour = new Date(t.closedAt).getUTCHours();
+    const list = buckets.get(hour);
+    if (list) list.push(t);
+    else buckets.set(hour, [t]);
+  }
+  return Array.from({ length: 24 }, (_, hourUtc) => ({
+    hourUtc,
+    ...summarizeGroup(buckets.get(hourUtc) ?? []),
+  }));
+}
+
+export type TradingSession = "asia" | "london" | "overlap" | "newYork" | "offHours";
+export type SessionPerformance = GroupSummary & { session: TradingSession; label: string };
+
+export const SESSION_LABELS: Record<TradingSession, string> = {
+  asia: "Asia",
+  london: "London",
+  overlap: "London / New York Overlap",
+  newYork: "New York",
+  offHours: "Off Hours",
+};
+
+const SESSION_ORDER: TradingSession[] = ["asia", "london", "overlap", "newYork", "offHours"];
+
+/**
+ * Fixed, mutually-exclusive UTC-hour session windows — Asia 00:00–06:59,
+ * London 07:00–11:59, London/New York Overlap 12:00–15:59, New York
+ * 16:00–20:59, Off Hours 21:00–23:59. This schema has no authoritative
+ * per-account/per-exchange timezone (confirmed by the Phase 4B audit), so
+ * these boundaries are a deliberate, disclosed APPROXIMATION — real session
+ * hours shift with US/UK daylight-saving transitions, which this function
+ * does not account for. Every trade falls into exactly one bucket; buckets
+ * never overlap.
+ */
+export function sessionForUtcHour(hourUtc: number): TradingSession {
+  if (hourUtc <= 6) return "asia";
+  if (hourUtc <= 11) return "london";
+  if (hourUtc <= 15) return "overlap";
+  if (hourUtc <= 20) return "newYork";
+  return "offHours";
+}
+
+/** Classified by `closedAt`'s UTC hour — deliberately not sourced from the
+ * optional, sparsely-populated free-text `journal_entries.session` field
+ * (see the Phase 4B audit: most closed trades have no linked journal entry
+ * at all, so building this on top of it would silently under-report). */
+export function bySession(trades: ClosedTrade[]): SessionPerformance[] {
+  const buckets = new Map<TradingSession, ClosedTrade[]>();
+  for (const t of trades) {
+    const session = sessionForUtcHour(new Date(t.closedAt).getUTCHours());
+    const list = buckets.get(session);
+    if (list) list.push(t);
+    else buckets.set(session, [t]);
+  }
+  return SESSION_ORDER.map((session) => ({
+    session,
+    label: SESSION_LABELS[session],
+    ...summarizeGroup(buckets.get(session) ?? []),
+  }));
+}

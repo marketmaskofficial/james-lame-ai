@@ -11,12 +11,16 @@ import type { ClosedTrade } from "@/lib/dashboard/metrics";
  * writes to any OMS table. Dashboard is read-only with respect to trading
  * execution.
  *
- * The account list itself is NOT duplicated here — `listTradingAccounts`
- * (`src/lib/trading.functions.ts`) already returns every field the
- * dashboard's account selector needs (label, environment, starting_balance,
- * balance, realized_pnl), and it's the exact same list Chart Studio's own
- * `AccountBar` renders, so the two surfaces can never disagree about which
- * accounts exist.
+ * The account list (`listDashboardAccounts` below) is deliberately its own
+ * RLS-scoped query rather than a reuse of `listTradingAccounts`
+ * (`src/lib/trading.functions.ts`) — that function lazily imports the OMS
+ * and reads through `supabaseAdmin` (service-role), which requires
+ * `SUPABASE_SERVICE_ROLE_KEY`. That env var isn't guaranteed to be exposed
+ * to every hosted environment this read-only Dashboard runs in (confirmed:
+ * a real deploy had the database fully connected but not that key), while
+ * `trading_accounts` already has a `SELECT`-only RLS policy that covers
+ * exactly what the Dashboard needs — so there's no reason this read path
+ * should depend on the OMS's write-capable admin client at all.
  */
 
 const SELECT =
@@ -54,6 +58,58 @@ export type ClosedTradeViewRow = {
   fill_count: number | string;
   exit_price: number | string | null;
 };
+
+/** Fields the Dashboard's account selector/balance derivation actually
+ * needs — a deliberate narrow projection of `trading_accounts`, not the
+ * OMS's full internal `TradingAccount` shape (which also carries broker
+ * connection/order-routing fields no Dashboard read path should touch). */
+export type DashboardAccount = {
+  id: string;
+  label: string;
+  broker: string;
+  environment: string;
+  currency: string;
+  starting_balance: number;
+  balance: number;
+  realized_pnl: number;
+  status: string;
+};
+
+const ACCOUNT_SELECT = "id, label, broker, environment, currency, starting_balance, balance, realized_pnl, status";
+
+/**
+ * Real, durable trading accounts for the authenticated user — read through
+ * `context.supabase` (the same `requireSupabaseAuth`-scoped, RLS-respecting
+ * client `listClosedTrades` below already uses), never `supabaseAdmin`.
+ *
+ * This exists so the Dashboard's read-only account list doesn't depend on
+ * `src/lib/trading.functions.ts`'s `listTradingAccounts`, which lazily
+ * imports the OMS (`src/lib/trading/oms.server.ts`) and calls
+ * `supabaseAdmin` — a service-role client requiring
+ * `SUPABASE_SERVICE_ROLE_KEY`. That key isn't exposed to every hosted
+ * environment (confirmed: Lovable Cloud didn't provide it here), which broke
+ * `/dashboard` even though the database itself was fully connected and
+ * `trading_accounts` already has a `SELECT`-only RLS policy
+ * (`auth.uid() = user_id`) that covers exactly this read.
+ *
+ * Deliberately SELECT-only: unlike `oms.listAccounts()`, this never calls
+ * `ensureAccount()` to create a default account when none exist — an
+ * RLS-scoped client has no business auto-provisioning rows, and account
+ * creation stays exclusively the OMS's job. Zero trading accounts is a
+ * normal, valid state here; the Dashboard's existing "No trading account
+ * found" empty state handles it.
+ */
+export const listDashboardAccounts = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { data, error } = await context.supabase
+      .from("trading_accounts")
+      .select(ACCOUNT_SELECT)
+      .eq("user_id", context.userId)
+      .order("created_at", { ascending: true });
+    if (error) throw new Error(error.message);
+    return data ?? [];
+  });
 
 /**
  * Real closed trades for one account, optionally narrowed by symbol/date

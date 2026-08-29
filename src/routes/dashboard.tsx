@@ -1,5 +1,5 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useNavigate } from "@tanstack/react-router";
@@ -8,8 +8,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useSubscription } from "@/hooks/useSubscription";
 import { checkStudioAccess, isStudioGateTestBypassed, isStudioGateLocalPaidBypassed } from "@/lib/subscription-status";
 import { AppNavRail } from "@/components/AppNavRail";
-import { listTradingAccounts } from "@/lib/trading.functions";
-import { listClosedTrades } from "@/lib/dashboard.functions";
+import { listDashboardAccounts, listClosedTrades } from "@/lib/dashboard.functions";
 import {
   computeDashboardMetrics,
   cumulativePnlSeries,
@@ -20,6 +19,8 @@ import {
 } from "@/lib/dashboard/metrics";
 import { MetricCard, toneOf } from "@/components/dashboard/MetricCard";
 import { CumulativePnlChart, DailyPnlChart, DerivedBalanceChart, DrawdownChart } from "@/components/dashboard/DashboardCharts";
+import { TradingCalendar } from "@/components/dashboard/TradingCalendar";
+import { PerformanceBreakdowns } from "@/components/dashboard/PerformanceBreakdowns";
 import { EnvBadge } from "@/components/studio/AccountBar";
 
 // Phase 4A: Trading Dashboard is gated exactly like Chart Studio — same
@@ -112,7 +113,7 @@ function dayEndUtc(day: string): string {
 }
 
 function DashboardWorkspace() {
-  const listAccountsFn = useServerFn(listTradingAccounts);
+  const listAccountsFn = useServerFn(listDashboardAccounts);
   const listClosedTradesFn = useServerFn(listClosedTrades);
 
   const [accountId, setAccountId] = useState<string | null>(null);
@@ -161,6 +162,22 @@ function DashboardWorkspace() {
     [trades, activeAccount],
   );
   const drawdown = useMemo(() => computeDrawdown(balanceSeries), [balanceSeries]);
+
+  // Phase 4B-1: the Trading Calendar deliberately queries its own month
+  // window instead of the header's date range (see TradingCalendar.tsx's
+  // doc comment) — same canonical `listClosedTrades` call, just with
+  // different boundaries, never a second data path.
+  const fetchCalendarMonth = useCallback(
+    (args: { accountId: string; symbol?: string; fromUtc: string; toUtc: string }) =>
+      listClosedTradesFn({ data: args }),
+    [listClosedTradesFn],
+  );
+  // Clicking a trading day sets the SAME header date-range filter a manual
+  // "from"/"to" pick would — a drill-down shortcut, not a new filter path.
+  const handleSelectCalendarDay = useCallback((dayUtc: string) => {
+    setFromDate(dayUtc);
+    setToDate(dayUtc);
+  }, []);
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
@@ -234,12 +251,15 @@ function DashboardWorkspace() {
             accountsQuery={accountsQuery}
             tradesQuery={tradesQuery}
             accountId={accountId}
+            symbol={symbol}
             trades={trades}
             metrics={metrics}
             cumulative={cumulative}
             daily={daily}
             balanceSeries={balanceSeries}
             drawdown={drawdown}
+            fetchCalendarMonth={fetchCalendarMonth}
+            onSelectCalendarDay={handleSelectCalendarDay}
           />
         </div>
       </div>
@@ -251,22 +271,28 @@ function DashboardBody({
   accountsQuery,
   tradesQuery,
   accountId,
+  symbol,
   trades,
   metrics,
   cumulative,
   daily,
   balanceSeries,
   drawdown,
+  fetchCalendarMonth,
+  onSelectCalendarDay,
 }: {
   accountsQuery: { isLoading: boolean; isError: boolean; error: unknown; data: unknown[] | undefined };
   tradesQuery: { isLoading: boolean; isError: boolean; error: unknown };
   accountId: string | null;
+  symbol: string;
   trades: ClosedTrade[];
   metrics: ReturnType<typeof computeDashboardMetrics>;
   cumulative: ReturnType<typeof cumulativePnlSeries>;
   daily: ReturnType<typeof dailyPnlSeries>;
   balanceSeries: ReturnType<typeof derivedBalanceSeries>;
   drawdown: ReturnType<typeof computeDrawdown>;
+  fetchCalendarMonth: (args: { accountId: string; symbol?: string; fromUtc: string; toUtc: string }) => Promise<ClosedTrade[]>;
+  onSelectCalendarDay: (dayUtc: string) => void;
 }) {
   if (accountsQuery.isLoading) return <CenteredState icon={<Loader2 className="h-5 w-5 animate-spin" />} text="Loading accounts…" />;
   if (accountsQuery.isError) {
@@ -289,28 +315,42 @@ function DashboardBody({
       />
     );
   }
-  if (trades.length === 0) {
-    return <CenteredState icon={<AlertTriangle className="h-5 w-5 text-muted-foreground" />} text="No closed trades in this period." />;
-  }
-
   return (
     <div className="flex flex-col gap-3">
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-8">
-        <MetricCard label="Net P&L" value={money(metrics.netPnl)} tone={toneOf(metrics.netPnl)} />
-        <MetricCard label="Trade Win %" value={pct(metrics.winRatePct)} tone={toneOf(metrics.winRatePct == null ? null : metrics.winRatePct - 50)} />
-        <MetricCard label="Profit Factor" value={ratio(metrics.profitFactor)} tone={toneOf(metrics.profitFactor == null ? null : metrics.profitFactor - 1)} />
-        <MetricCard label="Day Win %" value={pct(metrics.dayWinRatePct)} tone={toneOf(metrics.dayWinRatePct == null ? null : metrics.dayWinRatePct - 50)} />
-        <MetricCard label="Avg Winning Trade" value={metrics.avgWinningTrade == null ? "—" : money(metrics.avgWinningTrade)} tone="positive" />
-        <MetricCard label="Avg Losing Trade" value={metrics.avgLosingTrade == null ? "—" : money(metrics.avgLosingTrade)} tone="negative" />
-        <MetricCard label="Avg Win/Loss Ratio" value={ratio(metrics.avgWinLossRatio)} tone={toneOf(metrics.avgWinLossRatio == null ? null : metrics.avgWinLossRatio - 1)} />
-        <MetricCard label="Total Trades" value={String(metrics.totalTrades)} />
-      </div>
+      {trades.length === 0 ? (
+        <div className="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2.5 text-xs text-muted-foreground">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+          No closed trades in this period.
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-8">
+            <MetricCard label="Net P&L" value={money(metrics.netPnl)} tone={toneOf(metrics.netPnl)} />
+            <MetricCard label="Trade Win %" value={pct(metrics.winRatePct)} tone={toneOf(metrics.winRatePct == null ? null : metrics.winRatePct - 50)} />
+            <MetricCard label="Profit Factor" value={ratio(metrics.profitFactor)} tone={toneOf(metrics.profitFactor == null ? null : metrics.profitFactor - 1)} />
+            <MetricCard label="Day Win %" value={pct(metrics.dayWinRatePct)} tone={toneOf(metrics.dayWinRatePct == null ? null : metrics.dayWinRatePct - 50)} />
+            <MetricCard label="Avg Winning Trade" value={metrics.avgWinningTrade == null ? "—" : money(metrics.avgWinningTrade)} tone="positive" />
+            <MetricCard label="Avg Losing Trade" value={metrics.avgLosingTrade == null ? "—" : money(metrics.avgLosingTrade)} tone="negative" />
+            <MetricCard label="Avg Win/Loss Ratio" value={ratio(metrics.avgWinLossRatio)} tone={toneOf(metrics.avgWinLossRatio == null ? null : metrics.avgWinLossRatio - 1)} />
+            <MetricCard label="Total Trades" value={String(metrics.totalTrades)} />
+          </div>
 
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-        <CumulativePnlChart points={cumulative} />
-        <DailyPnlChart points={daily} />
-        <DerivedBalanceChart points={balanceSeries} />
-        <DrawdownChart points={drawdown.curve} maxDrawdownPct={drawdown.maxDrawdownPct} currentDrawdownPct={drawdown.currentDrawdownPct} />
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+            <CumulativePnlChart points={cumulative} />
+            <DailyPnlChart points={daily} />
+            <DerivedBalanceChart points={balanceSeries} />
+            <DrawdownChart points={drawdown.curve} maxDrawdownPct={drawdown.maxDrawdownPct} currentDrawdownPct={drawdown.currentDrawdownPct} />
+          </div>
+        </>
+      )}
+
+      {/* Phase 4B-1: the calendar intentionally has its own month window
+          (see TradingCalendar.tsx) so it still renders here even when the
+          header's date-range filter above has zero trades in range. */}
+      <TradingCalendar accountId={accountId} symbol={symbol} fetchMonth={fetchCalendarMonth} onSelectDay={onSelectCalendarDay} />
+
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <PerformanceBreakdowns trades={trades} />
       </div>
     </div>
   );
