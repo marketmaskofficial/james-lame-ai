@@ -25,13 +25,23 @@ function Row({ label, journaled, nonJournaled }: { label: string; journaled: Rea
   );
 }
 
-export function JournaledComparisonCard({ comparison }: { comparison: JournaledComparison }) {
+export function JournaledComparisonCard({
+  comparison,
+  title = "Journaled vs. Non-Journaled",
+}: {
+  comparison: JournaledComparison;
+  /** Phase 4G's Trade Explorer reuse of this card is scoped to the current
+   * page's already-loaded rows, not the full filtered dataset `/journal`
+   * itself summarizes — the caller overrides this label (e.g. "...(This
+   * Page)") so that distinction is never silently lost. */
+  title?: string;
+}) {
   const { journaled, nonJournaled } = comparison;
   const total = journaled.tradeCount + nonJournaled.tradeCount;
 
   return (
     <div className="rounded-md border border-border bg-card p-2.5">
-      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Journaled vs. Non-Journaled</div>
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{title}</div>
       {total === 0 ? (
         <div className="py-3 text-center text-xs text-muted-foreground">No closed trades in this filter.</div>
       ) : (
