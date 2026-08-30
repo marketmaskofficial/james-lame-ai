@@ -1,7 +1,8 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { Loader2, Check, ImagePlus, Trash2, Sparkles, X } from "lucide-react";
+import { Link } from "@tanstack/react-router";
+import { Loader2, Check, ImagePlus, Trash2, Sparkles, X, ArrowUpRight } from "lucide-react";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import {
@@ -33,6 +34,7 @@ import { classifyTrade, netPnlForTrade, SESSION_LABELS, type ClosedTrade } from 
 import { formatDuration, tradeDurationMs, tradeSession } from "@/lib/dashboard/tradeExplorer";
 import { isJournalDraftDirty, sameLabelSet, selectValueToSession, sessionToSelectValue, type JournalDraft, type JournalSessionValue } from "@/lib/dashboard/journalDraft";
 import { SUGGESTIONS_BY_KIND, GRADE_VALUES, type TaxonomyKind, type TradeGrade } from "@/lib/dashboard/journalTaxonomy";
+import type { JournalFocusKind } from "@/lib/dashboard/journalAnalytics";
 import { uploadJournalScreenshotFile, validateJournalScreenshotFile } from "@/lib/storage/journalScreenshots";
 import { JournalChipField } from "@/components/trades/JournalChipField";
 
@@ -101,15 +103,51 @@ function DetailRow({ label, value }: { label: string; value: string }) {
   );
 }
 
+/**
+ * Phase 4G — an additive, outbound-only "Analyze this X" link. Navigates to
+ * `/journal` with the existing `focusKind`/`focusValue` search params
+ * (Phase 4F's own drill-down contract — nothing new on that side) plus the
+ * shared Account/Symbol/Date context. Purely a link: it never reads or
+ * writes any journal-editing state, so it cannot affect the drawer's
+ * save/discard behavior in any way.
+ */
+function AnalyzeLink({ context, kind, value, label }: { context: JournalLinkContext; kind: JournalFocusKind; value: string; label: string }) {
+  return (
+    <Link
+      to="/journal"
+      search={{
+        accountId: context.accountId,
+        symbol: context.symbol || undefined,
+        from: context.from || undefined,
+        to: context.to || undefined,
+        focusKind: kind,
+        focusValue: value,
+      }}
+      className="inline-flex items-center gap-0.5 text-[10px] font-medium text-brand hover:underline"
+    >
+      {label}
+      <ArrowUpRight className="h-2.5 w-2.5" />
+    </Link>
+  );
+}
+
 const EMPTY_DRAFT: JournalDraft = { notes: "", session: null, grade: null, setup: null, strategy: null, emotion: null, mistakes: [], tags: [] };
 
 const TAXONOMY_KINDS: TaxonomyKind[] = ["setup", "strategy", "mistake", "emotion", "tag"];
+
+/** The shared Account/Symbol/Date filter context Trade Explorer is
+ * currently viewing — carried into every "Analyze this..." link's `/journal`
+ * navigation so the analysis opens scoped to the same filters, per the
+ * Phase 4G scope decision (never Trade Explorer's direction/outcome/
+ * session/sort/page state, which `/journal` doesn't support). */
+export type JournalLinkContext = { accountId: string; symbol?: string; from?: string; to?: string };
 
 export const TradeDetailDrawer = forwardRef<TradeDetailDrawerHandle, {
   trade: ClosedTrade | null;
   accountLabel: string | null;
   onOpenChange: (open: boolean) => void;
-}>(function TradeDetailDrawer({ trade, accountLabel, onOpenChange }, ref) {
+  journalContext: JournalLinkContext;
+}>(function TradeDetailDrawer({ trade, accountLabel, onOpenChange, journalContext }, ref) {
   const listExecutionsFn = useServerFn(listExecutionsForPosition);
   const getJournalFn = useServerFn(getJournalEntryForPosition);
   const saveJournalFn = useServerFn(saveTradeJournalForPosition);
@@ -558,92 +596,125 @@ export const TradeDetailDrawer = forwardRef<TradeDetailDrawerHandle, {
                 ) : (
                   <div className="mt-2 flex flex-col gap-3">
                     <div className="grid grid-cols-2 gap-2">
-                      <label className="flex flex-col gap-1 text-[11px]">
-                        <span className="text-muted-foreground">
-                          Session
-                          {computedSessionLabel && <span className="ml-1 normal-case text-muted-foreground/70">(closed during {computedSessionLabel})</span>}
-                        </span>
-                        <select
-                          value={sessionToSelectValue(draftSession)}
-                          onChange={(e) => setDraftSession(selectValueToSession(e.target.value))}
-                          className="rounded-md border border-border bg-background px-2 py-1 text-xs"
-                        >
-                          <option value="">No session</option>
-                          {(Object.keys(SESSION_LABELS) as (keyof typeof SESSION_LABELS)[]).map((s) => (
-                            <option key={s} value={s}>
-                              {SESSION_LABELS[s]}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
+                      <div className="flex flex-col gap-1">
+                        <label className="flex flex-col gap-1 text-[11px]">
+                          <span className="text-muted-foreground">
+                            Session
+                            {computedSessionLabel && <span className="ml-1 normal-case text-muted-foreground/70">(closed during {computedSessionLabel})</span>}
+                          </span>
+                          <select
+                            value={sessionToSelectValue(draftSession)}
+                            onChange={(e) => setDraftSession(selectValueToSession(e.target.value))}
+                            className="rounded-md border border-border bg-background px-2 py-1 text-xs"
+                          >
+                            <option value="">No session</option>
+                            {(Object.keys(SESSION_LABELS) as (keyof typeof SESSION_LABELS)[]).map((s) => (
+                              <option key={s} value={s}>
+                                {SESSION_LABELS[s]}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        {draftSession && <AnalyzeLink context={journalContext} kind="session" value={draftSession} label="Analyze this Session" />}
+                      </div>
 
-                      <label className="flex flex-col gap-1 text-[11px]">
-                        <span className="text-muted-foreground">Grade</span>
-                        <select
-                          value={draftGrade ?? ""}
-                          onChange={(e) => setDraftGrade(e.target.value === "" ? null : (e.target.value as TradeGrade))}
-                          className="rounded-md border border-border bg-background px-2 py-1 text-xs"
-                        >
-                          <option value="">No grade</option>
-                          {GRADE_VALUES.map((g) => (
-                            <option key={g} value={g}>
-                              {g}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
+                      <div className="flex flex-col gap-1">
+                        <label className="flex flex-col gap-1 text-[11px]">
+                          <span className="text-muted-foreground">Grade</span>
+                          <select
+                            value={draftGrade ?? ""}
+                            onChange={(e) => setDraftGrade(e.target.value === "" ? null : (e.target.value as TradeGrade))}
+                            className="rounded-md border border-border bg-background px-2 py-1 text-xs"
+                          >
+                            <option value="">No grade</option>
+                            {GRADE_VALUES.map((g) => (
+                              <option key={g} value={g}>
+                                {g}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        {draftGrade && <AnalyzeLink context={journalContext} kind="grade" value={draftGrade} label="Analyze this Grade" />}
+                      </div>
                     </div>
                     <p className="-mt-1 text-[10px] text-muted-foreground/70">Grade reflects execution quality, not outcome — a loss can be A+; a win can be F.</p>
 
-                    <JournalChipField
-                      label="Setup"
-                      value={draftSetup ? [draftSetup] : []}
-                      onChange={(next) => setDraftSetup(next[0] ?? null)}
-                      suggestions={suggestionsFor("setup")}
-                      multi={false}
-                      placeholder="e.g. Order Block"
-                      datalistId="journal-setup-suggestions"
-                    />
+                    <div className="flex flex-col gap-1">
+                      <JournalChipField
+                        label="Setup"
+                        value={draftSetup ? [draftSetup] : []}
+                        onChange={(next) => setDraftSetup(next[0] ?? null)}
+                        suggestions={suggestionsFor("setup")}
+                        multi={false}
+                        placeholder="e.g. Order Block"
+                        datalistId="journal-setup-suggestions"
+                      />
+                      {draftSetup && <AnalyzeLink context={journalContext} kind="setup" value={draftSetup} label="Analyze this Setup" />}
+                    </div>
 
-                    <JournalChipField
-                      label="Strategy"
-                      value={draftStrategy ? [draftStrategy] : []}
-                      onChange={(next) => setDraftStrategy(next[0] ?? null)}
-                      suggestions={suggestionsFor("strategy")}
-                      multi={false}
-                      placeholder="e.g. Breakout Retest"
-                      datalistId="journal-strategy-suggestions"
-                    />
+                    <div className="flex flex-col gap-1">
+                      <JournalChipField
+                        label="Strategy"
+                        value={draftStrategy ? [draftStrategy] : []}
+                        onChange={(next) => setDraftStrategy(next[0] ?? null)}
+                        suggestions={suggestionsFor("strategy")}
+                        multi={false}
+                        placeholder="e.g. Breakout Retest"
+                        datalistId="journal-strategy-suggestions"
+                      />
+                      {draftStrategy && <AnalyzeLink context={journalContext} kind="strategy" value={draftStrategy} label="Analyze this Strategy" />}
+                    </div>
 
-                    <JournalChipField
-                      label="Emotion"
-                      value={draftEmotion ? [draftEmotion] : []}
-                      onChange={(next) => setDraftEmotion(next[0] ?? null)}
-                      suggestions={suggestionsFor("emotion")}
-                      multi={false}
-                      placeholder="e.g. Focused"
-                      datalistId="journal-emotion-suggestions"
-                    />
+                    <div className="flex flex-col gap-1">
+                      <JournalChipField
+                        label="Emotion"
+                        value={draftEmotion ? [draftEmotion] : []}
+                        onChange={(next) => setDraftEmotion(next[0] ?? null)}
+                        suggestions={suggestionsFor("emotion")}
+                        multi={false}
+                        placeholder="e.g. Focused"
+                        datalistId="journal-emotion-suggestions"
+                      />
+                      {draftEmotion && <AnalyzeLink context={journalContext} kind="emotion" value={draftEmotion} label="Analyze this Emotion" />}
+                    </div>
 
-                    <JournalChipField
-                      label="Mistakes"
-                      value={draftMistakes}
-                      onChange={setDraftMistakes}
-                      suggestions={suggestionsFor("mistake")}
-                      multi
-                      placeholder="Add a mistake…"
-                      datalistId="journal-mistake-suggestions"
-                    />
+                    <div className="flex flex-col gap-1">
+                      <JournalChipField
+                        label="Mistakes"
+                        value={draftMistakes}
+                        onChange={setDraftMistakes}
+                        suggestions={suggestionsFor("mistake")}
+                        multi
+                        placeholder="Add a mistake…"
+                        datalistId="journal-mistake-suggestions"
+                      />
+                      {draftMistakes.length > 0 && (
+                        <div className="flex flex-wrap gap-x-2 gap-y-1">
+                          {draftMistakes.map((m) => (
+                            <AnalyzeLink key={m} context={journalContext} kind="mistake" value={m} label={`Analyze "${m}"`} />
+                          ))}
+                        </div>
+                      )}
+                    </div>
 
-                    <JournalChipField
-                      label="Tags"
-                      value={draftTags}
-                      onChange={setDraftTags}
-                      suggestions={suggestionsFor("tag")}
-                      multi
-                      placeholder="Add a tag…"
-                      datalistId="journal-tag-suggestions"
-                    />
+                    <div className="flex flex-col gap-1">
+                      <JournalChipField
+                        label="Tags"
+                        value={draftTags}
+                        onChange={setDraftTags}
+                        suggestions={suggestionsFor("tag")}
+                        multi
+                        placeholder="Add a tag…"
+                        datalistId="journal-tag-suggestions"
+                      />
+                      {draftTags.length > 0 && (
+                        <div className="flex flex-wrap gap-x-2 gap-y-1">
+                          {draftTags.map((t) => (
+                            <AnalyzeLink key={t} context={journalContext} kind="tag" value={t} label={`Analyze "${t}"`} />
+                          ))}
+                        </div>
+                      )}
+                    </div>
 
                     <label className="flex flex-col gap-1 text-[11px]">
                       <span className="text-muted-foreground">Notes</span>

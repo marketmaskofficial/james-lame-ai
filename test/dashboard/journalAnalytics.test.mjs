@@ -331,6 +331,22 @@ function jTrade(overrides = {}) {
   eq("journaledVsNonJournaled: all-journaled nonJournaled count is 0", allJournaled.nonJournaled.tradeCount, 0);
   const allNon = journaledVsNonJournaled([jTrade({ hasJournal: false })]);
   eq("journaledVsNonJournaled: all-non-journaled journaled count is 0", allNon.journaled.tradeCount, 0);
+
+  // Phase 4G: Trade Explorer reuses this exact function against its own
+  // already-loaded rows, which carry ONLY `hasJournal` — never the full
+  // taxonomy join (journalEntryId/session/grade/setup/strategy/emotion/
+  // mistakes/tags) a `JournalAnalyticsTrade` has. This proves the widened
+  // `JournaledTrade` parameter type still produces correct results against
+  // that minimal shape, with no other journal fields present at all.
+  const minimalRows = [
+    { ...trade({ realizedPnl: 10 }), hasJournal: true },
+    { ...trade({ realizedPnl: -4 }), hasJournal: false },
+    { ...trade({ realizedPnl: 6 }), hasJournal: true },
+  ];
+  const fromMinimalRows = journaledVsNonJournaled(minimalRows);
+  eq("journaledVsNonJournaled: works against a minimal {ClosedTrade, hasJournal} row shape (Trade Explorer reuse)", fromMinimalRows.journaled.tradeCount, 2);
+  eq("journaledVsNonJournaled: minimal-shape nonJournaled count", fromMinimalRows.nonJournaled.tradeCount, 1);
+  close("journaledVsNonJournaled: minimal-shape journaled netPnl", fromMinimalRows.journaled.netPnl, 16);
 }
 
 // ==== Combination analytics ===================================================

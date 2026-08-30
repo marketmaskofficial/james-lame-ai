@@ -1,4 +1,4 @@
-import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, redirect, useNavigate, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
@@ -288,7 +288,17 @@ function JournalWorkspace() {
         </header>
 
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
-          <JournalBody accountsQuery={accountsQuery} analyticsQuery={analyticsQuery} accountId={accountId} trades={trades} focus={focus} onSetFocus={setFocus} />
+          <JournalBody
+            accountsQuery={accountsQuery}
+            analyticsQuery={analyticsQuery}
+            accountId={accountId}
+            symbol={symbol}
+            from={from}
+            to={to}
+            trades={trades}
+            focus={focus}
+            onSetFocus={setFocus}
+          />
         </div>
       </div>
     </div>
@@ -299,6 +309,9 @@ function JournalBody({
   accountsQuery,
   analyticsQuery,
   accountId,
+  symbol,
+  from,
+  to,
   trades,
   focus,
   onSetFocus,
@@ -306,6 +319,9 @@ function JournalBody({
   accountsQuery: { isLoading: boolean; isError: boolean; error: unknown; data: unknown[] | undefined };
   analyticsQuery: { isLoading: boolean; isError: boolean; error: unknown; data: { truncated: boolean } | undefined };
   accountId: string | null;
+  symbol: string;
+  from: string;
+  to: string;
   trades: JournalAnalyticsTrade[];
   focus: JournalFocusFilter;
   onSetFocus: (kind: JournalFocusKind, value: string) => void;
@@ -323,7 +339,13 @@ function JournalBody({
   }
 
   return (
-    <JournalAnalyticsSections trades={trades} focus={focus} onSetFocus={onSetFocus} truncated={analyticsQuery.data?.truncated ?? false} />
+    <JournalAnalyticsSections
+      trades={trades}
+      focus={focus}
+      onSetFocus={onSetFocus}
+      truncated={analyticsQuery.data?.truncated ?? false}
+      tradesLink={{ accountId, symbol: symbol || undefined, from: from || undefined, to: to || undefined }}
+    />
   );
 }
 
@@ -332,11 +354,17 @@ function JournalAnalyticsSections({
   focus,
   onSetFocus,
   truncated,
+  tradesLink,
 }: {
   trades: JournalAnalyticsTrade[];
   focus: JournalFocusFilter;
   onSetFocus: (kind: JournalFocusKind, value: string) => void;
   truncated: boolean;
+  /** Phase 4G — the shared Account/Symbol/Date context for the "View
+   * Journaled Trades" link back to Trade Explorer. Never carries Trade
+   * Explorer-only state (direction/outcome/session/sort/page) since this
+   * page doesn't track any of that. */
+  tradesLink: { accountId: string; symbol?: string; from?: string; to?: string };
 }) {
   const comparison = useMemo(() => journaledVsNonJournaled(trades), [trades]);
   const setups = useMemo(() => bySetup(trades), [trades]);
@@ -369,7 +397,16 @@ function JournalAnalyticsSections({
       )}
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-        <JournaledComparisonCard comparison={comparison} />
+        <div className="flex flex-col gap-1.5">
+          <JournaledComparisonCard comparison={comparison} />
+          <Link
+            to="/trades"
+            search={{ accountId: tradesLink.accountId, symbol: tradesLink.symbol, from: tradesLink.from, to: tradesLink.to, journal: "journaled" }}
+            className="self-start text-[11px] font-medium text-brand hover:underline"
+          >
+            View Journaled Trades →
+          </Link>
+        </div>
         <GradeDistributionBar grades={grades} activeFocusValue={focus?.kind === "grade" ? focus.value : null} onSelect={(g) => onSetFocus("grade", g)} />
       </div>
 

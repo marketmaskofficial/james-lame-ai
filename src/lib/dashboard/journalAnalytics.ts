@@ -292,6 +292,16 @@ export function byJournalSession(trades: JournalAnalyticsTrade[]): JournalSessio
 }
 
 export type JournaledComparison = { journaled: JournalGroupSummary; nonJournaled: JournalGroupSummary };
+/** The minimal shape `journaledVsNonJournaled` actually needs — deliberately
+ * narrower than `JournalAnalyticsTrade` so Phase 4G's Trade Explorer can
+ * reuse this exact function against its own already-loaded
+ * `TradeExplorerRow[]` (`ClosedTrade & { hasJournal }`, from
+ * `tradeExplorer.ts`) without fetching or fabricating the full taxonomy
+ * join (setup/strategy/emotion/mistakes/tags) that page never needs. Every
+ * `JournalAnalyticsTrade` already satisfies this structurally, so `/journal`
+ * itself needs no change. */
+export type JournaledTrade = ClosedTrade & { hasJournal: boolean };
+
 /**
  * Journaled vs. Non-Journaled — the ONE breakdown that includes trades with
  * no journal entry (as "Non-Journaled") rather than excluding them. Always
@@ -299,7 +309,7 @@ export type JournaledComparison = { journaled: JournalGroupSummary; nonJournaled
  * nonJournaled.tradeCount === trades.length` by construction (a trade is
  * either `hasJournal` or it isn't, never both, never neither).
  */
-export function journaledVsNonJournaled(trades: JournalAnalyticsTrade[]): JournaledComparison {
+export function journaledVsNonJournaled(trades: JournaledTrade[]): JournaledComparison {
   const journaled: ClosedTrade[] = [];
   const nonJournaled: ClosedTrade[] = [];
   for (const t of trades) (t.hasJournal ? journaled : nonJournaled).push(t);

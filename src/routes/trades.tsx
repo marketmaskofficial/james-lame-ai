@@ -25,6 +25,7 @@ import {
 } from "@/lib/dashboard/tradeExplorer";
 import { EnvBadge } from "@/components/studio/AccountBar";
 import { TradeDetailDrawer, type TradeDetailDrawerHandle } from "@/components/trades/TradeDetailDrawer";
+import { JournalContextRegion } from "@/components/trades/JournalContextRegion";
 
 /**
  * Phase 4D — Trade Explorer (`/trades`). Gated exactly like Studio/
@@ -428,6 +429,9 @@ function TradesWorkspace() {
             accountsQuery={accountsQuery}
             tradesQuery={tradesQuery}
             accountId={accountId}
+            symbol={symbol}
+            from={from}
+            to={to}
             rows={rows}
             summary={summary}
             hasActiveFilters={hasActiveFilters}
@@ -451,6 +455,7 @@ function TradesWorkspace() {
         trade={selectedTrade}
         accountLabel={activeAccount?.label ?? null}
         onOpenChange={(open) => !open && setSelectedTrade(null)}
+        journalContext={{ accountId: accountId ?? "", symbol, from, to }}
       />
     </div>
   );
@@ -460,6 +465,9 @@ function TradesBody({
   accountsQuery,
   tradesQuery,
   accountId,
+  symbol,
+  from,
+  to,
   rows,
   summary,
   hasActiveFilters,
@@ -478,6 +486,9 @@ function TradesBody({
   accountsQuery: { isLoading: boolean; isError: boolean; error: unknown; data: unknown[] | undefined };
   tradesQuery: { isLoading: boolean; isError: boolean; error: unknown };
   accountId: string | null;
+  symbol: string;
+  from: string;
+  to: string;
   rows: TradeExplorerRow[];
   summary: ReturnType<typeof summarizeTrades>;
   hasActiveFilters: boolean;
@@ -702,6 +713,13 @@ function TradesBody({
               </div>
             </div>
           )}
+
+          {/* Phase 4G: a lightweight contextual region below the table —
+              never fills/stretches to occupy the viewport, just fills the
+              natural under-fill of a small dataset with something real.
+              Built entirely from `rows` (already fetched above) — no
+              second Journal Analytics fetch. */}
+          <JournalContextRegion rows={rows} link={{ accountId: accountId as string, symbol, from, to }} />
         </>
       )}
     </div>
