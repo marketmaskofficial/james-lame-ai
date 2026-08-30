@@ -1,18 +1,40 @@
 import { useState } from "react";
 import { ChevronUp } from "lucide-react";
+import type { BuildValidation } from "@/lib/builder/generationState";
 
 /**
- * Phase 5A-1 — bottom diagnostics/build-status region, SHELL ONLY.
- *
- * Eventually surfaces validation issues, generation issues, repair-attempt
- * counts, and runtime/render failures (see the Phase 5A audit's
- * recommended error/diagnostic architecture) — none of that exists yet,
- * so this shows only an honest neutral state. Collapsible so it never
- * competes with the main workspace for vertical space when there is
- * nothing to show.
+ * Phase 5A-2 — surfaces the SAME `BuildResult.validation` the assistant
+ * chat bubble already summarizes, in structured/scannable form (Pine and
+ * SGScript issues kept distinct, exactly as the canonical result already
+ * distinguishes them) — never a second validation pass, never fabricated
+ * issues. Falls back to the honest neutral state when nothing has been
+ * generated yet.
  */
-export function DiagnosticsPanel() {
+
+type Issue = BuildValidation["pine"]["issues"][number];
+
+function IssueGroup({ title, issues }: { title: string; issues: Issue[] }) {
+  if (issues.length === 0) return null;
+  return (
+    <div>
+      <div className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">{title}</div>
+      <ul className="mt-0.5 space-y-0.5">
+        {issues.map((issue, i) => (
+          <li key={i} className={issue.severity === "error" ? "text-destructive" : "text-amber-500"}>
+            [{issue.severity}] {issue.code}: {issue.message}
+            {issue.line ? ` (line ${issue.line})` : ""}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export function DiagnosticsPanel({ validation }: { validation: BuildValidation | null }) {
   const [collapsed, setCollapsed] = useState(false);
+  const pineIssues = validation?.pine.issues ?? [];
+  const sgIssues = validation?.sgscript.issues ?? [];
+  const hasIssues = pineIssues.length > 0 || sgIssues.length > 0;
 
   return (
     <div className="shrink-0 border-t border-border bg-sidebar">
@@ -25,7 +47,18 @@ export function DiagnosticsPanel() {
         <span>Diagnostics</span>
         <ChevronUp className={`h-3 w-3 transition-transform ${collapsed ? "rotate-180" : ""}`} />
       </button>
-      {!collapsed && <div className="px-4 pb-2.5 text-xs text-muted-foreground">No diagnostics.</div>}
+      {!collapsed && (
+        <div className="max-h-40 space-y-2 overflow-y-auto px-4 pb-2.5 text-xs text-muted-foreground">
+          {!validation && "No diagnostics."}
+          {validation && !hasIssues && "Passed static validation — no issues."}
+          {validation && hasIssues && (
+            <>
+              <IssueGroup title="Pine" issues={pineIssues} />
+              <IssueGroup title="SGScript" issues={sgIssues} />
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
