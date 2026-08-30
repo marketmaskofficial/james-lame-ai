@@ -5,15 +5,21 @@ import { buildProject, validateProject, type BuildResult } from "@/lib/project.f
 import { createIndicator, updateIndicator } from "@/lib/indicators.functions";
 import { listIndicatorMessages, appendIndicatorMessage } from "@/lib/indicatorMessages.functions";
 import { defaultSettingsFromSpec } from "@/lib/spec/inputDefaults";
+import { runIndicator } from "@/lib/sgscript/client";
+import type { Bar } from "@/lib/sgscript/types";
 import {
   INITIAL_BUILDER_PROJECT_STATE,
   appendUserMessage,
   applyBuildFailure,
   applyBuildSuccess,
+  applyPreviewFailure,
+  applyPreviewResult,
   applyValidationFailure,
   applyValidationResult,
+  beginPreviewRun,
   beginValidation,
   buildRequestPayload,
+  canRunPreview,
   canSubmitFixError,
   canSubmitPrompt,
   canSubmitValidate,
@@ -27,17 +33,25 @@ import {
 import { classifyBuildResult, type BuildOutcomeStatus } from "@/lib/spec/buildOutcome";
 
 /**
- * Phase 5A-2/5A-3 — the ONE place Indicator Builder touches the canonical
- * generation/persistence chain. Every server call here is one of the six
- * explicitly reused functions (`buildProject`, `validateProject`,
- * `createIndicator`, `updateIndicator`, `listIndicatorMessages`,
- * `appendIndicatorMessage`) — nothing here defines a new server function,
- * calls the AI SDK directly, or re-implements any validation/runtime logic.
- * All pure decision-making (what state transition a result implies, what
- * request shape to send) lives in `src/lib/builder/generationState.ts`;
- * this hook is only the thin React/I-O shell around it. Manual code edits
- * (`updateSgscript`) are the one action in this hook that touches ZERO
- * server functions — see its own doc comment below.
+ * Phase 5A-2/5A-3/5A-4b — the ONE place Indicator Builder touches the
+ * canonical generation/persistence/execution chain. Every server call here
+ * is one of the six explicitly reused functions (`buildProject`,
+ * `validateProject`, `createIndicator`, `updateIndicator`,
+ * `listIndicatorMessages`, `appendIndicatorMessage`) — nothing here defines
+ * a new server function, calls the AI SDK directly, or re-implements any
+ * validation/runtime logic. All pure decision-making (what state transition
+ * a result implies, what request shape to send) lives in
+ * `src/lib/builder/generationState.ts`; this hook is only the thin
+ * React/I-O shell around it. Manual code edits (`updateSgscript`) are one
+ * action in this hook that touches ZERO server functions — see its own doc
+ * comment below.
+ *
+ * Phase 5A-4b adds `runIndicator` from `@/lib/sgscript/client` — NOT a
+ * server function, a pure client-side Web Worker call — as a seventh,
+ * architecturally distinct reused entry point: the canonical SGScript
+ * execution engine. `submitRunPreview` is the only place it's called from
+ * anywhere in Builder (mirroring the "exactly one call site" rule already
+ * enforced for `buildProject`/`validateProject`).
  */
 export function useBuilderProject(signedIn: boolean) {
   const buildProjectFn = useServerFn(buildProject);
@@ -69,6 +83,14 @@ export function useBuilderProject(signedIn: boolean) {
    * out, rather than a Builder-specific shortcut. */
   const selfAssignedIdRef = useRef<string | null>(null);
   const persistedCountRef = useRef(0);
+
+  /** Phase 5A-4b — the smallest stale-result guard the audit recommended:
+   * incremented on every `submitRunPreview` call; a run's result is only
+   * ever applied to state if this ref still equals the value captured when
+   * THAT run started. `runIndicator` exposes no request id/cancellation of
+   * its own (see the Phase 5A-4b audit), so this is the one piece Builder
+   * needs to add — no `AbortController`, no job queue, no polling. */
+  const runSeqRef = useRef(0);
 
   // Only ever enabled for an indicatorId this hook did NOT itself just
   // create — i.e. never fires during the normal Phase 5A-2 flow (first
@@ -233,5 +255,33 @@ export function useBuilderProject(signedIn: boolean) {
     validateMutation.mutate({ pine: state.pine, sgscript: state.sgscript });
   }
 
-  return { state, prompt, setPrompt, submitPrompt, submitFixError, updateSgscript, submitValidate };
+  /**
+   * Phase 5A-4b — the ONE call site of `runIndicator` in the entire Builder
+   * feature. Reads `state.sgscript` at invocation time (the same pattern
+   * `buildRequestPayload`/`submitValidate` already use), so a manual edit
+   * made a moment ago is exactly what gets executed — never a stale
+   * generated copy. `bars` is supplied by the caller rather than sourced
+   * internally: Builder has no symbol/timeframe/market-data of its own yet
+   * (Phase 5A-4d), so this adapter is real and fully testable today via
+   * fixture bars, without fabricating any market data itself.
+   *
+   * Deliberately does NOT call `buildProject`, `validateProject`,
+   * `generateText`, or any persistence function — execution is a pure,
+   * local, client-side Worker call, wholly separate from AI
+   * generation/refinement and from static validation.
+   */
+  async function submitRunPreview(bars: Bar[], settings: Record<string, number | boolean | string> = {}) {
+    if (!canRunPreview(state.sgscript, state.previewStatus)) return;
+    runSeqRef.current += 1;
+    const runId = runSeqRef.current;
+    setState((s) => beginPreviewRun(s));
+    try {
+      const result = await runIndicator(state.sgscript, bars, settings);
+      if (runId === runSeqRef.current) setState((s) => applyPreviewResult(s, result));
+    } catch (e) {
+      if (runId === runSeqRef.current) setState((s) => applyPreviewFailure(s, e instanceof Error ? e.message : "Preview failed"));
+    }
+  }
+
+  return { state, prompt, setPrompt, submitPrompt, submitFixError, updateSgscript, submitValidate, submitRunPreview };
 }

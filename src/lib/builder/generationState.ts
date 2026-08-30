@@ -1,6 +1,7 @@
 import type { BuildResult } from "@/lib/project.functions";
 import type { IndicatorSpec } from "@/lib/spec/types";
 import { classifyBuildResult, formatBuildIssuesForRepair, type BuildOutcomeStatus } from "@/lib/spec/buildOutcome";
+import type { RunResult } from "@/lib/sgscript/types";
 
 /**
  * Phase 5A-2 — Indicator Builder's pure generation-lifecycle state. No
@@ -17,9 +18,26 @@ import { classifyBuildResult, formatBuildIssuesForRepair, type BuildOutcomeStatu
  * never observe an in-progress repair pass — only `"generating"` while the
  * request is in flight, then the final `repairPasses` count disclosed
  * honestly after the fact (see `repairPassesLabel` below).
+ *
+ * Phase 5A-4b adds a third, independent lifecycle — Preview *execution*
+ * (`previewStatus`/`previewResult`/`previewError`) — for running
+ * `state.sgscript` through the canonical `runIndicator` (`@/lib/sgscript/
+ * client`) against caller-supplied bars. This module stays type-only with
+ * respect to that runtime (`import type { RunResult }`); the real call
+ * lives in `useBuilderProject.ts`, exactly like `buildProject`/
+ * `validateProject` before it. `state.sgscript` remains the one canonical
+ * source Preview executes — no second code/draft field exists for it.
  */
 
 export type LifecycleStatus = "idle" | "generating" | "success" | "generationFailed" | "validationFailed";
+
+/** Phase 5A-4b — the Preview *execution* lifecycle, deliberately separate
+ * from `LifecycleStatus` (AI build/refine) and from `validationPending`
+ * (static `validateProject` checks). Preview runs the canonical SGScript
+ * runtime (`runIndicator`) against real bars — a third, independent
+ * concern that must never be conflated with the other two, exactly as the
+ * Phase 5A-4b audit requires. */
+export type PreviewStatus = "idle" | "running" | "success" | "error";
 
 export type BuilderMessageRole = "user" | "ai";
 /** Mirrors `indicator_messages.kind` exactly — Builder only ever produces
@@ -88,6 +106,23 @@ export type BuilderProjectState = {
    * Validate or AI build. Kept separate from `error` so a Validate failure
    * is never mistaken for a generation failure in Chat. */
   validationError: string | null;
+  /** Phase 5A-4b — whether an explicit Preview run (`runIndicator` against
+   * real bars) is currently in flight. Independent of `status`/
+   * `validationPending`: execution is a third concern, never layered onto
+   * the build or static-validation lifecycles. */
+  previewStatus: PreviewStatus;
+  /** The last SUCCESSFUL execution result. Doubles as "last-known-good" for
+   * free: a failed run (see `applyPreviewFailure`) never clears this, so a
+   * previously-working preview stays visible/usable across a later error —
+   * the same non-destructive-failure convention `spec`/`pine`/`sgscript`
+   * and `validation` already follow. */
+  previewResult: RunResult | null;
+  /** The last Preview *execution* failure (a thrown/rejected `runIndicator`
+   * call — parse error, runtime error, timeout, or "no market data"), if
+   * any. Cleared on the next successful run. Kept separate from `error`/
+   * `validationError` so a Preview failure is never mistaken for a
+   * generation or Validate-request failure anywhere in the UI. */
+  previewError: string | null;
 };
 
 export const INITIAL_BUILDER_PROJECT_STATE: BuilderProjectState = {
@@ -106,6 +141,9 @@ export const INITIAL_BUILDER_PROJECT_STATE: BuilderProjectState = {
   error: null,
   validationPending: false,
   validationError: null,
+  previewStatus: "idle",
+  previewResult: null,
+  previewError: null,
 };
 
 function newMessageId(): string {
@@ -254,6 +292,44 @@ export function applyValidationFailure(state: BuilderProjectState, message: stri
  * `CodeEditorPanel`), no other Validate request already pending, signed in. */
 export function canSubmitValidate(sgscript: string, status: LifecycleStatus, validationPending: boolean, signedIn: boolean): boolean {
   return sgscript.trim().length > 0 && status !== "generating" && !validationPending && signedIn;
+}
+
+/**
+ * Phase 5A-4b — Preview execution lifecycle. `runIndicator` is a pure
+ * client-side Worker call (no server, no auth), so unlike `canSubmitPrompt`/
+ * `canSubmitValidate` this guard takes no `signedIn` — there is nothing to
+ * authenticate against. Blocks a second run only while one is already in
+ * flight (the stale-result guard in `useBuilderProject.ts` additionally
+ * protects against an old run's result ever winning over a newer one).
+ */
+export function canRunPreview(sgscript: string, previewStatus: PreviewStatus): boolean {
+  return sgscript.trim().length > 0 && previewStatus !== "running";
+}
+
+/** Marks an explicit Preview run as in flight. Never touches `spec`/`pine`/
+ * `sgscript`/`status`/`validationPending` — execution is a third, wholly
+ * separate concern from AI generation and static validation. Preserves the
+ * existing `previewResult` (the chart, if any, stays visible while a new
+ * run is in progress). */
+export function beginPreviewRun(state: BuilderProjectState): BuilderProjectState {
+  return { ...state, previewStatus: "running", previewError: null };
+}
+
+/** Applies a real `RunResult` from `runIndicator`. Never touches `spec`/
+ * `pine`/`sgscript`/`status`/`validation`/`dirty` — a Preview run observes
+ * the current code, it never mutates the Builder's generation/validation
+ * state. */
+export function applyPreviewResult(state: BuilderProjectState, result: RunResult): BuilderProjectState {
+  return { ...state, previewStatus: "success", previewResult: result, previewError: null };
+}
+
+/** A Preview execution failure — a thrown/rejected `runIndicator` call
+ * (parse error, runtime error, timeout, or "no market data"). NEVER clears
+ * `previewResult`: the last successfully-rendered preview stays intact so
+ * a broken follow-up edit doesn't blank out a working chart — the same
+ * non-destructive-failure convention already used for build/validate. */
+export function applyPreviewFailure(state: BuilderProjectState, message: string): BuilderProjectState {
+  return { ...state, previewStatus: "error", previewError: message };
 }
 
 /** The exact canonical `buildProject` request shape for a first build or a
