@@ -14,6 +14,7 @@ import { Route as AccountRouteImport } from './routes/account'
 import { Route as AppRouteImport } from './routes/app'
 import { Route as AuthRouteImport } from './routes/auth'
 import { Route as DashboardRouteImport } from './routes/dashboard'
+import { Route as JournalRouteImport } from './routes/journal'
 import { Route as PricingRouteImport } from './routes/pricing'
 import { Route as StudioRouteImport } from './routes/studio'
 import { Route as TradesRouteImport } from './routes/trades'
@@ -47,6 +48,11 @@ const AuthRoute = AuthRouteImport.update({
 const DashboardRoute = DashboardRouteImport.update({
   id: '/dashboard',
   path: '/dashboard',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const JournalRoute = JournalRouteImport.update({
+  id: '/journal',
+  path: '/journal',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PricingRoute = PricingRouteImport.update({
@@ -103,6 +109,7 @@ export interface FileRoutesByFullPath {
   '/app': typeof AppRoute
   '/auth': typeof AuthRoute
   '/dashboard': typeof DashboardRoute
+  '/journal': typeof JournalRoute
   '/pricing': typeof PricingRoute
   '/studio': typeof StudioRoute
   '/trades': typeof TradesRoute
@@ -119,6 +126,7 @@ export interface FileRoutesByTo {
   '/app': typeof AppRoute
   '/auth': typeof AuthRoute
   '/dashboard': typeof DashboardRoute
+  '/journal': typeof JournalRoute
   '/pricing': typeof PricingRoute
   '/studio': typeof StudioRoute
   '/trades': typeof TradesRoute
@@ -136,6 +144,7 @@ export interface FileRoutesById {
   '/app': typeof AppRoute
   '/auth': typeof AuthRoute
   '/dashboard': typeof DashboardRoute
+  '/journal': typeof JournalRoute
   '/pricing': typeof PricingRoute
   '/studio': typeof StudioRoute
   '/trades': typeof TradesRoute
@@ -154,6 +163,7 @@ export interface FileRouteTypes {
     | '/app'
     | '/auth'
     | '/dashboard'
+    | '/journal'
     | '/pricing'
     | '/studio'
     | '/trades'
@@ -170,6 +180,7 @@ export interface FileRouteTypes {
     | '/app'
     | '/auth'
     | '/dashboard'
+    | '/journal'
     | '/pricing'
     | '/studio'
     | '/trades'
@@ -186,6 +197,7 @@ export interface FileRouteTypes {
     | '/app'
     | '/auth'
     | '/dashboard'
+    | '/journal'
     | '/pricing'
     | '/studio'
     | '/trades'
@@ -203,6 +215,7 @@ export interface RootRouteChildren {
   AppRoute: typeof AppRoute
   AuthRoute: typeof AuthRoute
   DashboardRoute: typeof DashboardRoute
+  JournalRoute: typeof JournalRoute
   PricingRoute: typeof PricingRoute
   StudioRoute: typeof StudioRoute
   TradesRoute: typeof TradesRoute
@@ -249,6 +262,13 @@ declare module '@tanstack/react-router' {
       path: '/dashboard'
       fullPath: '/dashboard'
       preLoaderRoute: typeof DashboardRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/journal': {
+      id: '/journal'
+      path: '/journal'
+      fullPath: '/journal'
+      preLoaderRoute: typeof JournalRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/pricing': {
@@ -323,6 +343,7 @@ const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRoute,
   AuthRoute: AuthRoute,
   DashboardRoute: DashboardRoute,
+  JournalRoute: JournalRoute,
   PricingRoute: PricingRoute,
   StudioRoute: StudioRoute,
   TradesRoute: TradesRoute,
