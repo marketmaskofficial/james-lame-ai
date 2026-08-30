@@ -77,7 +77,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "Signal Goat AI — Turn ideas into Pine Script indicators" },
+      { title: "Signal Goat AI" },
       { name: "description", content: "Describe a strategy in plain English. Signal Goat AI writes the Pine Script, previews it on live charts, and saves every version to your history." },
       { property: "og:title", content: "Signal Goat AI — Turn ideas into Pine Script indicators" },
       { property: "og:description", content: "Describe a strategy in plain English. Signal Goat AI writes the Pine Script, previews it on live charts, and saves every version to your history." },
@@ -93,7 +93,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
         rel: "stylesheet",
         href: appCss,
       },
-      { rel: "icon", href: "/favicon.ico", type: "image/x-icon" },
+      { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" },
     ],
   }),
   shellComponent: RootShell,
