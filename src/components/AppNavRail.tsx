@@ -1,7 +1,7 @@
 import { Link, useLocation } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { Bell, Crown, History, LayoutDashboard, LineChart, LogOut, NotebookText, ScrollText, Wand2 } from "lucide-react";
+import { Bell, Code2, Crown, History, LayoutDashboard, LineChart, LogOut, NotebookText, ScrollText, Wand2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useSubscription } from "@/hooks/useSubscription";
@@ -136,6 +136,7 @@ export function AppNavRail({
           G
         </Link>
         <RailLink to="/studio" icon={<LineChart className="h-4 w-4" />} active={pathname.startsWith("/studio")} title="Chart Studio" />
+        <RailLink to="/builder" icon={<Code2 className="h-4 w-4" />} active={pathname.startsWith("/builder")} title="Indicator Builder" />
         <RailLink to="/dashboard" icon={<LayoutDashboard className="h-4 w-4" />} active={pathname.startsWith("/dashboard")} title="Trading Dashboard" />
         <RailLink to="/trades" icon={<ScrollText className="h-4 w-4" />} active={pathname.startsWith("/trades")} title="Trade Explorer" />
         <RailLink to="/journal" icon={<NotebookText className="h-4 w-4" />} active={pathname.startsWith("/journal")} title="Journal Analytics" />

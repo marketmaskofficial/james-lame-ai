@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AccountRouteImport } from './routes/account'
 import { Route as AppRouteImport } from './routes/app'
 import { Route as AuthRouteImport } from './routes/auth'
+import { Route as BuilderRouteImport } from './routes/builder'
 import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as JournalRouteImport } from './routes/journal'
 import { Route as PricingRouteImport } from './routes/pricing'
@@ -43,6 +44,11 @@ const AppRoute = AppRouteImport.update({
 const AuthRoute = AuthRouteImport.update({
   id: '/auth',
   path: '/auth',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const BuilderRoute = BuilderRouteImport.update({
+  id: '/builder',
+  path: '/builder',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DashboardRoute = DashboardRouteImport.update({
@@ -108,6 +114,7 @@ export interface FileRoutesByFullPath {
   '/account': typeof AccountRoute
   '/app': typeof AppRoute
   '/auth': typeof AuthRoute
+  '/builder': typeof BuilderRoute
   '/dashboard': typeof DashboardRoute
   '/journal': typeof JournalRoute
   '/pricing': typeof PricingRoute
@@ -125,6 +132,7 @@ export interface FileRoutesByTo {
   '/account': typeof AccountRoute
   '/app': typeof AppRoute
   '/auth': typeof AuthRoute
+  '/builder': typeof BuilderRoute
   '/dashboard': typeof DashboardRoute
   '/journal': typeof JournalRoute
   '/pricing': typeof PricingRoute
@@ -143,6 +151,7 @@ export interface FileRoutesById {
   '/account': typeof AccountRoute
   '/app': typeof AppRoute
   '/auth': typeof AuthRoute
+  '/builder': typeof BuilderRoute
   '/dashboard': typeof DashboardRoute
   '/journal': typeof JournalRoute
   '/pricing': typeof PricingRoute
@@ -162,6 +171,7 @@ export interface FileRouteTypes {
     | '/account'
     | '/app'
     | '/auth'
+    | '/builder'
     | '/dashboard'
     | '/journal'
     | '/pricing'
@@ -179,6 +189,7 @@ export interface FileRouteTypes {
     | '/account'
     | '/app'
     | '/auth'
+    | '/builder'
     | '/dashboard'
     | '/journal'
     | '/pricing'
@@ -196,6 +207,7 @@ export interface FileRouteTypes {
     | '/account'
     | '/app'
     | '/auth'
+    | '/builder'
     | '/dashboard'
     | '/journal'
     | '/pricing'
@@ -214,6 +226,7 @@ export interface RootRouteChildren {
   AccountRoute: typeof AccountRoute
   AppRoute: typeof AppRoute
   AuthRoute: typeof AuthRoute
+  BuilderRoute: typeof BuilderRoute
   DashboardRoute: typeof DashboardRoute
   JournalRoute: typeof JournalRoute
   PricingRoute: typeof PricingRoute
@@ -255,6 +268,13 @@ declare module '@tanstack/react-router' {
       path: '/auth'
       fullPath: '/auth'
       preLoaderRoute: typeof AuthRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/builder': {
+      id: '/builder'
+      path: '/builder'
+      fullPath: '/builder'
+      preLoaderRoute: typeof BuilderRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/dashboard': {
@@ -342,6 +362,7 @@ const rootRouteChildren: RootRouteChildren = {
   AccountRoute: AccountRoute,
   AppRoute: AppRoute,
   AuthRoute: AuthRoute,
+  BuilderRoute: BuilderRoute,
   DashboardRoute: DashboardRoute,
   JournalRoute: JournalRoute,
   PricingRoute: PricingRoute,
