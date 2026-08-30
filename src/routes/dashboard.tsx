@@ -42,7 +42,7 @@ export const Route = createFileRoute("/dashboard")({
   pendingComponent: DashboardLoadingScreen,
   head: () => ({
     meta: [
-      { title: "Trading Dashboard — Signal Goat AI" },
+      { title: "Dashboard — Signal Goat AI" },
       {
         name: "description",
         content: "Real trading performance: net P&L, win rate, profit factor, and equity/drawdown from your own closed trades.",

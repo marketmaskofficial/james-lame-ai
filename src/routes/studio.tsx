@@ -239,7 +239,7 @@ export const Route = createFileRoute("/studio")({
   pendingComponent: StudioLoadingScreen,
   head: () => ({
     meta: [
-      { title: "Chart Studio — run your indicators on live charts" },
+      { title: "Chart Studio — Signal Goat AI" },
       {
         name: "description",
         content:
