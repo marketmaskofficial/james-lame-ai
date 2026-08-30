@@ -68,6 +68,8 @@ const useBuilderProjectSrc = read("src/components/builder/useBuilderProject.ts")
 const workspaceSrcTop = read("src/components/builder/BuilderWorkspace.tsx");
 const resizableSrc = read("src/components/ui/resizable.tsx");
 const previewPanelSrc = read("src/components/builder/PreviewPanel.tsx");
+const marketDataHookSrc = read("src/components/builder/useBuilderMarketData.ts");
+const builderToolbarSrc = read("src/components/builder/BuilderToolbar.tsx");
 
 // ---- 1. Explicit allow-list: the 6 canonical functions ARE reused --------
 {
@@ -141,9 +143,11 @@ const previewPanelSrc = read("src/components/builder/PreviewPanel.tsx");
     ok(`generationState.ts never references "${forbidden}"`, !generationStateSrc.includes(forbidden));
     ok(`useBuilderProject.ts never references "${forbidden}"`, !useBuilderProjectSrc.includes(forbidden));
     ok(
-      `BuilderWorkspace.tsx never references "${forbidden}" (Phase 5A-4a is layout/state architecture only — no runtime, renderer, AI, or market-data import)`,
+      `BuilderWorkspace.tsx never references "${forbidden}" (layout/state/market-data wiring only — no runtime, renderer, or AI internals)`,
       !workspaceSrcTop.includes(forbidden),
     );
+    ok(`useBuilderMarketData.ts never references "${forbidden}" (Phase 5A-4d: real bars only, via the canonical fetchBars wrapper)`, !marketDataHookSrc.includes(forbidden));
+    ok(`BuilderToolbar.tsx never references "${forbidden}"`, !builderToolbarSrc.includes(forbidden));
   }
   ok("resizable.tsx never references any canonical/forbidden module (it only touches react-resizable-panels)", FORBIDDEN.every((f) => !resizableSrc.includes(f)));
 }
@@ -433,7 +437,7 @@ const previewPanelSrc = read("src/components/builder/PreviewPanel.tsx");
   );
 }
 
-// ---- 10. Phase 5A-4c: previewResult -> LoadedIndicator adapter is exact ----
+// ---- 10. Phase 5A-4c/4d: previewResult -> LoadedIndicator adapter is exact -
 {
   const indicatorsBlock = previewPanelSrc.slice(
     previewPanelSrc.indexOf("const indicators = useMemo"),
@@ -441,7 +445,7 @@ const previewPanelSrc = read("src/components/builder/PreviewPanel.tsx");
   );
   ok(
     "no previewResult produces zero indicators (empty array, not a fabricated placeholder indicator)",
-    /if\s*\(\s*!previewResult\s*\)\s*return\s*\[\]\s*;/.test(indicatorsBlock),
+    /if\s*\(\s*!previewResult\s*\|\|\s*isStale\s*\)\s*return\s*\[\]\s*;/.test(indicatorsBlock),
   );
   ok('adapter key is the stable literal "builder-preview"', /key:\s*["']builder-preview["']/.test(indicatorsBlock));
   ok("indicator name comes from previewResult.meta.name, not a hardcoded or re-derived name", /name:\s*previewResult\.meta\.name/.test(indicatorsBlock));
@@ -457,16 +461,21 @@ const previewPanelSrc = read("src/components/builder/PreviewPanel.tsx");
 
   const hasOscPaneBlock = previewPanelSrc.slice(
     previewPanelSrc.indexOf("const hasOscPane = useMemo"),
-    previewPanelSrc.indexOf("const showIdleCaption"),
+    previewPanelSrc.indexOf("const headerStatus"),
   );
   ok(
-    'hasOscPane is true only when at least one plot has pane === "osc", and false with no previewResult (never fabricated)',
-    /previewResult\s*\?\s*previewResult\.plots\.some\(\s*\(p\)\s*=>\s*p\.pane\s*===\s*["']osc["']\s*\)\s*:\s*false/.test(hasOscPaneBlock),
+    'hasOscPane is true only when at least one plot has pane === "osc", and false with no previewResult or while stale (never fabricated)',
+    /previewResult\s*&&\s*!isStale\s*\?\s*previewResult\.plots\.some\(\s*\(p\)\s*=>\s*p\.pane\s*===\s*["']osc["']\s*\)\s*:\s*false/.test(hasOscPaneBlock),
   );
 
   ok(
-    "the `indicators` memo depends only on previewResult, not on previewStatus — so an error/running status never erases the last-good chart's indicator data (StudioChart keeps rendering the last successful previewResult regardless of status)",
-    /\[previewResult\]\s*\)\s*;/.test(indicatorsBlock),
+    "the `indicators` memo depends only on previewResult/isStale, not on previewStatus — so an error/running status never erases the last-good chart's indicator data (StudioChart keeps rendering the last successful previewResult regardless of status)",
+    /\[previewResult,\s*isStale\]\s*\)\s*;/.test(indicatorsBlock),
+  );
+
+  ok(
+    "Phase 5A-4d: `isStale` is computed from previewContext vs the CURRENTLY selected symbol/timeframe — a previewResult computed against a different symbol/timeframe is never drawn as if it belongs to the new selection",
+    /previewContext\.symbol\s*!==\s*selectedSymbol\s*\|\|\s*previewContext\.timeframe\s*!==\s*selectedTimeframe/.test(previewPanelSrc),
   );
 }
 
@@ -500,8 +509,124 @@ const previewPanelSrc = read("src/components/builder/PreviewPanel.tsx");
       /previewError=\{state\.previewError\}/.test(workspaceSrc),
   );
   ok(
-    "BuilderWorkspace supplies a stable module-level EMPTY_BARS reference, not a freshly-allocated [] literal inline on every render",
-    /const EMPTY_BARS:\s*Bar\[\]\s*=\s*\[\]/.test(workspaceSrc) && /bars=\{EMPTY_BARS\}/.test(workspaceSrc),
+    "Phase 5A-4d: BuilderWorkspace passes the REAL bars from useBuilderMarketData through to PreviewPanel, not a hardcoded empty array",
+    /bars=\{bars\}/.test(workspaceSrc) && /useBuilderMarketData\s*\(\s*\)/.test(workspaceSrc),
+  );
+}
+
+// ---- 13. Phase 5A-4d: market-data allow-list + single fetch call site -----
+{
+  ok(
+    "useBuilderMarketData.ts imports the canonical fetchBars from @/lib/marketdata — the ONE market-data entry point every other consumer in this app already uses",
+    /import\s*\{[^}]*\bfetchBars\b[^}]*\}\s*from\s*["']@\/lib\/marketdata["']/.test(marketDataHookSrc),
+  );
+  ok(
+    "useBuilderMarketData.ts imports DEFAULT_FAVORITE_TIMEFRAMES from @/lib/symbols — reusing the existing favorites constant, never inventing a new timeframe list",
+    /import\s*\{[^}]*\bDEFAULT_FAVORITE_TIMEFRAMES\b[^}]*\}\s*from\s*["']@\/lib\/symbols["']/.test(marketDataHookSrc),
+  );
+  ok(
+    "useBuilderMarketData.ts never calls getProvider(...) directly — it goes through the narrower fetchBars wrapper, never the raw provider registry",
+    !/getProvider\s*\(/.test(marketDataHookSrc),
+  );
+  ok("useBuilderMarketData.ts never imports @/lib/market/provider directly", !marketDataHookSrc.includes("lib/market/provider"));
+
+  const builderDir = join(repoRoot, "src", "components", "builder");
+  const files = readdirSync(builderDir).filter((f) => f.endsWith(".ts") || f.endsWith(".tsx"));
+  const fetchCallSiteFiles = [];
+  for (const f of files) {
+    const src = read(join("src", "components", "builder", f));
+    if (/\bfetchBars\s*\(/.test(src)) fetchCallSiteFiles.push(f);
+  }
+  ok(
+    `exactly one file under src/components/builder/ actually calls fetchBars (found: ${fetchCallSiteFiles.join(", ") || "none"}) — no duplicate market-data fetch path`,
+    fetchCallSiteFiles.length === 1 && fetchCallSiteFiles[0] === "useBuilderMarketData.ts",
+  );
+}
+
+// ---- 14. Phase 5A-4d: defaults, bar count, and the stale-fetch guard ------
+{
+  ok('default selectedSymbol is the visible, explicit literal "BTCUSDT"', /DEFAULT_BUILDER_SYMBOL\s*=\s*["']BTCUSDT["']/.test(marketDataHookSrc));
+  ok('default selectedTimeframe is the visible, explicit literal "15m"', /DEFAULT_BUILDER_TIMEFRAME:\s*Timeframe\s*=\s*["']15m["']/.test(marketDataHookSrc));
+  ok(
+    "BUILDER_TIMEFRAMES is derived from the existing DEFAULT_FAVORITE_TIMEFRAMES constant, not a hand-typed duplicate array",
+    /BUILDER_TIMEFRAMES:\s*Timeframe\[\]\s*=\s*DEFAULT_FAVORITE_TIMEFRAMES/.test(marketDataHookSrc),
+  );
+  ok(
+    "the initial historical fetch requests exactly 500 bars, matching Chart Studio's own established default",
+    /HISTORICAL_BAR_COUNT\s*=\s*500/.test(marketDataHookSrc) && /fetchBars\(\s*selectedSymbol\s*,\s*selectedTimeframe\s*,\s*HISTORICAL_BAR_COUNT\s*\)/.test(marketDataHookSrc),
+  );
+  ok(
+    "the fetch effect is keyed on exactly [selectedSymbol, selectedTimeframe] — a selection change is what triggers a refetch, never every render, never a debounce timer",
+    /\},\s*\[selectedSymbol,\s*selectedTimeframe\]\s*\)\s*;/.test(marketDataHookSrc),
+  );
+  ok(
+    "a stale-fetch guard exists (a sequence ref incremented per fetch, checked before every state write) — mirroring the exact weight-class of guard already used for runSeqRef in useBuilderProject.ts, not AbortController, not a job system",
+    /fetchSeqRef\.current/.test(marketDataHookSrc) && (marketDataHookSrc.match(/fetchId\s*!==\s*fetchSeqRef\.current/g) ?? []).length === 3,
+  );
+  ok(
+    "an empty array returned from fetchBars is treated as a real error (\"No market data returned.\"), never silently treated as success",
+    /result\.length === 0/.test(marketDataHookSrc) && /No market data returned\./.test(marketDataHookSrc),
+  );
+  ok(
+    "no fabricated OHLCV anywhere in the market-data hook — every setBars(...) call site is either setBars([]) (clearing on a new fetch) or setBars(result) (the real fetchBars response), never a literal candle object",
+    (marketDataHookSrc.match(/setBars\(/g) ?? []).length === 2 && /setBars\(\[\]\)/.test(marketDataHookSrc) && /setBars\(result\)/.test(marketDataHookSrc),
+  );
+}
+
+// ---- 15. Phase 5A-4d: Run Preview receives real bars + latest sgscript ----
+{
+  ok(
+    "BuilderWorkspace's handleRunPreview calls the EXISTING submitRunPreview(bars) with the real fetched bars — no second execution path, no new runIndicator call site",
+    /function handleRunPreview\(\)\s*\{[\s\S]*?submitRunPreview\(bars\)[\s\S]*?\}/.test(workspaceSrcTop),
+  );
+  ok(
+    "handleRunPreview never calls buildProject/validateProject/createIndicator/updateIndicator/appendIndicatorMessage — Run Preview never generates, validates, or persists",
+    (() => {
+      const body = workspaceSrcTop.slice(workspaceSrcTop.indexOf("function handleRunPreview"), workspaceSrcTop.indexOf("const chat ="));
+      return !/buildProjectFn|validateProjectFn|createIndicatorFn|updateIndicatorFn|appendIndicatorMessageFn|buildMutation\.mutate|validateMutation\.mutate/.test(body);
+    })(),
+  );
+  ok(
+    "Phase 5A-4d: canRunPreview (the toolbar-enablement gate) requires real bars via bars.length > 0, so a click can never reach the runtime's own \"No market data loaded\" failure",
+    /canRunPreviewCheck\(state\.sgscript,\s*state\.previewStatus,\s*bars\.length > 0\)/.test(workspaceSrcTop),
+  );
+  ok(
+    "the toolbar-enablement gate also blocks while bars are actively (re)loading (!barsLoading), independent of the pure canRunPreview execution-readiness check",
+    /&&\s*!barsLoading/.test(workspaceSrcTop),
+  );
+  ok(
+    "Run Preview always executes state.sgscript at click time via the unchanged submitRunPreview contract (Phase 5A-4b) — no snapshot, no second draft field introduced by this phase",
+    !/const\s+\w*[Ss]napshot\w*\s*=\s*state\.sgscript/.test(workspaceSrcTop),
+  );
+}
+
+// ---- 16. Phase 5A-4d: marketDataError and previewError stay separate ------
+{
+  ok(
+    "PreviewPanel destructures marketDataError and previewError as two SEPARATE named props — never one derived from or aliased to the other",
+    /marketDataError:\s*string \| null;/.test(previewPanelSrc) && /previewError:\s*string \| null;/.test(previewPanelSrc),
+  );
+  ok(
+    "PreviewPanel's overlay logic branches on marketDataError and previewError independently (distinct overlay modes), never collapsing both into one message",
+    /marketDataError\s*\?[\s\S]*?"marketError"/.test(previewPanelSrc) && /previewError && !previewResult[\s\S]*?"runtimeErrorNoResult"/.test(previewPanelSrc),
+  );
+  ok("BuilderWorkspace passes marketDataError straight through from the market-data hook", /marketDataError=\{marketDataError\}/.test(workspaceSrcTop));
+  ok("BuilderWorkspace passes previewError straight through from useBuilderProject's state, unmodified", /previewError=\{state\.previewError\}/.test(workspaceSrcTop));
+}
+
+// ---- 17. Phase 5A-4d: symbol/timeframe selectors reuse canonical modules --
+{
+  ok(
+    "PreviewPanel's symbol selector is populated from the existing SYMBOL_REGISTRY (@/lib/symbols) — no new/duplicated instrument list",
+    /import\s*\{[^}]*\bSYMBOL_REGISTRY\b[^}]*\}\s*from\s*["']@\/lib\/symbols["']/.test(previewPanelSrc) && /SYMBOL_REGISTRY\.map/.test(previewPanelSrc),
+  );
+  ok(
+    "PreviewPanel's timeframe selector is populated from BUILDER_TIMEFRAMES (the existing favorites constant, re-exported by the market-data hook) — no invented interval strings",
+    /import\s*\{\s*BUILDER_TIMEFRAMES\s*\}\s*from\s*["']\.\/useBuilderMarketData["']/.test(previewPanelSrc) && /BUILDER_TIMEFRAMES\.map/.test(previewPanelSrc),
+  );
+  ok(
+    "changing symbol/timeframe calls only the plain onSymbolChange/onTimeframeChange callbacks — no AI call, no server-function call, no useMutation reachable from either selector's onValueChange",
+    !/onValueChange=\{[^}]*(buildProjectFn|validateProjectFn|createIndicatorFn|updateIndicatorFn|appendIndicatorMessageFn|Mutation)/.test(previewPanelSrc),
   );
 }
 

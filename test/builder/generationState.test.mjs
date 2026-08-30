@@ -414,14 +414,28 @@ function runResult(overrides = {}) {
   eq("INITIAL_BUILDER_PROJECT_STATE: previewError starts null", INITIAL_BUILDER_PROJECT_STATE.previewError, null);
 }
 
-// ==== Phase 5A-4b: canRunPreview guard =========================================
+// ==== Phase 5A-4b/4d: canRunPreview guard ======================================
 {
-  ok("canRunPreview: real code, idle -> true", canRunPreview("plot(close)", "idle") === true);
-  ok("canRunPreview: real code, success -> true", canRunPreview("plot(close)", "success") === true);
-  ok("canRunPreview: real code, error -> true (a previous failure must not permanently block re-running)", canRunPreview("plot(close)", "error") === true);
-  ok("canRunPreview: empty code -> false", canRunPreview("", "idle") === false);
-  ok("canRunPreview: whitespace-only code -> false", canRunPreview("   \n\t  ", "idle") === false);
-  ok("canRunPreview: while a run is already in flight -> false (no duplicate concurrent runs)", canRunPreview("plot(close)", "running") === false);
+  ok("canRunPreview: real code, idle, has bars -> true", canRunPreview("plot(close)", "idle", true) === true);
+  ok("canRunPreview: real code, success, has bars -> true", canRunPreview("plot(close)", "success", true) === true);
+  ok(
+    "canRunPreview: real code, error, has bars -> true (a previous failure must not permanently block re-running)",
+    canRunPreview("plot(close)", "error", true) === true,
+  );
+  ok("canRunPreview: empty code, has bars -> false", canRunPreview("", "idle", true) === false);
+  ok("canRunPreview: whitespace-only code, has bars -> false", canRunPreview("   \n\t  ", "idle", true) === false);
+  ok(
+    "canRunPreview: while a run is already in flight, has bars -> false (no duplicate concurrent runs)",
+    canRunPreview("plot(close)", "running", true) === false,
+  );
+  ok(
+    "Phase 5A-4d: canRunPreview: real code, idle, NO bars -> false (the runtime hard-requires non-empty bars — never let a click reach that failure)",
+    canRunPreview("plot(close)", "idle", false) === false,
+  );
+  ok(
+    "Phase 5A-4d: canRunPreview: real code, success, NO bars -> false (bars can become unavailable again after a symbol change even once a previous run succeeded)",
+    canRunPreview("plot(close)", "success", false) === false,
+  );
 }
 
 // ==== Phase 5A-4b: beginPreviewRun ==============================================

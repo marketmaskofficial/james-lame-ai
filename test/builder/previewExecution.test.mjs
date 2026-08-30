@@ -189,7 +189,10 @@ plot(nonExistentHelperFunction(close))
 
   eq("stale-run guard: exactly one result was ever applied to state", applied.length, 1);
   eq("stale-run guard: the NEWER run (B) is the one applied, even though the OLDER run (A) resolved later", applied[0].name, "Run B");
-  ok("stale-run guard: canRunPreview / beginPreviewRun themselves are untouched by this guard — it lives entirely in the call site", canRunPreview("plot(close)", "idle") === true && typeof beginPreviewRun === "function");
+  ok(
+    "stale-run guard: canRunPreview / beginPreviewRun themselves are untouched by this guard — it lives entirely in the call site",
+    canRunPreview("plot(close)", "idle", true) === true && typeof beginPreviewRun === "function",
+  );
 }
 
 // ---- summary ----------------------------------------------------------------

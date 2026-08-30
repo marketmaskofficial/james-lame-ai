@@ -271,7 +271,7 @@ export function useBuilderProject(signedIn: boolean) {
    * generation/refinement and from static validation.
    */
   async function submitRunPreview(bars: Bar[], settings: Record<string, number | boolean | string> = {}) {
-    if (!canRunPreview(state.sgscript, state.previewStatus)) return;
+    if (!canRunPreview(state.sgscript, state.previewStatus, bars.length > 0)) return;
     runSeqRef.current += 1;
     const runId = runSeqRef.current;
     setState((s) => beginPreviewRun(s));
