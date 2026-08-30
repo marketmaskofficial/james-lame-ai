@@ -19,14 +19,13 @@ import { useBuilderProject } from "./useBuilderProject";
  * it uses the plain `react-resizable-panels` primitives directly
  * (`src/components/ui/resizable.tsx` — already a dependency of this repo,
  * previously unused) rather than importing any of Chart Studio's
- * workspace infrastructure. No floating windows, no drag-to-dock, no
- * nested layout tree.
+ * workspace infrastructure. No floating windows, no drag-to-dock.
  *
- * >=1024 (Tailwind `lg:`): the three-panel resizable desktop workspace.
- * <1024: a tabbed workspace (Chat/Code/Preview/Settings). Both variants
- * are always mounted in the DOM (toggled via `hidden`, not conditionally
- * rendered) — the same "dual-render, CSS-toggled" responsive pattern
- * already used throughout this app (e.g. Trade Explorer's table/cards,
+ * >=1024 (Tailwind `lg:`): the resizable desktop workspace. <1024: a
+ * tabbed workspace (Chat/Preview/Code/Settings). Both variants are always
+ * mounted in the DOM (toggled via `hidden`, not conditionally rendered) —
+ * the same "dual-render, CSS-toggled" responsive pattern already used
+ * throughout this app (e.g. Trade Explorer's table/cards,
  * `JournalPerformanceTable`) — so neither variant's state is lost when the
  * viewport crosses the breakpoint, and switching mobile tabs never
  * remounts a panel.
@@ -45,14 +44,29 @@ import { useBuilderProject } from "./useBuilderProject";
  * breakpoint crossing either. `readOnly={state.status === "generating"}` is
  * computed here, once, from the same canonical state — not duplicated
  * per-layout.
+ *
+ * Phase 5A-4a — approved desktop layout change: Chat stays the full-height
+ * LEFT column (never moved); the RIGHT side is no longer a flat sibling of
+ * Chat but a nested vertical split — Live Preview on top, Code Editor on
+ * the bottom — built with a `<ResizablePanelGroup orientation="vertical">`
+ * nested inside the outer horizontal group's second `<ResizablePanel>`.
+ * `react-resizable-panels` supports nested groups natively (confirmed by
+ * reading the installed library: `Group` sets `flexDirection` via an
+ * inline style keyed off its own `orientation` prop, so a nested group
+ * needs no special wiring or a second workspace system) — this is still
+ * the same plain primitive, one level deeper, never Studio's dockable-
+ * widget architecture. `preview` joins `chat`/`code` as a third
+ * built-once-reused-by-reference element, so `PreviewPanel` gets the same
+ * single-instance guarantee `ChatPanel`/`CodeEditorPanel` already have,
+ * ready for the day it stops being a stateless placeholder.
  */
 
 export type BuilderTab = "chat" | "code" | "preview" | "settings";
 
 const MOBILE_TABS: { id: BuilderTab; label: string }[] = [
   { id: "chat", label: "Chat" },
-  { id: "code", label: "Code" },
   { id: "preview", label: "Preview" },
+  { id: "code", label: "Code" },
   { id: "settings", label: "Settings" },
 ];
 
@@ -78,6 +92,7 @@ export function BuilderWorkspace({
       readOnly={state.status === "generating"}
     />
   );
+  const preview = <PreviewPanel />;
   const canValidate = canSubmitValidate(state.sgscript, state.status, state.validationPending, signedIn);
 
   return (
@@ -87,19 +102,23 @@ export function BuilderWorkspace({
         <BuilderToolbar canValidate={canValidate} validationPending={state.validationPending} onValidate={submitValidate} />
 
         <div className="min-h-0 flex-1 overflow-hidden">
-          {/* Desktop / large tablet: three-panel resizable workspace. */}
+          {/* Desktop / large tablet: Chat (left) | Preview-over-Code (right, nested split). */}
           <div className="hidden h-full lg:block">
             <ResizablePanelGroup orientation="horizontal" className="h-full">
-              <ResizablePanel defaultSize="27" minSize="18" className="min-w-0">
+              <ResizablePanel defaultSize="28" minSize="20" className="min-w-0">
                 {chat}
               </ResizablePanel>
               <ResizableHandle withHandle />
-              <ResizablePanel defaultSize="43" minSize="24" className="min-w-0">
-                {code}
-              </ResizablePanel>
-              <ResizableHandle withHandle />
-              <ResizablePanel defaultSize="30" minSize="18" className="min-w-0">
-                <PreviewPanel />
+              <ResizablePanel defaultSize="72" minSize="45" className="min-w-0">
+                <ResizablePanelGroup orientation="vertical" className="h-full">
+                  <ResizablePanel defaultSize="65" minSize="30" className="min-h-0">
+                    {preview}
+                  </ResizablePanel>
+                  <ResizableHandle withHandle />
+                  <ResizablePanel defaultSize="35" minSize="22" className="min-h-0">
+                    {code}
+                  </ResizablePanel>
+                </ResizablePanelGroup>
               </ResizablePanel>
             </ResizablePanelGroup>
           </div>
@@ -124,10 +143,8 @@ export function BuilderWorkspace({
             </div>
             <div className="min-h-0 flex-1">
               <div className={activeTab === "chat" ? "h-full" : "hidden"}>{chat}</div>
+              <div className={activeTab === "preview" ? "h-full" : "hidden"}>{preview}</div>
               <div className={activeTab === "code" ? "h-full" : "hidden"}>{code}</div>
-              <div className={activeTab === "preview" ? "h-full" : "hidden"}>
-                <PreviewPanel />
-              </div>
               <div className={activeTab === "settings" ? "h-full" : "hidden"}>
                 <SettingsPanel />
               </div>

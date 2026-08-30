@@ -57,6 +57,8 @@ const read = (relPath) => stripComments(readFileSync(join(repoRoot, relPath), "u
 
 const generationStateSrc = read("src/lib/builder/generationState.ts");
 const useBuilderProjectSrc = read("src/components/builder/useBuilderProject.ts");
+const workspaceSrcTop = read("src/components/builder/BuilderWorkspace.tsx");
+const resizableSrc = read("src/components/ui/resizable.tsx");
 
 // ---- 1. Explicit allow-list: the 6 canonical functions ARE reused --------
 {
@@ -114,7 +116,12 @@ const useBuilderProjectSrc = read("src/components/builder/useBuilderProject.ts")
   for (const forbidden of FORBIDDEN) {
     ok(`generationState.ts never references "${forbidden}"`, !generationStateSrc.includes(forbidden));
     ok(`useBuilderProject.ts never references "${forbidden}"`, !useBuilderProjectSrc.includes(forbidden));
+    ok(
+      `BuilderWorkspace.tsx never references "${forbidden}" (Phase 5A-4a is layout/state architecture only — no runtime, renderer, AI, or market-data import)`,
+      !workspaceSrcTop.includes(forbidden),
+    );
   }
+  ok("resizable.tsx never references any canonical/forbidden module (it only touches react-resizable-panels)", FORBIDDEN.every((f) => !resizableSrc.includes(f)));
 }
 
 // ---- 3. No new AI/server endpoint ------------------------------------------
@@ -125,6 +132,26 @@ const useBuilderProjectSrc = read("src/components/builder/useBuilderProject.ts")
     !/createServerFn\s*\(/.test(useBuilderProjectSrc),
   );
   ok("useBuilderProject.ts uses useServerFn (the standard client-side wrapper), consistent with every other server-fn caller", /useServerFn/.test(useBuilderProjectSrc));
+  ok(
+    "Phase 5A-4a: BuilderWorkspace.tsx introduces ZERO server-function machinery (no createServerFn, no useServerFn, no *.functions import) — the layout change is pure JSX/CSS restructuring",
+    !workspaceSrcTop.includes("createServerFn") && !workspaceSrcTop.includes("useServerFn") && !/from\s+["'][^"']*\.functions["']/.test(workspaceSrcTop),
+  );
+}
+
+// ---- 3b. Phase 5A-4a: the resizable-handle orientation fix is real -------
+{
+  ok(
+    "resizable.tsx no longer relies on the nonexistent data-panel-group-direction attribute (verified against the installed react-resizable-panels: it never sets that attribute)",
+    !resizableSrc.includes("data-panel-group-direction") && !resizableSrc.includes("data-[panel-group-direction"),
+  );
+  ok(
+    'ResizableHandle now keys its vertical-split styling off the real aria-orientation="horizontal" attribute the library actually renders on the separator',
+    /aria-\[orientation=horizontal\]/.test(resizableSrc),
+  );
+  ok(
+    "the fix is purely additive to the existing base classes (w-px/bg-border/etc. untouched) — a selector swap, not a rewrite",
+    /relative flex w-px items-center justify-center bg-border/.test(resizableSrc),
+  );
 }
 
 // ---- 4. Exactly one call site each of buildProject and validateProject ---
@@ -171,6 +198,47 @@ const useBuilderProjectSrc = read("src/components/builder/useBuilderProject.ts")
   ok(
     "the SAME <CodeEditorPanel> element is reused for both the desktop and mobile layouts (Phase 5A-3: the real CodeMirror instance must never remount on a tab/breakpoint switch)",
     (workspaceSrc.match(/<CodeEditorPanel\b/g) ?? []).length === 1,
+  );
+  ok(
+    "Phase 5A-4a: PreviewPanel is constructed exactly once (`const preview = <PreviewPanel />`), the SAME single-instance guarantee as ChatPanel/CodeEditorPanel — not a stateless exception built twice",
+    (workspaceSrc.match(/<PreviewPanel\b/g) ?? []).length === 1,
+  );
+}
+
+// ---- 5b. Phase 5A-4a: approved nested desktop layout (Chat | Preview/Code) --
+{
+  const workspaceSrc = read("src/components/builder/BuilderWorkspace.tsx");
+  const orientationMatches = [...workspaceSrc.matchAll(/orientation="(horizontal|vertical)"/g)].map((m) => m[1]);
+  ok(
+    "exactly one outer horizontal ResizablePanelGroup and one inner vertical ResizablePanelGroup exist (the approved Chat | Preview-over-Code split — never a third group, never Studio's WorkspaceLayout/LayoutNode)",
+    orientationMatches.filter((o) => o === "horizontal").length === 1 && orientationMatches.filter((o) => o === "vertical").length === 1,
+  );
+  ok(
+    "Chat is the FIRST panel in the outer horizontal group (the left column) — never moved",
+    /orientation="horizontal"[\s\S]*?<ResizablePanel[^>]*>\s*\{chat\}/.test(workspaceSrc),
+  );
+  ok(
+    "the inner vertical group's FIRST panel is Preview and its SECOND is Code (Live Preview above Code Editor, never the other way round)",
+    /orientation="vertical"[^>]*>[\s\S]*?\{preview\}[\s\S]*?<ResizableHandle[\s\S]*?\{code\}/.test(workspaceSrc),
+  );
+  ok(
+    "the nested vertical group lives INSIDE the outer horizontal group's second panel (Right Workspace), not as a third sibling of Chat",
+    /\{chat\}[\s\S]*?<ResizablePanel[^>]*>\s*<ResizablePanelGroup orientation="vertical"/.test(workspaceSrc),
+  );
+  ok(
+    "BuilderWorkspace never imports Chart Studio's WorkspaceLayout/LayoutNode dockable-widget system for this layout",
+    !/WorkspaceLayout|LayoutNode|lib\/workspace\/types/.test(workspaceSrc),
+  );
+}
+
+// ---- 5c. Phase 5A-4a: mobile tab order is Chat / Preview / Code / Settings --
+{
+  const workspaceSrc = read("src/components/builder/BuilderWorkspace.tsx");
+  const tabOrderMatch = workspaceSrc.match(/const MOBILE_TABS[\s\S]*?\];/);
+  const tabIds = tabOrderMatch ? [...tabOrderMatch[0].matchAll(/id:\s*"(\w+)"/g)].map((m) => m[1]) : [];
+  ok(
+    `MOBILE_TABS is ordered Chat / Preview / Code / Settings (found: ${tabIds.join(", ") || "none"})`,
+    JSON.stringify(tabIds) === JSON.stringify(["chat", "preview", "code", "settings"]),
   );
 }
 
