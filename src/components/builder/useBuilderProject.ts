@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { buildProject, type BuildResult } from "@/lib/project.functions";
+import { buildProject, validateProject, type BuildResult } from "@/lib/project.functions";
 import { createIndicator, updateIndicator } from "@/lib/indicators.functions";
 import { listIndicatorMessages, appendIndicatorMessage } from "@/lib/indicatorMessages.functions";
 import { defaultSettingsFromSpec } from "@/lib/spec/inputDefaults";
@@ -10,10 +10,15 @@ import {
   appendUserMessage,
   applyBuildFailure,
   applyBuildSuccess,
+  applyValidationFailure,
+  applyValidationResult,
+  beginValidation,
   buildRequestPayload,
   canSubmitFixError,
   canSubmitPrompt,
+  canSubmitValidate,
   fixErrorRequestPayload,
+  setManualSgscript,
   withIndicatorId,
   type BuilderMessageKind,
   type BuilderMessageRole,
@@ -22,18 +27,21 @@ import {
 import { classifyBuildResult, type BuildOutcomeStatus } from "@/lib/spec/buildOutcome";
 
 /**
- * Phase 5A-2 — the ONE place Indicator Builder touches the canonical
- * generation/persistence chain. Every server call here is one of the five
- * explicitly reused functions (`buildProject`, `createIndicator`,
- * `updateIndicator`, `listIndicatorMessages`, `appendIndicatorMessage`) —
- * nothing here defines a new server function, calls the AI SDK directly,
- * or re-implements any validation/runtime logic. All pure decision-making
- * (what state transition a result implies, what request shape to send)
- * lives in `src/lib/builder/generationState.ts`; this hook is only the
- * thin React/I-O shell around it.
+ * Phase 5A-2/5A-3 — the ONE place Indicator Builder touches the canonical
+ * generation/persistence chain. Every server call here is one of the six
+ * explicitly reused functions (`buildProject`, `validateProject`,
+ * `createIndicator`, `updateIndicator`, `listIndicatorMessages`,
+ * `appendIndicatorMessage`) — nothing here defines a new server function,
+ * calls the AI SDK directly, or re-implements any validation/runtime logic.
+ * All pure decision-making (what state transition a result implies, what
+ * request shape to send) lives in `src/lib/builder/generationState.ts`;
+ * this hook is only the thin React/I-O shell around it. Manual code edits
+ * (`updateSgscript`) are the one action in this hook that touches ZERO
+ * server functions — see its own doc comment below.
  */
 export function useBuilderProject(signedIn: boolean) {
   const buildProjectFn = useServerFn(buildProject);
+  const validateProjectFn = useServerFn(validateProject);
   const createIndicatorFn = useServerFn(createIndicator);
   const updateIndicatorFn = useServerFn(updateIndicator);
   const listIndicatorMessagesFn = useServerFn(listIndicatorMessages);
@@ -193,5 +201,37 @@ export function useBuilderProject(signedIn: boolean) {
     buildMutation.mutate(payload);
   }
 
-  return { state, prompt, setPrompt, submitPrompt, submitFixError };
+  /** Phase 5A-3 — the ONE place a manual editor keystroke touches state.
+   * Purely local: `setManualSgscript` is a synchronous state transform with
+   * no I/O, so an ordinary keystroke never reaches this hook's network
+   * layer at all (no `buildProjectFn`/`validateProjectFn`/
+   * `createIndicatorFn`/`updateIndicatorFn`/`appendIndicatorMessageFn`
+   * call is anywhere in this function). */
+  function updateSgscript(sgscript: string) {
+    setState((s) => setManualSgscript(s, sgscript));
+  }
+
+  /** Re-validates the CURRENT canonical `state.pine`/`state.sgscript` — the
+   * exact same fields a follow-up `buildProject` call would read, so a
+   * manual edit is validated exactly as typed, never a stale AI draft.
+   * `validateProject` is static-only (no `generateText`, no AI usage
+   * recording, no indicator/message persistence) — reused as-is, never
+   * duplicated. */
+  const validateMutation = useMutation({
+    mutationFn: (payload: { pine?: string; sgscript?: string }) => validateProjectFn({ data: payload }),
+    onSuccess: (result) => {
+      setState((s) => applyValidationResult(s, result));
+    },
+    onError: (e: unknown) => {
+      setState((s) => applyValidationFailure(s, e instanceof Error ? e.message : "Validation failed"));
+    },
+  });
+
+  function submitValidate() {
+    if (!canSubmitValidate(state.sgscript, state.status, state.validationPending, signedIn)) return;
+    setState((s) => beginValidation(s));
+    validateMutation.mutate({ pine: state.pine, sgscript: state.sgscript });
+  }
+
+  return { state, prompt, setPrompt, submitPrompt, submitFixError, updateSgscript, submitValidate };
 }

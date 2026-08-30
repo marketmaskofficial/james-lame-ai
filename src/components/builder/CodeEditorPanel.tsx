@@ -1,15 +1,33 @@
 import { FileCode } from "lucide-react";
+import { CodeEditor } from "@/components/studio/CodeEditor";
 
 /**
- * Phase 5A-2 — Code Editor region. Still NOT the real editor: this phase
- * only stores the generated SGScript in Builder state and displays it as
- * inert, read-only text (a plain `<pre>`, never an editable `<textarea>`
- * pretending to be a finished editor) so Phase 5A-3 can swap in the real
- * CodeMirror instance (`src/components/studio/CodeEditor.tsx`, already
- * used by Chart Studio) against the exact same `sgscript` data without any
- * change to where that data comes from.
+ * Phase 5A-3 — the real Code Editor region. Reuses the SAME leaf CodeMirror
+ * component Chart Studio already uses (`src/components/studio/CodeEditor.tsx`)
+ * — never a second editor implementation — as a fully controlled input over
+ * Builder's ONE canonical `sgscript` value (`useBuilderProject`'s
+ * `state.sgscript`, threaded down through `BuilderWorkspace`). There is no
+ * editor-local draft here: `onChange` writes straight back into that same
+ * canonical state via `setManualSgscript`, so the value this component
+ * renders and the value `buildRequestPayload`/Validate read are always the
+ * literal same field.
+ *
+ * `readOnly` is driven by `status === "generating"` (see `BuilderWorkspace`)
+ * — the code stays visible during an in-flight AI request but can't be
+ * edited, which is what prevents a manual edit from racing a build result
+ * that would otherwise silently overwrite it.
  */
-export function CodeEditorPanel({ sgscript, hasValidationResult }: { sgscript: string; hasValidationResult: boolean }) {
+export function CodeEditorPanel({
+  sgscript,
+  hasValidationResult,
+  onChange,
+  readOnly,
+}: {
+  sgscript: string;
+  hasValidationResult: boolean;
+  onChange: (value: string) => void;
+  readOnly: boolean;
+}) {
   return (
     <div className="flex h-full flex-col">
       <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-2">
@@ -18,7 +36,9 @@ export function CodeEditorPanel({ sgscript, hasValidationResult }: { sgscript: s
       </div>
 
       {sgscript ? (
-        <pre className="min-h-0 flex-1 overflow-auto p-3 font-mono text-[11px] leading-relaxed text-foreground/90">{sgscript}</pre>
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <CodeEditor value={sgscript} onChange={onChange} readOnly={readOnly} />
+        </div>
       ) : (
         <div className="flex flex-1 flex-col items-center justify-center gap-2 overflow-y-auto px-4 text-center">
           <FileCode className="h-5 w-5 text-muted-foreground/60" />

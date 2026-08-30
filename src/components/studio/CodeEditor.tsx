@@ -1,6 +1,6 @@
 import { lazy, Suspense } from "react";
 
-type Props = { value: string; onChange: (v: string) => void; height?: string };
+type Props = { value: string; onChange: (v: string) => void; height?: string; readOnly?: boolean };
 
 // CodeMirror + the JS parser load lazily, and only in the browser.
 const Editor = lazy(async () => {
@@ -32,7 +32,11 @@ const Editor = lazy(async () => {
   });
   const extensions = [javascript(), surface, highlightActiveLine(), highlightActiveLineGutter()];
   return {
-    default: ({ value, onChange, height = "100%" }: Props) => (
+    // Phase 5A-3: added `readOnly` (default false) so the Indicator Builder
+    // can keep the editor visible-but-non-editable while an AI generation
+    // is in flight, without a second editor implementation. Omitting the
+    // prop entirely (Studio's own call site) behaves exactly as before.
+    default: ({ value, onChange, height = "100%", readOnly = false }: Props) => (
       <CM
         value={value}
         height={height}
@@ -40,6 +44,7 @@ const Editor = lazy(async () => {
         extensions={extensions}
         basicSetup={{ lineNumbers: true, foldGutter: false }}
         onChange={onChange}
+        readOnly={readOnly}
         style={{ fontSize: 12, height: "100%" }}
       />
     ),
@@ -53,6 +58,7 @@ export function CodeEditor(props: Props) {
         <textarea
           value={props.value}
           onChange={(e) => props.onChange(e.target.value)}
+          readOnly={props.readOnly}
           spellCheck={false}
           className="h-full w-full resize-none bg-transparent p-3 font-mono text-xs text-foreground outline-none"
         />

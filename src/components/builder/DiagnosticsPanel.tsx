@@ -3,12 +3,15 @@ import { ChevronUp } from "lucide-react";
 import type { BuildValidation } from "@/lib/builder/generationState";
 
 /**
- * Phase 5A-2 — surfaces the SAME `BuildResult.validation` the assistant
- * chat bubble already summarizes, in structured/scannable form (Pine and
- * SGScript issues kept distinct, exactly as the canonical result already
- * distinguishes them) — never a second validation pass, never fabricated
- * issues. Falls back to the honest neutral state when nothing has been
- * generated yet.
+ * Phase 5A-2/5A-3 — surfaces the SAME `state.validation` an AI build OR an
+ * explicit Validate click populates (Pine and SGScript issues kept
+ * distinct, exactly as the canonical result already distinguishes them) —
+ * never a second validation format, never fabricated issues. `pending`/
+ * `error` cover Validate's own transient states (its request in flight, or
+ * the request itself failing) without inventing a second diagnostics
+ * shape — they're just what's shown instead of `validation` while true.
+ * Falls back to the honest neutral state when nothing has been generated
+ * or validated yet.
  */
 
 type Issue = BuildValidation["pine"]["issues"][number];
@@ -30,7 +33,15 @@ function IssueGroup({ title, issues }: { title: string; issues: Issue[] }) {
   );
 }
 
-export function DiagnosticsPanel({ validation }: { validation: BuildValidation | null }) {
+export function DiagnosticsPanel({
+  validation,
+  pending,
+  error,
+}: {
+  validation: BuildValidation | null;
+  pending?: boolean;
+  error?: string | null;
+}) {
   const [collapsed, setCollapsed] = useState(false);
   const pineIssues = validation?.pine.issues ?? [];
   const sgIssues = validation?.sgscript.issues ?? [];
@@ -49,9 +60,11 @@ export function DiagnosticsPanel({ validation }: { validation: BuildValidation |
       </button>
       {!collapsed && (
         <div className="max-h-40 space-y-2 overflow-y-auto px-4 pb-2.5 text-xs text-muted-foreground">
-          {!validation && "No diagnostics."}
-          {validation && !hasIssues && "Passed static validation — no issues."}
-          {validation && hasIssues && (
+          {pending && "Validating…"}
+          {!pending && error && <span className="text-destructive">Validation request failed: {error}</span>}
+          {!pending && !error && !validation && "No diagnostics."}
+          {!pending && !error && validation && !hasIssues && "Passed static validation — no issues."}
+          {!pending && !error && validation && hasIssues && (
             <>
               <IssueGroup title="Pine" issues={pineIssues} />
               <IssueGroup title="SGScript" issues={sgIssues} />

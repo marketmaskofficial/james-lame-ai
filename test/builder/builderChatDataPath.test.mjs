@@ -1,23 +1,34 @@
-// Regression guard for Phase 5A-2's Indicator Builder chat wiring — the
-// ONLY two files in this whole feature allowed to touch the canonical
-// generation/persistence chain: src/lib/builder/generationState.ts (pure,
-// type-only references) and src/components/builder/useBuilderProject.ts
-// (the real server-function calls). Same static source-inspection style as
+// Regression guard for Phase 5A-2/5A-3's Indicator Builder chat + code
+// editor wiring — the ONLY two files in this whole feature allowed to touch
+// the canonical generation/persistence/validation chain:
+// src/lib/builder/generationState.ts (pure, type-only references) and
+// src/components/builder/useBuilderProject.ts (the real server-function
+// calls). Same static source-inspection style as
 // test/builder/builderShell.test.mjs and
 // test/dashboard/journalAnalyticsDataPath.test.mjs.
 //
-// This test proves three things the Phase 5A-2 brief calls "critical":
-//   1. Builder reuses buildProject/createIndicator/updateIndicator/
-//      listIndicatorMessages/appendIndicatorMessage — an explicit
-//      ALLOW-list, not just an absence-of-forbidden-things check.
+// This test proves four things the Phase 5A-2/5A-3 briefs call "critical":
+//   1. Builder reuses buildProject/validateProject/createIndicator/
+//      updateIndicator/listIndicatorMessages/appendIndicatorMessage — an
+//      explicit ALLOW-list, not just an absence-of-forbidden-things check.
+//      (validateProject added in Phase 5A-3, alongside buildProject in the
+//      same already-canonical src/lib/project.functions.ts — not a new
+//      server function.)
 //   2. Builder still forbids everything the Phase 5A audit's "one
 //      canonical chain" rule protects: the SGScript runtime, validator
 //      internals, the AI prompt/model-call internals, StudioChart,
 //      lightweight-charts, the backtest engine, and any admin/service-role
-//      client.
-//   3. There is exactly ONE call site of buildProject in the entire
-//      Builder feature (src/components/builder/**) — proving Builder has
-//      not accidentally grown a second place that talks to the AI.
+//      client — validatePine/validateSgScript stay forbidden as DIRECT
+//      Builder imports even though validateProject wraps them internally,
+//      exactly like buildProject already does.
+//   3. There is exactly ONE call site of buildProject AND exactly ONE call
+//      site of validateProject in the entire Builder feature
+//      (src/components/builder/**) — proving Builder has not accidentally
+//      grown a second place that talks to the AI or a second place that
+//      talks to static validation.
+//   4. An ordinary manual-editor keystroke (src/lib/builder/generationState.ts's
+//      setManualSgscript) never reaches any server-function call — it's a
+//      documented, verified pure local state transform.
 //
 // Usage: npx tsx test/builder/builderChatDataPath.test.mjs
 
@@ -47,9 +58,13 @@ const read = (relPath) => stripComments(readFileSync(join(repoRoot, relPath), "u
 const generationStateSrc = read("src/lib/builder/generationState.ts");
 const useBuilderProjectSrc = read("src/components/builder/useBuilderProject.ts");
 
-// ---- 1. Explicit allow-list: the 5 canonical functions ARE reused --------
+// ---- 1. Explicit allow-list: the 6 canonical functions ARE reused --------
 {
-  ok("useBuilderProject.ts imports buildProject", /import\s*\{[^}]*\bbuildProject\b[^}]*\}\s*from\s*["']@\/lib\/project\.functions["']/.test(useBuilderProjectSrc));
+  ok(
+    "useBuilderProject.ts imports buildProject and validateProject",
+    /import\s*\{[^}]*\bbuildProject\b[^}]*\bvalidateProject\b[^}]*\}\s*from\s*["']@\/lib\/project\.functions["']/.test(useBuilderProjectSrc) ||
+      /import\s*\{[^}]*\bvalidateProject\b[^}]*\bbuildProject\b[^}]*\}\s*from\s*["']@\/lib\/project\.functions["']/.test(useBuilderProjectSrc),
+  );
   ok(
     "useBuilderProject.ts imports createIndicator and updateIndicator",
     /import\s*\{[^}]*\bcreateIndicator\b[^}]*\bupdateIndicator\b[^}]*\}\s*from\s*["']@\/lib\/indicators\.functions["']/.test(useBuilderProjectSrc) ||
@@ -112,26 +127,36 @@ const useBuilderProjectSrc = read("src/components/builder/useBuilderProject.ts")
   ok("useBuilderProject.ts uses useServerFn (the standard client-side wrapper), consistent with every other server-fn caller", /useServerFn/.test(useBuilderProjectSrc));
 }
 
-// ---- 4. Exactly one call site of buildProject across the whole feature ----
+// ---- 4. Exactly one call site each of buildProject and validateProject ---
 {
   const builderDir = join(repoRoot, "src", "components", "builder");
   const files = readdirSync(builderDir).filter((f) => f.endsWith(".ts") || f.endsWith(".tsx"));
-  let callSites = 0;
-  const callSiteFiles = [];
+  let buildCallSites = 0;
+  let validateCallSites = 0;
+  const buildCallSiteFiles = [];
+  const validateCallSiteFiles = [];
   for (const f of files) {
     const src = read(join("src", "components", "builder", f));
     if (/\bbuildProjectFn\s*\(/.test(src) || /\bbuildProject\s*\(\s*\{/.test(src)) {
-      callSites++;
-      callSiteFiles.push(f);
+      buildCallSites++;
+      buildCallSiteFiles.push(f);
+    }
+    if (/\bvalidateProjectFn\s*\(/.test(src) || /\bvalidateProject\s*\(\s*\{/.test(src)) {
+      validateCallSites++;
+      validateCallSiteFiles.push(f);
     }
   }
   ok(
-    `exactly one file under src/components/builder/ actually calls buildProject (found: ${callSiteFiles.join(", ") || "none"})`,
-    callSites === 1 && callSiteFiles[0] === "useBuilderProject.ts",
+    `exactly one file under src/components/builder/ actually calls buildProject (found: ${buildCallSiteFiles.join(", ") || "none"})`,
+    buildCallSites === 1 && buildCallSiteFiles[0] === "useBuilderProject.ts",
+  );
+  ok(
+    `exactly one file under src/components/builder/ actually calls validateProject (found: ${validateCallSiteFiles.join(", ") || "none"})`,
+    validateCallSites === 1 && validateCallSiteFiles[0] === "useBuilderProject.ts",
   );
 }
 
-// ---- 5. Chat state survives mobile tab switches (one hook call, shared) --
+// ---- 5. Chat/Code state survives mobile tab switches (one hook call, shared) --
 {
   const workspaceSrc = read("src/components/builder/BuilderWorkspace.tsx");
   const hookCallMatches = workspaceSrc.match(/useBuilderProject\s*\(/g) ?? [];
@@ -142,6 +167,80 @@ const useBuilderProjectSrc = read("src/components/builder/useBuilderProject.ts")
   ok(
     "the SAME <ChatPanel> element is reused for both the desktop and mobile layouts (not two independently-constructed instances)",
     (workspaceSrc.match(/<ChatPanel\b/g) ?? []).length === 1,
+  );
+  ok(
+    "the SAME <CodeEditorPanel> element is reused for both the desktop and mobile layouts (Phase 5A-3: the real CodeMirror instance must never remount on a tab/breakpoint switch)",
+    (workspaceSrc.match(/<CodeEditorPanel\b/g) ?? []).length === 1,
+  );
+}
+
+// ---- 6. Manual editing is purely local — no server call reachable --------
+{
+  const useBuilderProjectFnBody = useBuilderProjectSrc.slice(useBuilderProjectSrc.indexOf("function updateSgscript"));
+  const updateSgscriptFnSrc = useBuilderProjectFnBody.slice(0, useBuilderProjectFnBody.indexOf("\n  }") + 4);
+  ok("useBuilderProject.ts defines updateSgscript", /function updateSgscript/.test(useBuilderProjectSrc));
+  ok(
+    "updateSgscript's body calls ONLY setState/setManualSgscript — no buildProjectFn/validateProjectFn/createIndicatorFn/updateIndicatorFn/appendIndicatorMessageFn",
+    /setManualSgscript/.test(updateSgscriptFnSrc) &&
+      !/buildProjectFn|validateProjectFn|createIndicatorFn|updateIndicatorFn|appendIndicatorMessageFn/.test(updateSgscriptFnSrc),
+  );
+  ok(
+    "generationState.ts's setManualSgscript is a pure (state, sgscript) => state transform (no I/O, no fetch, no createServerFn)",
+    /export function setManualSgscript/.test(generationStateSrc) && !/fetch\(|createServerFn/.test(generationStateSrc),
+  );
+}
+
+// ---- 6b. Explicit Validate reaches ONLY validateProject — never persists --
+{
+  const submitValidateFnBody = useBuilderProjectSrc.slice(useBuilderProjectSrc.indexOf("function submitValidate"));
+  const submitValidateFnSrc = submitValidateFnBody.slice(0, submitValidateFnBody.indexOf("\n  }") + 4);
+  ok("useBuilderProject.ts defines submitValidate", /function submitValidate/.test(useBuilderProjectSrc));
+  ok(
+    "submitValidate calls validateMutation (backed by validateProjectFn) and nothing else network-shaped — no createIndicatorFn/updateIndicatorFn/appendIndicatorMessageFn/buildProjectFn/buildMutation",
+    /validateMutation\.mutate/.test(submitValidateFnSrc) &&
+      !/createIndicatorFn|updateIndicatorFn|appendIndicatorMessageFn|buildProjectFn|buildMutation\.mutate/.test(submitValidateFnSrc),
+  );
+  ok(
+    "the validate request sends the CURRENT canonical pine and sgscript (state.pine / state.sgscript), not a copy or a stale draft",
+    /validateMutation\.mutate\(\{\s*pine:\s*state\.pine,\s*sgscript:\s*state\.sgscript\s*\}\)/.test(submitValidateFnSrc),
+  );
+  const validateMutationBody = useBuilderProjectSrc.slice(useBuilderProjectSrc.indexOf("const validateMutation"), useBuilderProjectSrc.indexOf("function submitValidate"));
+  ok(
+    "validateMutation's onSuccess ONLY calls applyValidationResult — never touches indicatorId, never invalidates the indicators query, never appends a message",
+    /applyValidationResult/.test(validateMutationBody) && !/withIndicatorId|invalidateQueries|appendIndicatorMessageFn|persistIndicator/.test(validateMutationBody),
+  );
+}
+
+// ---- 7. Editor read-only wiring during an in-flight AI build (race guard) --
+{
+  const workspaceSrc = read("src/components/builder/BuilderWorkspace.tsx");
+  const codeEditorPanelSrc = read("src/components/builder/CodeEditorPanel.tsx");
+  ok(
+    'BuilderWorkspace wires CodeEditorPanel\'s readOnly to status === "generating" (the ONE race Phase 5A-3 must prevent: editing a snapshot that a just-submitted buildProject request already captured)',
+    /readOnly=\{state\.status === ["']generating["']\}/.test(workspaceSrc),
+  );
+  ok(
+    "CodeEditorPanel forwards readOnly straight into the real CodeEditor (no local override, no second read-only mechanism)",
+    /readOnly:\s*boolean/.test(codeEditorPanelSrc) && /<CodeEditor[^>]*readOnly=\{readOnly\}/.test(codeEditorPanelSrc),
+  );
+  ok(
+    "CodeEditorPanel is controlled directly from the canonical sgscript value — onChange is forwarded, not wrapped in a local draft state",
+    !/useState/.test(codeEditorPanelSrc) && /onChange=\{onChange\}/.test(codeEditorPanelSrc),
+  );
+}
+
+// ---- 8. Exactly one Builder file imports the real editor, reusing it -----
+{
+  const builderDir = join(repoRoot, "src", "components", "builder");
+  const files = readdirSync(builderDir).filter((f) => f.endsWith(".ts") || f.endsWith(".tsx"));
+  const importers = [];
+  for (const f of files) {
+    const src = read(join("src", "components", "builder", f));
+    if (/from\s*["']@\/components\/studio\/CodeEditor["']/.test(src)) importers.push(f);
+  }
+  ok(
+    `exactly one file under src/components/builder/ imports the real editor (found: ${importers.join(", ") || "none"}) — reusing Studio's leaf component, never a second editor implementation`,
+    importers.length === 1 && importers[0] === "CodeEditorPanel.tsx",
   );
 }
 

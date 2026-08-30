@@ -1,20 +1,31 @@
-import { Code2, PlusSquare, Save, ShieldCheck } from "lucide-react";
+import { Code2, Loader2, PlusSquare, Save, ShieldCheck } from "lucide-react";
 
 /**
- * Phase 5A-1 — the top Builder toolbar, SHELL ONLY.
+ * Phase 5A-1/5A-3 — the top Builder toolbar.
  *
  * Reserves the permanent locations for indicator name / draft state /
- * version indicator / Save / Validate / Add to Chart. Every action here is
- * unconditionally disabled — never a fake-success stub — until the phase
- * that actually wires it: Save/version history in 5A-6, Validate in 5A-3,
- * Add to Chart in 5A-7.
+ * version indicator / Save / Validate / Add to Chart. Save and Add to Chart
+ * stay unconditionally disabled — never a fake-success stub — until the
+ * phase that actually wires them (Save/version history in 5A-6, Add to
+ * Chart in 5A-7). Validate is the one action Phase 5A-3 activates, via
+ * `canValidate` computed from the canonical Builder state
+ * (`canSubmitValidate` in `src/lib/builder/generationState.ts`) — never a
+ * hardcoded `true`.
  *
  * Below `sm` (640px) the three actions collapse to icon-only (label still
  * available via `title`) — at 375px wide, three full-text buttons plus the
  * indicator-name area do not both fit, and since the name side is the one
  * that must never disappear, the action buttons are the side that shrinks.
  */
-export function BuilderToolbar() {
+export function BuilderToolbar({
+  canValidate,
+  validationPending,
+  onValidate,
+}: {
+  canValidate: boolean;
+  validationPending: boolean;
+  onValidate: () => void;
+}) {
   return (
     <header className="flex shrink-0 items-center gap-2 border-b border-border bg-sidebar px-3 py-2.5 sm:gap-3 sm:px-4">
       <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -37,13 +48,14 @@ export function BuilderToolbar() {
         </button>
         <button
           type="button"
-          disabled
-          title="Validate — available once the validation pipeline is wired in a later phase"
+          disabled={!canValidate}
+          onClick={onValidate}
+          title={canValidate ? "Validate — run static validation on the current code" : "Validate — describe and build an indicator first"}
           aria-label="Validate"
           className="flex items-center gap-1.5 rounded-md border border-border px-1.5 py-1 text-[11px] font-medium text-muted-foreground disabled:cursor-not-allowed disabled:opacity-40 sm:px-2.5"
         >
-          <ShieldCheck className="h-3.5 w-3.5" />
-          <span className="hidden sm:inline">Validate</span>
+          {validationPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5" />}
+          <span className="hidden sm:inline">{validationPending ? "Validating…" : "Validate"}</span>
         </button>
         <button
           type="button"

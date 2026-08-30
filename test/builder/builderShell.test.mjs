@@ -101,15 +101,32 @@ const toolbarSrc = sources["src/components/builder/BuilderToolbar.tsx"];
   ok("Chart Studio's own rail link is untouched (still LineChart / \"Chart Studio\")", /to="\/studio"[\s\S]{0,120}title="Chart Studio"/.test(navRailSrc));
 }
 
-// ---- Toolbar: every action is unconditionally disabled, never a fake stub -
+// ---- Toolbar: Save/Add to Chart still unconditionally disabled; Phase
+// ---- 5A-3 deliberately activates Validate, and only Validate. -----------
 {
   const buttonBlocks = toolbarSrc.split(/<button/).slice(1); // one entry per <button ...>...</button> region
   ok("BuilderToolbar renders at least 3 action buttons (Save, Validate, Add to Chart)", buttonBlocks.length >= 3);
+
+  const saveBlock = buttonBlocks.find((b) => /aria-label="Save"/.test(b));
+  const validateBlock = buttonBlocks.find((b) => /aria-label="Validate"/.test(b));
+  const addToChartBlock = buttonBlocks.find((b) => /aria-label="Add to Chart"/.test(b));
+
   ok(
-    "every toolbar button is unconditionally disabled (a literal `disabled` attribute, never `disabled={someCondition}`)",
-    buttonBlocks.every((b) => /\bdisabled(\s|>)/.test(b.slice(0, 60))),
+    "Save remains unconditionally disabled (a literal `disabled` attribute, never `disabled={someCondition}`)",
+    Boolean(saveBlock) && /\bdisabled(\s|>)/.test(saveBlock.slice(0, 60)) && !/disabled=\{/.test(saveBlock.slice(0, 60)),
   );
-  ok("no toolbar button ever computes a conditional disabled state (disabled={...})", !/disabled=\{/.test(toolbarSrc));
+  ok(
+    "Add to Chart remains unconditionally disabled (a literal `disabled` attribute, never `disabled={someCondition}`)",
+    Boolean(addToChartBlock) && /\bdisabled(\s|>)/.test(addToChartBlock.slice(0, 60)) && !/disabled=\{/.test(addToChartBlock.slice(0, 60)),
+  );
+  ok(
+    "Validate is the ONE Phase 5A-3 exception: conditionally disabled via disabled={!canValidate}, driven by canValidate (a real prop, not a hardcoded true)",
+    Boolean(validateBlock) && /disabled=\{!canValidate\}/.test(validateBlock),
+  );
+  ok(
+    "no button OTHER than Validate ever computes a conditional disabled state (disabled={...})",
+    (toolbarSrc.match(/disabled=\{/g) ?? []).length === 1,
+  );
   ok('Save button is present', /aria-label="Save"/.test(toolbarSrc));
   ok('Validate button is present', /aria-label="Validate"/.test(toolbarSrc));
   ok('Add to Chart button is present', /aria-label="Add to Chart"/.test(toolbarSrc));

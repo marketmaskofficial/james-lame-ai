@@ -1,5 +1,6 @@
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { AppNavRail } from "@/components/AppNavRail";
+import { canSubmitValidate } from "@/lib/builder/generationState";
 import { BuilderToolbar } from "./BuilderToolbar";
 import { ChatPanel } from "./ChatPanel";
 import { CodeEditorPanel } from "./CodeEditorPanel";
@@ -36,6 +37,14 @@ import { useBuilderProject } from "./useBuilderProject";
  * mutation/one conversation in flight regardless of viewport, and the
  * conversation survives a mobile tab switch or a desktop/mobile breakpoint
  * crossing without any special-casing.
+ *
+ * Phase 5A-3: the SAME rule applies to `code` — built once here from
+ * `state.sgscript`/`updateSgscript`, reused by reference for both layouts,
+ * so the real CodeMirror instance inside `CodeEditorPanel` never remounts
+ * (and never loses undo history/cursor position) on a tab switch or
+ * breakpoint crossing either. `readOnly={state.status === "generating"}` is
+ * computed here, once, from the same canonical state — not duplicated
+ * per-layout.
  */
 
 export type BuilderTab = "chat" | "code" | "preview" | "settings";
@@ -56,18 +65,26 @@ export function BuilderWorkspace({
   onTabChange: (tab: BuilderTab) => void;
   signedIn: boolean;
 }) {
-  const { state, prompt, setPrompt, submitPrompt, submitFixError } = useBuilderProject(signedIn);
+  const { state, prompt, setPrompt, submitPrompt, submitFixError, updateSgscript, submitValidate } = useBuilderProject(signedIn);
 
   const chat = (
     <ChatPanel project={state} prompt={prompt} onPromptChange={setPrompt} onSubmit={submitPrompt} onFixError={submitFixError} signedIn={signedIn} />
   );
-  const code = <CodeEditorPanel sgscript={state.sgscript} hasValidationResult={state.validation !== null} />;
+  const code = (
+    <CodeEditorPanel
+      sgscript={state.sgscript}
+      hasValidationResult={state.validation !== null}
+      onChange={updateSgscript}
+      readOnly={state.status === "generating"}
+    />
+  );
+  const canValidate = canSubmitValidate(state.sgscript, state.status, state.validationPending, signedIn);
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
       <AppNavRail />
       <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden">
-        <BuilderToolbar />
+        <BuilderToolbar canValidate={canValidate} validationPending={state.validationPending} onValidate={submitValidate} />
 
         <div className="min-h-0 flex-1 overflow-hidden">
           {/* Desktop / large tablet: three-panel resizable workspace. */}
@@ -118,7 +135,7 @@ export function BuilderWorkspace({
           </div>
         </div>
 
-        <DiagnosticsPanel validation={state.validation} />
+        <DiagnosticsPanel validation={state.validation} pending={state.validationPending} error={state.validationError} />
       </div>
     </div>
   );

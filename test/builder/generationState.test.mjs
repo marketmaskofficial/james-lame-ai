@@ -11,11 +11,16 @@ import {
   appendUserMessage,
   applyBuildFailure,
   applyBuildSuccess,
+  applyValidationFailure,
+  applyValidationResult,
+  beginValidation,
   buildRequestPayload,
   canSubmitFixError,
   canSubmitPrompt,
+  canSubmitValidate,
   fixErrorRequestPayload,
   repairPassesLabel,
+  setManualSgscript,
   withIndicatorId,
 } from "../../src/lib/builder/generationState.ts";
 
@@ -245,6 +250,136 @@ function issue(overrides = {}) {
   eq("repairPassesLabel(undefined): null", repairPassesLabel(undefined), null);
   eq("repairPassesLabel(1): singular phrasing", repairPassesLabel(1), "1 automatic repair pass");
   eq("repairPassesLabel(3): plural phrasing", repairPassesLabel(3), "3 automatic repair passes");
+}
+
+// ==== setManualSgscript — Phase 5A-3's ONE manual-edit state transition ====
+{
+  const before = {
+    ...INITIAL_BUILDER_PROJECT_STATE,
+    indicatorId: "11111111-1111-1111-1111-111111111111",
+    spec: spec({ name: "EMA 20" }),
+    pine: "//@version=6\nindicator('x')",
+    sgscript: "const length = 20\nplot(ema(close, length))",
+    summary: "A 20 EMA overlay.",
+    changelog: "Initial build",
+    validation: { pine: { ok: true, issues: [], repaint: { classification: "unknown" } }, sgscript: { ok: true, issues: [] }, repairPasses: 0, method: "static-validation" },
+    repairPasses: 0,
+    messages: [{ id: "m1", role: "user", kind: "build", text: "Build a 20 EMA overlay", createdAt: "2026-01-01T00:00:00.000Z", persisted: true }],
+    status: "success",
+    failedDraft: null,
+    dirty: false,
+    error: null,
+    validationPending: false,
+    validationError: "stale error from an earlier failed Validate click",
+  };
+  const edited = setManualSgscript(before, "const length = 30\nplot(ema(close, length))");
+
+  eq("setManualSgscript: sgscript becomes the manually edited value", edited.sgscript, "const length = 30\nplot(ema(close, length))");
+  eq("setManualSgscript: dirty becomes true", edited.dirty, true);
+  eq("setManualSgscript: spec is preserved untouched", edited.spec, before.spec);
+  eq("setManualSgscript: pine is preserved untouched", edited.pine, before.pine);
+  eq("setManualSgscript: indicatorId is preserved untouched", edited.indicatorId, before.indicatorId);
+  eq("setManualSgscript: messages are preserved untouched", edited.messages, before.messages);
+  eq("setManualSgscript: validation is preserved untouched (stays whatever it was, even if now stale)", edited.validation, before.validation);
+  eq("setManualSgscript: failedDraft is preserved untouched", edited.failedDraft, before.failedDraft);
+  eq("setManualSgscript: lifecycle status is preserved untouched", edited.status, before.status);
+  eq("setManualSgscript: validationPending is preserved untouched", edited.validationPending, before.validationPending);
+  eq("setManualSgscript: validationError is preserved untouched (not silently cleared by a keystroke)", edited.validationError, before.validationError);
+  ok("setManualSgscript: original state object is not mutated", before.sgscript === "const length = 20\nplot(ema(close, length))");
+}
+
+// ==== manual edit -> buildRequestPayload uses the EDITED code, not stale ===
+{
+  const afterBuild = { ...INITIAL_BUILDER_PROJECT_STATE, spec: spec({ name: "EMA" }), sgscript: "const length = 20\nplot(ema(close, length))" };
+  const afterManualEdit = setManualSgscript(afterBuild, "const length = 30\nplot(ema(close, length))");
+  const payload = buildRequestPayload(afterManualEdit, "make the line blue");
+  eq("buildRequestPayload after a manual edit: currentSgscript is the MANUALLY EDITED code (30), never the stale AI output (20)", payload.currentSgscript, "const length = 30\nplot(ema(close, length))");
+  eq("buildRequestPayload after a manual edit: still operation modify (spec still exists)", payload.operation, "modify");
+}
+
+// ==== manual edit survives a subsequent generation failure =================
+{
+  const afterBuild = { ...INITIAL_BUILDER_PROJECT_STATE, spec: spec(), sgscript: "ORIGINAL" };
+  const afterManualEdit = setManualSgscript(afterBuild, "MANUALLY EDITED");
+  const afterUserMsg = appendUserMessage(afterManualEdit, "make the line blue");
+  const afterFailure = applyBuildFailure(afterUserMsg, "Network timeout");
+  eq("a manual edit is NOT erased by a subsequent generationFailed outcome", afterFailure.sgscript, "MANUALLY EDITED");
+  eq("applyBuildFailure still reports generationFailed", afterFailure.status, "generationFailed");
+}
+
+// ==== canSubmitValidate guard ==================================================
+{
+  ok("canSubmitValidate: real code, idle, not pending, signed in -> true", canSubmitValidate("plot(close)", "idle", false, true) === true);
+  ok("canSubmitValidate: real code, success status, not pending, signed in -> true", canSubmitValidate("plot(close)", "success", false, true) === true);
+  ok("canSubmitValidate: empty code -> false", canSubmitValidate("", "idle", false, true) === false);
+  ok("canSubmitValidate: whitespace-only code -> false", canSubmitValidate("   \n\t  ", "idle", false, true) === false);
+  ok("canSubmitValidate: while an AI build is generating -> false", canSubmitValidate("plot(close)", "generating", false, true) === false);
+  ok("canSubmitValidate: while a validate request is already pending -> false (no duplicate clicks)", canSubmitValidate("plot(close)", "idle", true, true) === false);
+  ok("canSubmitValidate: not signed in -> false", canSubmitValidate("plot(close)", "idle", false, false) === false);
+}
+
+// ==== beginValidation ==========================================================
+{
+  const s = beginValidation({ ...INITIAL_BUILDER_PROJECT_STATE, validationError: "old error", sgscript: "plot(close)" });
+  eq("beginValidation: validationPending becomes true", s.validationPending, true);
+  eq("beginValidation: clears any prior validationError", s.validationError, null);
+  eq("beginValidation: never touches sgscript", s.sgscript, "plot(close)");
+  eq("beginValidation: never touches status (Validate is not a build)", s.status, "idle");
+}
+
+// ==== applyValidationResult — real validateProject result ====================
+{
+  const before = { ...INITIAL_BUILDER_PROJECT_STATE, spec: spec(), pine: "PINE", sgscript: "SGSCRIPT", validationPending: true, dirty: false, status: "success" };
+  const result = {
+    pine: { ok: true, issues: [], repaint: { classification: "unknown" } },
+    sgscript: { ok: false, issues: [issue({ code: "bad-thing" })] },
+  };
+  const s = applyValidationResult(before, result);
+
+  eq("applyValidationResult: validation is populated from the result", s.validation.pine, result.pine);
+  eq("applyValidationResult: validation.sgscript is populated from the result", s.validation.sgscript, result.sgscript);
+  eq("applyValidationResult: repairPasses is honestly 0 (manual validation never repairs)", s.validation.repairPasses, 0);
+  eq("applyValidationResult: method is static-validation", s.validation.method, "static-validation");
+  eq("applyValidationResult: validationPending becomes false", s.validationPending, false);
+  eq("applyValidationResult: validationError is cleared", s.validationError, null);
+  eq("applyValidationResult: NEVER touches spec", s.spec, before.spec);
+  eq("applyValidationResult: NEVER touches pine", s.pine, before.pine);
+  eq("applyValidationResult: NEVER touches sgscript", s.sgscript, before.sgscript);
+  eq("applyValidationResult: NEVER touches dirty", s.dirty, before.dirty);
+  eq("applyValidationResult: NEVER touches lifecycle status", s.status, before.status);
+}
+
+// ==== applyValidationResult — defensive null case (never fabricates a pass) ==
+{
+  const before = { ...INITIAL_BUILDER_PROJECT_STATE, validation: null, validationPending: true };
+  const s = applyValidationResult(before, { pine: null, sgscript: null });
+  eq("applyValidationResult(nulls): does not fabricate a fake validation pass", s.validation, null);
+  eq("applyValidationResult(nulls): validationPending becomes false", s.validationPending, false);
+  ok("applyValidationResult(nulls): surfaces an honest validationError", typeof s.validationError === "string" && s.validationError.length > 0);
+}
+
+// ==== applyValidationFailure — the REQUEST failed, not the validation =========
+{
+  const before = { ...INITIAL_BUILDER_PROJECT_STATE, spec: spec(), pine: "PINE", sgscript: "SGSCRIPT", validation: { pine: { ok: true, issues: [], repaint: { classification: "unknown" } }, sgscript: { ok: true, issues: [] }, repairPasses: 0, method: "static-validation" }, validationPending: true };
+  const s = applyValidationFailure(before, "Server error");
+  eq("applyValidationFailure: validationPending becomes false", s.validationPending, false);
+  eq("applyValidationFailure: validationError is stored", s.validationError, "Server error");
+  eq("applyValidationFailure: the LAST KNOWN validation result is untouched", s.validation, before.validation);
+  eq("applyValidationFailure: NEVER touches sgscript", s.sgscript, "SGSCRIPT");
+  eq("applyValidationFailure: NEVER touches pine", s.pine, "PINE");
+  eq("applyValidationFailure: NEVER touches spec", s.spec, before.spec);
+}
+
+// ==== a fresh AI build clears a stale Validate-request error ==================
+{
+  const before = { ...INITIAL_BUILDER_PROJECT_STATE, validationError: "stale validate-request failure" };
+  const successResult = buildResult();
+  const afterSuccess = applyBuildSuccess(before, successResult);
+  eq("applyBuildSuccess(success): clears a stale validationError so Diagnostics shows the real new result", afterSuccess.validationError, null);
+
+  const errorResult = buildResult({ validation: { pine: { ok: false, issues: [issue()], repaint: { classification: "unknown" } }, sgscript: { ok: true, issues: [] }, repairPasses: 3, method: "static-validation" } });
+  const afterErrorBranch = applyBuildSuccess(before, errorResult);
+  eq("applyBuildSuccess(error branch): also clears a stale validationError", afterErrorBranch.validationError, null);
 }
 
 // ---- summary ----------------------------------------------------------------
