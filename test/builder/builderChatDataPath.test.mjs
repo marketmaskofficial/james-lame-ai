@@ -67,6 +67,7 @@ const generationStateSrc = read("src/lib/builder/generationState.ts");
 const useBuilderProjectSrc = read("src/components/builder/useBuilderProject.ts");
 const workspaceSrcTop = read("src/components/builder/BuilderWorkspace.tsx");
 const resizableSrc = read("src/components/ui/resizable.tsx");
+const previewPanelSrc = read("src/components/builder/PreviewPanel.tsx");
 
 // ---- 1. Explicit allow-list: the 6 canonical functions ARE reused --------
 {
@@ -145,6 +146,54 @@ const resizableSrc = read("src/components/ui/resizable.tsx");
     );
   }
   ok("resizable.tsx never references any canonical/forbidden module (it only touches react-resizable-panels)", FORBIDDEN.every((f) => !resizableSrc.includes(f)));
+}
+
+// ---- 2b. Phase 5A-4c: PreviewPanel is the ONE allow-listed exception ------
+// for StudioChart — everything else forbidden above stays forbidden for
+// PreviewPanel too (it renders results, it never re-implements execution or
+// a second chart engine).
+{
+  const FORBIDDEN_FOR_PREVIEW_PANEL = [
+    "sgscript/runtime",
+    "sgscript/worker",
+    "sgscript/client",
+    "sgscript/stdlib",
+    "sgscript/smc",
+    "sgscript/style",
+    "validate/pine",
+    "validate/sgscript",
+    "ai/project-prompt",
+    "lightweight-charts",
+    "backtest/engine",
+    "backtest.functions",
+    "analyze.functions",
+    "sgscript.functions",
+    "generateText",
+    "streamText",
+    "supabaseAdmin",
+    "service_role",
+    "SUPABASE_SERVICE_ROLE",
+    "trading.functions",
+    "oms.server",
+    "buildProject",
+    "validateProject",
+    "runIndicator",
+    "createServerFn",
+    "useServerFn",
+    "useMutation",
+    "fetch(",
+  ];
+  for (const forbidden of FORBIDDEN_FOR_PREVIEW_PANEL) {
+    ok(`PreviewPanel.tsx never references "${forbidden}" (rendering-only — no execution, no AI, no persistence, no second chart engine)`, !previewPanelSrc.includes(forbidden));
+  }
+  ok(
+    "PreviewPanel.tsx never imports any *.functions server-function module (no market-data fetch, no AI/database call surface)",
+    !/from\s+["'][^"']*\.functions["']/.test(previewPanelSrc),
+  );
+  ok(
+    'Phase 5A-4c: PreviewPanel.tsx imports the canonical StudioChart renderer from "@/components/studio/StudioChart" — the one allow-listed exception to the StudioChart ban above',
+    /import\s*\{[^}]*\bStudioChart\b[^}]*\}\s*from\s*["']@\/components\/studio\/StudioChart["']/.test(previewPanelSrc),
+  );
 }
 
 // ---- 3. No new AI/server endpoint ------------------------------------------
@@ -366,6 +415,93 @@ const resizableSrc = read("src/components/ui/resizable.tsx");
   ok(
     `exactly one file under src/components/builder/ imports the real editor (found: ${importers.join(", ") || "none"}) — reusing Studio's leaf component, never a second editor implementation`,
     importers.length === 1 && importers[0] === "CodeEditorPanel.tsx",
+  );
+}
+
+// ---- 9. Phase 5A-4c: exactly one file imports StudioChart, and correctly --
+{
+  const builderDir = join(repoRoot, "src", "components", "builder");
+  const files = readdirSync(builderDir).filter((f) => f.endsWith(".ts") || f.endsWith(".tsx"));
+  const importers = [];
+  for (const f of files) {
+    const src = read(join("src", "components", "builder", f));
+    if (/from\s*["']@\/components\/studio\/StudioChart["']/.test(src)) importers.push(f);
+  }
+  ok(
+    `exactly one file under src/components/builder/ imports StudioChart (found: ${importers.join(", ") || "none"}) — no second renderer, no duplicate mount site`,
+    importers.length === 1 && importers[0] === "PreviewPanel.tsx",
+  );
+}
+
+// ---- 10. Phase 5A-4c: previewResult -> LoadedIndicator adapter is exact ----
+{
+  const indicatorsBlock = previewPanelSrc.slice(
+    previewPanelSrc.indexOf("const indicators = useMemo"),
+    previewPanelSrc.indexOf("const hasOscPane"),
+  );
+  ok(
+    "no previewResult produces zero indicators (empty array, not a fabricated placeholder indicator)",
+    /if\s*\(\s*!previewResult\s*\)\s*return\s*\[\]\s*;/.test(indicatorsBlock),
+  );
+  ok('adapter key is the stable literal "builder-preview"', /key:\s*["']builder-preview["']/.test(indicatorsBlock));
+  ok("indicator name comes from previewResult.meta.name, not a hardcoded or re-derived name", /name:\s*previewResult\.meta\.name/.test(indicatorsBlock));
+  ok("adapter always marks the preview indicator visible: true", /visible:\s*true/.test(indicatorsBlock));
+  ok(
+    "the exact previewResult object is passed through as `result` unchanged — never spread, never partially copied",
+    /result:\s*previewResult\s*\}/.test(indicatorsBlock),
+  );
+  ok(
+    "a real previewResult maps to exactly ONE LoadedIndicator (single-element array literal, not zero/many)",
+    /return\s*\[\{\s*key:/.test(indicatorsBlock),
+  );
+
+  const hasOscPaneBlock = previewPanelSrc.slice(
+    previewPanelSrc.indexOf("const hasOscPane = useMemo"),
+    previewPanelSrc.indexOf("const showIdleCaption"),
+  );
+  ok(
+    'hasOscPane is true only when at least one plot has pane === "osc", and false with no previewResult (never fabricated)',
+    /previewResult\s*\?\s*previewResult\.plots\.some\(\s*\(p\)\s*=>\s*p\.pane\s*===\s*["']osc["']\s*\)\s*:\s*false/.test(hasOscPaneBlock),
+  );
+
+  ok(
+    "the `indicators` memo depends only on previewResult, not on previewStatus — so an error/running status never erases the last-good chart's indicator data (StudioChart keeps rendering the last successful previewResult regardless of status)",
+    /\[previewResult\]\s*\)\s*;/.test(indicatorsBlock),
+  );
+}
+
+// ---- 11. Phase 5A-4c: StudioChart is mounted unconditionally (no remount) --
+{
+  ok(
+    "StudioChart is mounted exactly once in PreviewPanel's JSX, outside any status-based conditional — idle/running/success/error all reuse the SAME instance rather than remounting it per state",
+    (previewPanelSrc.match(/<StudioChart\b/g) ?? []).length === 1,
+  );
+  ok(
+    "PreviewPanel passes only the minimum mandatory StudioChart props plus hasOscPane — no trades/tradeLines/onTradeDrag/onPlanOrder/instrument (no invented trading behavior)",
+    !/tradeLines=|trades=|onTradeDrag=|onPlanOrder=|instrument=/.test(previewPanelSrc),
+  );
+  ok(
+    'StudioChart is mounted with tool="cursor" and an empty, stable drawings array — Builder never enables drawing-tool creation',
+    /tool="cursor"/.test(previewPanelSrc) && /drawings=\{EMPTY_DRAWINGS\}/.test(previewPanelSrc),
+  );
+}
+
+// ---- 12. Phase 5A-4c: mobile Preview tab keeps the never-remount pattern --
+{
+  const workspaceSrc = read("src/components/builder/BuilderWorkspace.tsx");
+  ok(
+    'the mobile Preview tab is still toggled via the hidden class (never conditionally rendered/unmounted) — activeTab === "preview" ? "h-full" : "hidden"',
+    /activeTab === ["']preview["']\s*\?\s*["']h-full["']\s*:\s*["']hidden["']/.test(workspaceSrc),
+  );
+  ok(
+    "BuilderWorkspace passes state.previewStatus/previewResult/previewError straight through to PreviewPanel (no local copy, no re-derivation)",
+    /previewStatus=\{state\.previewStatus\}/.test(workspaceSrc) &&
+      /previewResult=\{state\.previewResult\}/.test(workspaceSrc) &&
+      /previewError=\{state\.previewError\}/.test(workspaceSrc),
+  );
+  ok(
+    "BuilderWorkspace supplies a stable module-level EMPTY_BARS reference, not a freshly-allocated [] literal inline on every render",
+    /const EMPTY_BARS:\s*Bar\[\]\s*=\s*\[\]/.test(workspaceSrc) && /bars=\{EMPTY_BARS\}/.test(workspaceSrc),
   );
 }
 
