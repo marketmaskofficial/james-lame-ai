@@ -1,34 +1,42 @@
-// Regression guard for Phase 5A-2/5A-3's Indicator Builder chat + code
-// editor wiring — the ONLY two files in this whole feature allowed to touch
-// the canonical generation/persistence/validation chain:
-// src/lib/builder/generationState.ts (pure, type-only references) and
-// src/components/builder/useBuilderProject.ts (the real server-function
-// calls). Same static source-inspection style as
-// test/builder/builderShell.test.mjs and
+// Regression guard for Phase 5A-2/5A-3/5A-4b's Indicator Builder chat +
+// code editor + preview-execution wiring — the ONLY two files in this whole
+// feature allowed to touch the canonical generation/persistence/
+// validation/execution chain: src/lib/builder/generationState.ts (pure,
+// type-only references) and src/components/builder/useBuilderProject.ts
+// (the real server-function AND runIndicator calls). Same static
+// source-inspection style as test/builder/builderShell.test.mjs and
 // test/dashboard/journalAnalyticsDataPath.test.mjs.
 //
-// This test proves four things the Phase 5A-2/5A-3 briefs call "critical":
+// This test proves five things the Phase 5A-2/5A-3/5A-4b briefs call
+// "critical":
 //   1. Builder reuses buildProject/validateProject/createIndicator/
-//      updateIndicator/listIndicatorMessages/appendIndicatorMessage — an
-//      explicit ALLOW-list, not just an absence-of-forbidden-things check.
-//      (validateProject added in Phase 5A-3, alongside buildProject in the
-//      same already-canonical src/lib/project.functions.ts — not a new
-//      server function.)
+//      updateIndicator/listIndicatorMessages/appendIndicatorMessage/
+//      runIndicator — an explicit ALLOW-list, not just an
+//      absence-of-forbidden-things check. (validateProject was added in
+//      Phase 5A-3, runIndicator in Phase 5A-4b — each already-canonical,
+//      never a new server function or a new runtime.)
 //   2. Builder still forbids everything the Phase 5A audit's "one
-//      canonical chain" rule protects: the SGScript runtime, validator
-//      internals, the AI prompt/model-call internals, StudioChart,
-//      lightweight-charts, the backtest engine, and any admin/service-role
-//      client — validatePine/validateSgScript stay forbidden as DIRECT
-//      Builder imports even though validateProject wraps them internally,
-//      exactly like buildProject already does.
-//   3. There is exactly ONE call site of buildProject AND exactly ONE call
-//      site of validateProject in the entire Builder feature
+//      canonical chain" rule protects: the SGScript runtime/worker/stdlib/
+//      smc/style internals, validator internals, the AI prompt/model-call
+//      internals, StudioChart, lightweight-charts, the backtest engine, and
+//      any admin/service-role client — validatePine/validateSgScript stay
+//      forbidden as DIRECT Builder imports even though validateProject
+//      wraps them internally, exactly like buildProject already does; the
+//      SGScript runtime/worker/stdlib/smc/style stay forbidden as DIRECT
+//      imports even though runIndicator wraps them internally, exactly the
+//      same pattern.
+//   3. There is exactly ONE call site each of buildProject, validateProject,
+//      and runIndicator in the entire Builder feature
 //      (src/components/builder/**) — proving Builder has not accidentally
-//      grown a second place that talks to the AI or a second place that
-//      talks to static validation.
+//      grown a second place that talks to the AI, to static validation, or
+//      to the execution runtime.
 //   4. An ordinary manual-editor keystroke (src/lib/builder/generationState.ts's
-//      setManualSgscript) never reaches any server-function call — it's a
-//      documented, verified pure local state transform.
+//      setManualSgscript) never reaches any server-function OR runIndicator
+//      call — it's a documented, verified pure local state transform.
+//   5. Preview execution (submitRunPreview) never calls buildProject,
+//      validateProject, or any persistence function — execution is a pure,
+//      local, client-side Worker call, wholly separate from AI
+//      generation/refinement and from static validation.
 //
 // Usage: npx tsx test/builder/builderChatDataPath.test.mjs
 
@@ -87,6 +95,14 @@ const resizableSrc = read("src/components/ui/resizable.tsx");
     "generationState.ts only type-imports BuildResult/IndicatorSpec from the canonical modules (never calls them)",
     /import\s+type\s*\{[^}]*BuildResult[^}]*\}\s*from\s*["']@\/lib\/project\.functions["']/.test(generationStateSrc),
   );
+  ok(
+    "Phase 5A-4b: useBuilderProject.ts imports the canonical runIndicator from @/lib/sgscript/client (the ONE execution entry point, not a new runtime)",
+    /import\s*\{[^}]*\brunIndicator\b[^}]*\}\s*from\s*["']@\/lib\/sgscript\/client["']/.test(useBuilderProjectSrc),
+  );
+  ok(
+    "Phase 5A-4b: generationState.ts only type-imports RunResult from the canonical sgscript types module (never calls runIndicator)",
+    /import\s+type\s*\{[^}]*RunResult[^}]*\}\s*from\s*["']@\/lib\/sgscript\/types["']/.test(generationStateSrc),
+  );
 }
 
 // ---- 2. Still-forbidden canonical internals -------------------------------
@@ -94,8 +110,15 @@ const resizableSrc = read("src/components/ui/resizable.tsx");
   const FORBIDDEN = [
     "sgscript/runtime",
     "sgscript/worker",
-    "sgscript/client",
+    // sgscript/client is DELIBERATELY not forbidden as of Phase 5A-4b — its
+    // one export, runIndicator, is the canonical execution entry point
+    // Builder is explicitly meant to reuse (see the allow-list above and
+    // the "exactly one call site" check below). Only the runtime's own
+    // internals (runtime/worker/stdlib/smc/style — everything runIndicator
+    // wraps) stay forbidden as DIRECT Builder imports.
     "sgscript/stdlib",
+    "sgscript/smc",
+    "sgscript/style",
     "validate/pine",
     "validate/sgscript",
     "ai/project-prompt",
@@ -154,14 +177,16 @@ const resizableSrc = read("src/components/ui/resizable.tsx");
   );
 }
 
-// ---- 4. Exactly one call site each of buildProject and validateProject ---
+// ---- 4. Exactly one call site each of buildProject/validateProject/runIndicator ---
 {
   const builderDir = join(repoRoot, "src", "components", "builder");
   const files = readdirSync(builderDir).filter((f) => f.endsWith(".ts") || f.endsWith(".tsx"));
   let buildCallSites = 0;
   let validateCallSites = 0;
+  let runCallSites = 0;
   const buildCallSiteFiles = [];
   const validateCallSiteFiles = [];
+  const runCallSiteFiles = [];
   for (const f of files) {
     const src = read(join("src", "components", "builder", f));
     if (/\bbuildProjectFn\s*\(/.test(src) || /\bbuildProject\s*\(\s*\{/.test(src)) {
@@ -172,6 +197,10 @@ const resizableSrc = read("src/components/ui/resizable.tsx");
       validateCallSites++;
       validateCallSiteFiles.push(f);
     }
+    if (/\brunIndicator\s*\(/.test(src)) {
+      runCallSites++;
+      runCallSiteFiles.push(f);
+    }
   }
   ok(
     `exactly one file under src/components/builder/ actually calls buildProject (found: ${buildCallSiteFiles.join(", ") || "none"})`,
@@ -180,6 +209,10 @@ const resizableSrc = read("src/components/ui/resizable.tsx");
   ok(
     `exactly one file under src/components/builder/ actually calls validateProject (found: ${validateCallSiteFiles.join(", ") || "none"})`,
     validateCallSites === 1 && validateCallSiteFiles[0] === "useBuilderProject.ts",
+  );
+  ok(
+    `Phase 5A-4b: exactly one file under src/components/builder/ actually calls runIndicator (found: ${runCallSiteFiles.join(", ") || "none"}) — no duplicate execution engine`,
+    runCallSites === 1 && runCallSiteFiles[0] === "useBuilderProject.ts",
   );
 }
 
@@ -276,6 +309,30 @@ const resizableSrc = read("src/components/ui/resizable.tsx");
   ok(
     "validateMutation's onSuccess ONLY calls applyValidationResult — never touches indicatorId, never invalidates the indicators query, never appends a message",
     /applyValidationResult/.test(validateMutationBody) && !/withIndicatorId|invalidateQueries|appendIndicatorMessageFn|persistIndicator/.test(validateMutationBody),
+  );
+}
+
+// ---- 6c. Phase 5A-4b: Preview execution reaches ONLY runIndicator ---------
+{
+  const submitRunPreviewFnBody = useBuilderProjectSrc.slice(useBuilderProjectSrc.indexOf("async function submitRunPreview"));
+  const submitRunPreviewFnSrc = submitRunPreviewFnBody.slice(0, submitRunPreviewFnBody.indexOf("\n  }") + 4);
+  ok("useBuilderProject.ts defines submitRunPreview", /async function submitRunPreview/.test(useBuilderProjectSrc));
+  ok(
+    "submitRunPreview calls ONLY runIndicator — never buildProjectFn/validateProjectFn/createIndicatorFn/updateIndicatorFn/appendIndicatorMessageFn/buildMutation/validateMutation (execution is wholly separate from AI generation and static validation)",
+    /runIndicator\s*\(/.test(submitRunPreviewFnSrc) &&
+      !/buildProjectFn|validateProjectFn|createIndicatorFn|updateIndicatorFn|appendIndicatorMessageFn|buildMutation\.mutate|validateMutation\.mutate/.test(submitRunPreviewFnSrc),
+  );
+  ok(
+    "submitRunPreview passes the CURRENT canonical state.sgscript to runIndicator, not a copy or a stale draft",
+    /runIndicator\s*\(\s*state\.sgscript\s*,/.test(submitRunPreviewFnSrc),
+  );
+  ok(
+    "submitRunPreview uses a stale-result guard (checks a ref-based run id before applying either outcome)",
+    (submitRunPreviewFnSrc.match(/runId === runSeqRef\.current/g) ?? []).length === 2,
+  );
+  ok(
+    "a failed Preview run calls applyPreviewFailure (never applyPreviewResult) and a successful run calls applyPreviewResult (never applyPreviewFailure) for the same outcome",
+    /applyPreviewResult/.test(submitRunPreviewFnSrc) && /applyPreviewFailure/.test(submitRunPreviewFnSrc),
   );
 }
 

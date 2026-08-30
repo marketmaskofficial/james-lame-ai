@@ -11,10 +11,14 @@ import {
   appendUserMessage,
   applyBuildFailure,
   applyBuildSuccess,
+  applyPreviewFailure,
+  applyPreviewResult,
   applyValidationFailure,
   applyValidationResult,
+  beginPreviewRun,
   beginValidation,
   buildRequestPayload,
+  canRunPreview,
   canSubmitFixError,
   canSubmitPrompt,
   canSubmitValidate,
@@ -94,6 +98,27 @@ function buildResult(overrides = {}) {
 
 function issue(overrides = {}) {
   return { severity: "error", code: "test-issue", message: "Something is wrong", ...overrides };
+}
+
+/** A minimal, valid RunResult fixture — mirrors the exact shape
+ * `runIndicator` (src/lib/sgscript/client.ts / runtime.ts) resolves with. */
+function runResult(overrides = {}) {
+  return {
+    ok: true,
+    meta: { name: "Test Indicator", overlay: true },
+    strategy: { declared: false, entries: [], exits: [], notes: [] },
+    inputs: [],
+    plots: [],
+    hlines: [],
+    boxes: [],
+    lines: [],
+    labels: [],
+    markers: [],
+    fills: [],
+    logs: [],
+    ms: 5,
+    ...overrides,
+  };
 }
 
 // ==== appendUserMessage =======================================================
@@ -380,6 +405,89 @@ function issue(overrides = {}) {
   const errorResult = buildResult({ validation: { pine: { ok: false, issues: [issue()], repaint: { classification: "unknown" } }, sgscript: { ok: true, issues: [] }, repairPasses: 3, method: "static-validation" } });
   const afterErrorBranch = applyBuildSuccess(before, errorResult);
   eq("applyBuildSuccess(error branch): also clears a stale validationError", afterErrorBranch.validationError, null);
+}
+
+// ==== Phase 5A-4b: initial Preview state =======================================
+{
+  eq("INITIAL_BUILDER_PROJECT_STATE: previewStatus starts idle", INITIAL_BUILDER_PROJECT_STATE.previewStatus, "idle");
+  eq("INITIAL_BUILDER_PROJECT_STATE: previewResult starts null", INITIAL_BUILDER_PROJECT_STATE.previewResult, null);
+  eq("INITIAL_BUILDER_PROJECT_STATE: previewError starts null", INITIAL_BUILDER_PROJECT_STATE.previewError, null);
+}
+
+// ==== Phase 5A-4b: canRunPreview guard =========================================
+{
+  ok("canRunPreview: real code, idle -> true", canRunPreview("plot(close)", "idle") === true);
+  ok("canRunPreview: real code, success -> true", canRunPreview("plot(close)", "success") === true);
+  ok("canRunPreview: real code, error -> true (a previous failure must not permanently block re-running)", canRunPreview("plot(close)", "error") === true);
+  ok("canRunPreview: empty code -> false", canRunPreview("", "idle") === false);
+  ok("canRunPreview: whitespace-only code -> false", canRunPreview("   \n\t  ", "idle") === false);
+  ok("canRunPreview: while a run is already in flight -> false (no duplicate concurrent runs)", canRunPreview("plot(close)", "running") === false);
+}
+
+// ==== Phase 5A-4b: beginPreviewRun ==============================================
+{
+  const before = { ...INITIAL_BUILDER_PROJECT_STATE, sgscript: "plot(close)", previewError: "stale error from a prior failed run" };
+  const s = beginPreviewRun(before);
+  eq("beginPreviewRun: previewStatus becomes running", s.previewStatus, "running");
+  eq("beginPreviewRun: clears any prior previewError", s.previewError, null);
+  eq("beginPreviewRun: never touches sgscript", s.sgscript, "plot(close)");
+  eq("beginPreviewRun: never touches build lifecycle status", s.status, "idle");
+  eq("beginPreviewRun: never touches validationPending", s.validationPending, before.validationPending);
+}
+
+// ==== Phase 5A-4b: applyPreviewResult — a real RunResult =======================
+{
+  const before = {
+    ...INITIAL_BUILDER_PROJECT_STATE,
+    spec: spec({ name: "EMA 20" }),
+    pine: "PINE",
+    sgscript: "plot(ema(close, 20))",
+    messages: [{ id: "m1", role: "user", kind: "build", text: "Build a 20 EMA", createdAt: "2026-01-01T00:00:00.000Z", persisted: true }],
+    validation: { pine: { ok: true, issues: [], repaint: { classification: "unknown" } }, sgscript: { ok: true, issues: [] }, repairPasses: 0, method: "static-validation" },
+    status: "success",
+    indicatorId: "11111111-1111-1111-1111-111111111111",
+    dirty: true,
+    previewStatus: "running",
+  };
+  const result = runResult({ meta: { name: "20 EMA Overlay", overlay: true } });
+  const s = applyPreviewResult(before, result);
+
+  eq("applyPreviewResult: previewStatus becomes success", s.previewStatus, "success");
+  eq("applyPreviewResult: previewResult stores the real RunResult", s.previewResult, result);
+  eq("applyPreviewResult: previewError is cleared", s.previewError, null);
+  eq("applyPreviewResult: NEVER touches spec", s.spec, before.spec);
+  eq("applyPreviewResult: NEVER touches pine", s.pine, before.pine);
+  eq("applyPreviewResult: NEVER touches sgscript", s.sgscript, before.sgscript);
+  eq("applyPreviewResult: NEVER touches messages", s.messages, before.messages);
+  eq("applyPreviewResult: NEVER touches validation", s.validation, before.validation);
+  eq("applyPreviewResult: NEVER touches build lifecycle status", s.status, before.status);
+  eq("applyPreviewResult: NEVER touches indicatorId", s.indicatorId, before.indicatorId);
+  eq("applyPreviewResult: NEVER touches dirty", s.dirty, before.dirty);
+}
+
+// ==== Phase 5A-4b: applyPreviewFailure — failure never erases last-good ========
+{
+  const goodResult = runResult({ meta: { name: "Working Preview", overlay: true } });
+  const before = {
+    ...INITIAL_BUILDER_PROJECT_STATE,
+    spec: spec(),
+    pine: "PINE",
+    sgscript: "plot(close) /* now broken */",
+    validation: { pine: { ok: true, issues: [], repaint: { classification: "unknown" } }, sgscript: { ok: true, issues: [] }, repairPasses: 0, method: "static-validation" },
+    status: "success",
+    previewStatus: "running",
+    previewResult: goodResult,
+  };
+  const s = applyPreviewFailure(before, "Line 3: close is not defined");
+
+  eq("applyPreviewFailure: previewStatus becomes error", s.previewStatus, "error");
+  eq("applyPreviewFailure: previewError is stored", s.previewError, "Line 3: close is not defined");
+  eq("applyPreviewFailure: the LAST GOOD previewResult is preserved, never erased", s.previewResult, goodResult);
+  eq("applyPreviewFailure: NEVER touches spec", s.spec, before.spec);
+  eq("applyPreviewFailure: NEVER touches pine", s.pine, before.pine);
+  eq("applyPreviewFailure: NEVER touches sgscript", s.sgscript, before.sgscript);
+  eq("applyPreviewFailure: NEVER touches validation", s.validation, before.validation);
+  eq("applyPreviewFailure: NEVER touches build lifecycle status", s.status, before.status);
 }
 
 // ---- summary ----------------------------------------------------------------
