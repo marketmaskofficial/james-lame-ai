@@ -158,7 +158,19 @@ const toolbarSrc = sources["src/components/builder/BuilderToolbar.tsx"];
   ];
   for (const [file, src] of Object.entries(sources)) {
     for (const forbidden of FORBIDDEN_CANONICAL_IMPORTS) {
-      ok(`${file} never imports canonical module "${forbidden}" (Phase 5A-1 is shell-only)`, !src.includes(forbidden));
+      // Phase 5A-4c: PreviewPanel.tsx is the ONE deliberate exception to the
+      // StudioChart ban — it's Builder's real Live Preview surface now, and
+      // StudioChart is the canonical renderer it's explicitly meant to
+      // reuse (never a second chart engine). This mirrors the exact
+      // precedent already set for sgscript/client becoming allowed in
+      // useBuilderProject.ts back in Phase 5A-4b: the FULL exception list
+      // still applies to every other file, and PreviewPanel.tsx itself
+      // still forbids everything else here (lightweight-charts, every
+      // sgscript/* internal, every *.functions module) — see
+      // test/builder/builderChatDataPath.test.mjs's own dedicated section
+      // for PreviewPanel's complete, explicit allow/forbid proof.
+      if (file === "src/components/builder/PreviewPanel.tsx" && forbidden === "components/studio/StudioChart") continue;
+      ok(`${file} never imports canonical module "${forbidden}" (Phase 5A-1 shell-only rule, still in force except PreviewPanel.tsx's StudioChart exception)`, !src.includes(forbidden));
     }
   }
 

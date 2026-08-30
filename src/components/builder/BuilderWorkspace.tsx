@@ -1,6 +1,7 @@
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { AppNavRail } from "@/components/AppNavRail";
 import { canSubmitValidate } from "@/lib/builder/generationState";
+import type { Bar } from "@/lib/sgscript/types";
 import { BuilderToolbar } from "./BuilderToolbar";
 import { ChatPanel } from "./ChatPanel";
 import { CodeEditorPanel } from "./CodeEditorPanel";
@@ -8,6 +9,11 @@ import { PreviewPanel } from "./PreviewPanel";
 import { SettingsPanel } from "./SettingsPanel";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import { useBuilderProject } from "./useBuilderProject";
+
+/** Phase 5A-4c: Builder has no symbol/timeframe/market-data of its own yet
+ * (Phase 5A-4d) — a stable module-level empty array so `PreviewPanel`
+ * never receives a freshly-allocated `[]` on every render. */
+const EMPTY_BARS: Bar[] = [];
 
 /**
  * Phase 5A-1 — the dedicated Indicator Builder workspace shell.
@@ -57,8 +63,12 @@ import { useBuilderProject } from "./useBuilderProject";
  * the same plain primitive, one level deeper, never Studio's dockable-
  * widget architecture. `preview` joins `chat`/`code` as a third
  * built-once-reused-by-reference element, so `PreviewPanel` gets the same
- * single-instance guarantee `ChatPanel`/`CodeEditorPanel` already have,
- * ready for the day it stops being a stateless placeholder.
+ * single-instance guarantee `ChatPanel`/`CodeEditorPanel` already have.
+ *
+ * Phase 5A-4c — `PreviewPanel` now mounts the real `StudioChart` renderer,
+ * fed from `state.previewStatus`/`previewResult`/`previewError` (Phase
+ * 5A-4b's execution state) plus `EMPTY_BARS` until Phase 5A-4d supplies
+ * real market data.
  */
 
 export type BuilderTab = "chat" | "code" | "preview" | "settings";
@@ -92,7 +102,14 @@ export function BuilderWorkspace({
       readOnly={state.status === "generating"}
     />
   );
-  const preview = <PreviewPanel />;
+  const preview = (
+    <PreviewPanel
+      bars={EMPTY_BARS}
+      previewStatus={state.previewStatus}
+      previewResult={state.previewResult}
+      previewError={state.previewError}
+    />
+  );
   const canValidate = canSubmitValidate(state.sgscript, state.status, state.validationPending, signedIn);
 
   return (
