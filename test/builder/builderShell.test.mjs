@@ -20,6 +20,16 @@
 // mounted component behaves a certain way visually (that's covered by the
 // hosted browser QA already performed for this phase).
 //
+// Phase 5A-2 note: `BUILDER_FILES` below is deliberately still the
+// presentational UI-shell files only — none of them may EVER import the
+// canonical generation chain, by design (all real `buildProject`/
+// `createIndicator`/`updateIndicator`/`listIndicatorMessages`/
+// `appendIndicatorMessage` calls are isolated to exactly ONE file,
+// `src/components/builder/useBuilderProject.ts`, plus the pure
+// `src/lib/builder/generationState.ts`). Those two files are NOT in this
+// list on purpose — see `test/builder/builderChatDataPath.test.mjs` for
+// their own explicit allow-list test.
+//
 // Usage: npx tsx test/builder/builderShell.test.mjs
 
 import { readFileSync } from "node:fs";

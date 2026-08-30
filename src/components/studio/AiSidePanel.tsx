@@ -4,6 +4,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { HelpCircle, Loader2, Send, Sparkles, Wand2, Wrench } from "lucide-react";
 import { analyzeIndicator, type AnalyzeResult } from "@/lib/analyze.functions";
 import { buildProject, type BuildResult } from "@/lib/project.functions";
+import { classifyBuildResult, formatBuildIssuesForRepair } from "@/lib/spec/buildOutcome";
 import { createIndicator, updateIndicator } from "@/lib/indicators.functions";
 import {
   appendIndicatorMessage,
@@ -38,17 +39,11 @@ type FailedDraft = {
   issuesText: string;
 };
 
-function classify(r: BuildResult): { status: BuildStatus; totalIssues: number } {
-  const hasError = !r.validation.pine.ok || !r.validation.sgscript.ok;
-  const totalIssues = r.validation.pine.issues.length + r.validation.sgscript.issues.length;
-  return { status: hasError ? "error" : totalIssues > 0 ? "warning" : "success", totalIssues };
-}
-
-function formatIssuesForRepair(r: BuildResult): string {
-  return [...r.validation.pine.issues, ...r.validation.sgscript.issues]
-    .map((i) => `[${i.severity}] ${i.code}: ${i.message}${i.line ? ` (line ${i.line})` : ""}`)
-    .join("\n");
-}
+// classify()/formatIssuesForRepair() moved to src/lib/spec/buildOutcome.ts
+// (Phase 5A-2) so the Indicator Builder reuses the exact same
+// result-classification logic rather than a second copy of it.
+const classify = classifyBuildResult;
+const formatIssuesForRepair = formatBuildIssuesForRepair;
 
 /**
  * Signal Goat AI beside the chart. Two modes:

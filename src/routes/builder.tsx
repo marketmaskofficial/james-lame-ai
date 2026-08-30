@@ -77,5 +77,5 @@ function BuilderRoute() {
   const [activeTab, setActiveTab] = useState<BuilderTab>("chat");
 
   if (!authorized) return <BuilderLoadingScreen />;
-  return <BuilderWorkspace activeTab={activeTab} onTabChange={setActiveTab} />;
+  return <BuilderWorkspace activeTab={activeTab} onTabChange={setActiveTab} signedIn={!!user} />;
 }

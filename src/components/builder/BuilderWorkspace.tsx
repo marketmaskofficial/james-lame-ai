@@ -6,6 +6,7 @@ import { CodeEditorPanel } from "./CodeEditorPanel";
 import { PreviewPanel } from "./PreviewPanel";
 import { SettingsPanel } from "./SettingsPanel";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
+import { useBuilderProject } from "./useBuilderProject";
 
 /**
  * Phase 5A-1 — the dedicated Indicator Builder workspace shell.
@@ -28,6 +29,13 @@ import { DiagnosticsPanel } from "./DiagnosticsPanel";
  * `JournalPerformanceTable`) — so neither variant's state is lost when the
  * viewport crosses the breakpoint, and switching mobile tabs never
  * remounts a panel.
+ *
+ * Phase 5A-2: `useBuilderProject` is called exactly ONCE here (not once per
+ * ChatPanel instance) — its returned state/callbacks are handed to BOTH the
+ * desktop and mobile ChatPanel, so there is only ever one generation
+ * mutation/one conversation in flight regardless of viewport, and the
+ * conversation survives a mobile tab switch or a desktop/mobile breakpoint
+ * crossing without any special-casing.
  */
 
 export type BuilderTab = "chat" | "code" | "preview" | "settings";
@@ -39,7 +47,22 @@ const MOBILE_TABS: { id: BuilderTab; label: string }[] = [
   { id: "settings", label: "Settings" },
 ];
 
-export function BuilderWorkspace({ activeTab, onTabChange }: { activeTab: BuilderTab; onTabChange: (tab: BuilderTab) => void }) {
+export function BuilderWorkspace({
+  activeTab,
+  onTabChange,
+  signedIn,
+}: {
+  activeTab: BuilderTab;
+  onTabChange: (tab: BuilderTab) => void;
+  signedIn: boolean;
+}) {
+  const { state, prompt, setPrompt, submitPrompt, submitFixError } = useBuilderProject(signedIn);
+
+  const chat = (
+    <ChatPanel project={state} prompt={prompt} onPromptChange={setPrompt} onSubmit={submitPrompt} onFixError={submitFixError} signedIn={signedIn} />
+  );
+  const code = <CodeEditorPanel sgscript={state.sgscript} hasValidationResult={state.validation !== null} />;
+
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
       <AppNavRail />
@@ -51,11 +74,11 @@ export function BuilderWorkspace({ activeTab, onTabChange }: { activeTab: Builde
           <div className="hidden h-full lg:block">
             <ResizablePanelGroup orientation="horizontal" className="h-full">
               <ResizablePanel defaultSize="27" minSize="18" className="min-w-0">
-                <ChatPanel />
+                {chat}
               </ResizablePanel>
               <ResizableHandle withHandle />
               <ResizablePanel defaultSize="43" minSize="24" className="min-w-0">
-                <CodeEditorPanel />
+                {code}
               </ResizablePanel>
               <ResizableHandle withHandle />
               <ResizablePanel defaultSize="30" minSize="18" className="min-w-0">
@@ -83,12 +106,8 @@ export function BuilderWorkspace({ activeTab, onTabChange }: { activeTab: Builde
               ))}
             </div>
             <div className="min-h-0 flex-1">
-              <div className={activeTab === "chat" ? "h-full" : "hidden"}>
-                <ChatPanel />
-              </div>
-              <div className={activeTab === "code" ? "h-full" : "hidden"}>
-                <CodeEditorPanel />
-              </div>
+              <div className={activeTab === "chat" ? "h-full" : "hidden"}>{chat}</div>
+              <div className={activeTab === "code" ? "h-full" : "hidden"}>{code}</div>
               <div className={activeTab === "preview" ? "h-full" : "hidden"}>
                 <PreviewPanel />
               </div>
@@ -99,7 +118,7 @@ export function BuilderWorkspace({ activeTab, onTabChange }: { activeTab: Builde
           </div>
         </div>
 
-        <DiagnosticsPanel />
+        <DiagnosticsPanel validation={state.validation} />
       </div>
     </div>
   );
