@@ -9,23 +9,32 @@
 import {
   INITIAL_BUILDER_PROJECT_STATE,
   appendUserMessage,
+  applyAutoPersistFailure,
+  applyAutoPersistSuccess,
   applyBuildFailure,
   applyBuildSuccess,
   applyPreviewFailure,
   applyPreviewResult,
+  applySaveSuccess,
   applyValidationFailure,
   applyValidationResult,
   beginPreviewRun,
   beginValidation,
   buildRequestPayload,
   canRunPreview,
+  canSave,
+  canSaveVersion,
   canSubmitFixError,
   canSubmitPrompt,
   canSubmitValidate,
+  displayName,
   fixErrorRequestPayload,
+  hydrateFromIndicator,
+  mergeSettingsWithDefaults,
+  renameIndicator,
   repairPassesLabel,
   setManualSgscript,
-  withIndicatorId,
+  updateSetting,
 } from "../../src/lib/builder/generationState.ts";
 
 let pass = 0;
@@ -213,11 +222,134 @@ function runResult(overrides = {}) {
   eq("applyBuildFailure: spec remains whatever it was before (null here)", s.spec, null);
 }
 
-// ==== withIndicatorId ==========================================================
+// ==== Phase 5A-5B: applyAutoPersistSuccess / applyAutoPersistFailure =========
 {
-  const s = withIndicatorId(INITIAL_BUILDER_PROJECT_STATE, "11111111-1111-1111-1111-111111111111");
-  eq("withIndicatorId: sets indicatorId", s.indicatorId, "11111111-1111-1111-1111-111111111111");
-  eq("withIndicatorId: does not touch messages", s.messages, INITIAL_BUILDER_PROJECT_STATE.messages);
+  const dirtyAfterBuild = { ...INITIAL_BUILDER_PROJECT_STATE, dirty: true, autoPersistError: null };
+  const s1 = applyAutoPersistSuccess(dirtyAfterBuild, "11111111-1111-1111-1111-111111111111", 1);
+  eq("applyAutoPersistSuccess: sets indicatorId", s1.indicatorId, "11111111-1111-1111-1111-111111111111");
+  eq("applyAutoPersistSuccess: sets currentVersion", s1.currentVersion, 1);
+  eq("applyAutoPersistSuccess: clears dirty (the ONLY thing that clears dirty after an AI turn)", s1.dirty, false);
+  eq("applyAutoPersistSuccess: clears any prior autoPersistError", s1.autoPersistError, null);
+
+  const s2 = applyAutoPersistFailure(dirtyAfterBuild, "Network error");
+  eq("applyAutoPersistFailure: stores the error", s2.autoPersistError, "Network error");
+  eq("applyAutoPersistFailure: NEVER clears dirty — a generated-but-unsaved project must not look safe", s2.dirty, true);
+  eq("applyAutoPersistFailure: never touches indicatorId", s2.indicatorId, dirtyAfterBuild.indicatorId);
+}
+
+// ==== Phase 5A-5B: applySaveSuccess (Save vs Save Version) ===================
+{
+  const dirty = { ...INITIAL_BUILDER_PROJECT_STATE, dirty: true, currentVersion: 2, autoPersistError: "stale" };
+  const saved = applySaveSuccess(dirty);
+  eq("applySaveSuccess (plain Save): clears dirty", saved.dirty, false);
+  eq("applySaveSuccess (plain Save): clears stale autoPersistError", saved.autoPersistError, null);
+  eq("applySaveSuccess (plain Save): currentVersion untouched when omitted", saved.currentVersion, 2);
+
+  const savedVersion = applySaveSuccess(dirty, 3);
+  eq("applySaveSuccess (Save Version): clears dirty", savedVersion.dirty, false);
+  eq("applySaveSuccess (Save Version): currentVersion advances to the given value", savedVersion.currentVersion, 3);
+}
+
+// ==== Phase 5A-5B: canSave / canSaveVersion guards ============================
+{
+  ok("canSave: has id, dirty, not pending, signed in -> true", canSave("id-1", true, false, true) === true);
+  ok("canSave: NO id (brand-new /builder session) -> false — never create an empty indicator via Save", canSave(null, true, false, true) === false);
+  ok("canSave: not dirty -> false (nothing to save)", canSave("id-1", false, false, true) === false);
+  ok("canSave: save already pending -> false", canSave("id-1", true, true, true) === false);
+  ok("canSave: not signed in -> false", canSave("id-1", true, false, false) === false);
+  ok("canSaveVersion: shares the identical gate as canSave", canSaveVersion("id-1", true, false, true) === true);
+  ok("canSaveVersion: NO id -> false", canSaveVersion(null, true, false, true) === false);
+}
+
+// ==== Phase 5A-5C: mergeSettingsWithDefaults ==================================
+{
+  const specWithInputs = spec({ inputs: [{ name: "length", type: "number", default: 20 }, { name: "showLabels", type: "bool", default: true }] });
+  const merged1 = mergeSettingsWithDefaults({}, specWithInputs);
+  eq("mergeSettingsWithDefaults (no existing values): uses declared defaults", merged1, { length: 20, showLabels: true });
+
+  const merged2 = mergeSettingsWithDefaults({ length: 50 }, specWithInputs);
+  eq("mergeSettingsWithDefaults: preserves a user-set value for a still-declared input", merged2.length, 50);
+  eq("mergeSettingsWithDefaults: fills in the default for an input the user never touched", merged2.showLabels, true);
+
+  const specWithFewerInputs = spec({ inputs: [{ name: "length", type: "number", default: 20 }] });
+  const merged3 = mergeSettingsWithDefaults({ length: 50, oldRemovedInput: "x" }, specWithFewerInputs);
+  eq("mergeSettingsWithDefaults: drops a setting for an input the spec no longer declares", merged3, { length: 50 });
+}
+
+// ==== Phase 5A-5C: updateSetting — the ONE settings-edit transition, zero I/O =
+{
+  const before = { ...INITIAL_BUILDER_PROJECT_STATE, settings: { length: 20 }, dirty: false };
+  const s = updateSetting(before, "length", 30);
+  eq("updateSetting: updates only the named setting", s.settings, { length: 30 });
+  eq("updateSetting: marks dirty (same as a manual code edit)", s.dirty, true);
+  eq("updateSetting: never touches sgscript", s.sgscript, before.sgscript);
+  eq("updateSetting: never touches spec", s.spec, before.spec);
+
+  const withOthers = { ...INITIAL_BUILDER_PROJECT_STATE, settings: { length: 20, color: "#fff" } };
+  const s2 = updateSetting(withOthers, "color", "#000");
+  eq("updateSetting: preserves OTHER settings untouched", s2.settings, { length: 20, color: "#000" });
+}
+
+// ==== Phase 5A-5A: renameIndicator — local-only, persisted through Save =====
+{
+  const before = { ...INITIAL_BUILDER_PROJECT_STATE, name: "Old Name", dirty: false };
+  const s = renameIndicator(before, "New Name");
+  eq("renameIndicator: sets the new name", s.name, "New Name");
+  eq("renameIndicator: marks dirty", s.dirty, true);
+}
+
+// ==== displayName — the naming-bug fix: real fallback chain, never hardcoded
+{
+  eq("displayName: an explicit name wins", displayName({ ...INITIAL_BUILDER_PROJECT_STATE, name: "My Indicator", spec: spec({ name: "AI Name" }) }), "My Indicator");
+  eq("displayName: falls back to the spec's name when nothing was explicitly set", displayName({ ...INITIAL_BUILDER_PROJECT_STATE, name: null, spec: spec({ name: "AI Name" }) }), "AI Name");
+  eq("displayName: falls back to the literal placeholder before any project/name exists", displayName(INITIAL_BUILDER_PROJECT_STATE), "Untitled Indicator");
+}
+
+// ==== applyBuildSuccess — Phase 5A-5 name-preservation + settings merge =====
+{
+  const firstBuild = applyBuildSuccess(INITIAL_BUILDER_PROJECT_STATE, buildResult({ spec: spec({ name: "AI Chosen Name" }) }));
+  eq("applyBuildSuccess: a brand-new project takes the AI's own spec name", firstBuild.name, "AI Chosen Name");
+
+  const renamed = renameIndicator(firstBuild, "User Renamed It");
+  const afterRefinement = applyBuildSuccess(renamed, buildResult({ spec: spec({ name: "AI Would Rename It Again" }) }));
+  eq("applyBuildSuccess: NEVER overwrites a name the user (or a persisted row) already gave the project", afterRefinement.name, "User Renamed It");
+
+  const specWithOneInput = spec({ inputs: [{ name: "length", type: "number", default: 20 }] });
+  const builtWithInput = applyBuildSuccess(INITIAL_BUILDER_PROJECT_STATE, buildResult({ spec: specWithOneInput }));
+  eq("applyBuildSuccess: settings default from the spec's declared inputs", builtWithInput.settings, { length: 20 });
+
+  const userAdjusted = updateSetting(builtWithInput, "length", 99);
+  const refinedKeepingSetting = applyBuildSuccess(userAdjusted, buildResult({ spec: specWithOneInput }));
+  eq("applyBuildSuccess: a refinement that doesn't change inputs preserves the user's settings edit", refinedKeepingSetting.settings, { length: 99 });
+}
+
+// ==== Phase 5A-5A: hydrateFromIndicator — reopening a persisted project =====
+{
+  const row = {
+    id: "22222222-2222-2222-2222-222222222222",
+    name: "Saved Indicator",
+    code: "plot(ema(close, 20))",
+    pine: "//@version=6\nindicator('x')",
+    spec: spec({ name: "Saved Indicator", inputs: [{ name: "length", type: "number", default: 20 }] }),
+    settings: { length: 55 },
+    current_version: 4,
+  };
+  const s = hydrateFromIndicator(row);
+  eq("hydrateFromIndicator: indicatorId comes from the row", s.indicatorId, row.id);
+  eq("hydrateFromIndicator: name comes from the row", s.name, "Saved Indicator");
+  eq("hydrateFromIndicator: sgscript comes from row.code (the ONE canonical code field)", s.sgscript, row.code);
+  eq("hydrateFromIndicator: pine comes from the row", s.pine, row.pine);
+  eq("hydrateFromIndicator: currentVersion comes from the row", s.currentVersion, 4);
+  eq("hydrateFromIndicator: settings preserve the persisted value (not recomputed defaults)", s.settings, { length: 55 });
+  eq("hydrateFromIndicator: status becomes success (so the preview-refresh Trigger 1 fires automatically)", s.status, "success");
+  eq("hydrateFromIndicator: dirty is false — a freshly reopened project has nothing unsaved", s.dirty, false);
+  eq("hydrateFromIndicator: messages reset to empty (chat is restored separately via listIndicatorMessages)", s.messages, []);
+  eq("hydrateFromIndicator: failedDraft resets (no stale error carries over)", s.failedDraft, null);
+  eq("hydrateFromIndicator: previewResult resets — a new project's preview must not show the OLD project's chart", s.previewResult, null);
+
+  const rowMissingSettingsColumn = { ...row, settings: {} };
+  const s2 = hydrateFromIndicator(rowMissingSettingsColumn);
+  eq("hydrateFromIndicator: falls back to spec-declared defaults when the persisted settings are empty", s2.settings, { length: 20 });
 }
 
 // ==== buildRequestPayload — first build vs. follow-up refinement ============

@@ -1,25 +1,28 @@
 import { useEffect, useRef, useState } from "react";
-import { canRunPreview, type LifecycleStatus, type PreviewStatus } from "@/lib/builder/generationState";
+import { canRunPreview, type LifecycleStatus, type PreviewStatus, type SettingValue } from "@/lib/builder/generationState";
 import type { Timeframe } from "@/lib/marketdata";
 import type { Bar, RunResult } from "@/lib/sgscript/types";
 
 /**
  * Phase 5A-4e — automatic Preview refresh orchestration.
  *
- * Owns exactly three things: the 500ms manual-edit debounce timer, the
- * `PreviewContext` freshness record (which symbol/timeframe/sgscript the
- * currently-displayed `previewResult` was actually computed against), and
- * the trigger effects that decide WHEN to call the caller-supplied
+ * Owns exactly three things: the 500ms manual-edit/settings-edit debounce
+ * timer, the `PreviewContext` freshness record (which symbol/timeframe/
+ * sgscript the currently-displayed `previewResult` was actually computed
+ * against), and the trigger effects that decide WHEN to call the caller-supplied
  * `submitRunPreview`. It never calls `runIndicator` itself, never fetches
  * bars, never calls `buildProject`/`validateProject`/any persistence
  * function, and never owns a second copy of `sgscript` — `submitRunPreview`
  * (Phase 5A-4b, `useBuilderProject.ts`) remains the ONE `runIndicator` call
  * site in all of Builder; this hook is purely "when should I call it."
  *
- * Three trigger effects, each answering a different question about WHY a
+ * Four trigger effects, each answering a different question about WHY a
  * run might be needed, all funneling through the same `attemptAutoRun`:
  *   1. `buildStatus` transitions to `"success"` — a build/refinement just
- *      committed real `sgscript` (Phase 5A-4e §1/§2). Immediate, no debounce.
+ *      committed real `sgscript` (Phase 5A-4e §1/§2). Also what fires the
+ *      instant a reopened project's `hydrateFromIndicator` sets `status:
+ *      "success"` (Phase 5A-5) — reopening needs no second trigger of its
+ *      own. Immediate, no debounce.
  *   2. `bars`/`barsLoading` settle into "ready" — a symbol/timeframe change
  *      (or the initial load) just produced a fresh, correct `Bar[]` (§5).
  *      Immediate, no debounce. `useBuilderMarketData`'s own fetch effect
@@ -29,6 +32,11 @@ import type { Bar, RunResult } from "@/lib/sgscript/types";
  *   3. `manualEditVersion` increments — a real keystroke/paste/undo/redo
  *      touched `state.sgscript` (§3/§4). Debounced 500ms, and the timer is
  *      reset on every further increment.
+ *   4. Phase 5A-5 — `settingsVersion` increments — a Settings-panel control
+ *      changed `state.settings`. Same 500ms debounce as a manual code edit,
+ *      sharing the identical timer (a settings change and a code edit
+ *      arriving close together coalesce into one rerun, not two) — no
+ *      second debounce mechanism, no AI call, no persistence.
  * Plus one retry effect (§7): `previewStatus` changing (including the
  * moment a run finishes) re-evaluates `attemptAutoRun` so a trigger that
  * arrived while a run was in flight is retried exactly once, with no queue
@@ -37,23 +45,32 @@ import type { Bar, RunResult } from "@/lib/sgscript/types";
  * first place.
  *
  * `attemptAutoRun` itself is idempotent and self-terminating: it compares
- * the CURRENT `{symbol, timeframe, sgscript}` against `lastAttemptedRef`
- * (the signature of whatever was last ATTEMPTED, success or failure — see
- * that ref's own doc comment for why this must be separate from
- * `previewContext`) and no-ops if they already match, so it can be called
- * redundantly (e.g. by two trigger effects settling in close succession, or
- * by the retry-once-free effect after every single run) without ever
- * double-running or looping. A synchronous `isRunningRef` closes the one
- * gap `previewStatus` can't (two triggers firing in the same React commit,
- * before a `setState` from the first has actually re-rendered) — this is
- * NOT a second guard duplicating `runSeqRef`'s job (which decides which
- * ASYNC RESULT wins); it only prevents a second call to `submitRunPreview`
- * from being ISSUED in the same tick a first one already started.
+ * the CURRENT `{symbol, timeframe, sgscript, settings}` against
+ * `lastAttemptedRef` (the signature of whatever was last ATTEMPTED, success
+ * or failure — see that ref's own doc comment for why this must be
+ * separate from `previewContext`) and no-ops if they already match, so it
+ * can be called redundantly (e.g. by two trigger effects settling in close
+ * succession, or by the retry-once-free effect after every single run)
+ * without ever double-running or looping. A synchronous `isRunningRef`
+ * closes the one gap `previewStatus` can't (two triggers firing in the same
+ * React commit, before a `setState` from the first has actually
+ * re-rendered) — this is NOT a second guard duplicating `runSeqRef`'s job
+ * (which decides which ASYNC RESULT wins); it only prevents a second call
+ * to `submitRunPreview` from being ISSUED in the same tick a first one
+ * already started.
  */
 
 export type PreviewContext = { symbol: string; timeframe: Timeframe; sgscript: string };
 
 const MANUAL_EDIT_DEBOUNCE_MS = 500;
+
+/** Internal dedup signature for `lastAttemptedRef` — extends the public
+ * `PreviewContext` with a settings fingerprint so a settings-only change is
+ * correctly recognized as "not yet attempted" even when `sgscript` (and
+ * therefore `PreviewContext` proper) hasn't changed. Never exposed outside
+ * this file: `PreviewPanel`'s staleness UI only ever needs `PreviewContext`
+ * itself. */
+type AttemptSignature = PreviewContext & { settingsKey: string };
 
 export function useBuilderPreviewRefresh({
   sgscript,
@@ -61,6 +78,8 @@ export function useBuilderPreviewRefresh({
   previewStatus,
   previewResult,
   manualEditVersion,
+  settings,
+  settingsVersion,
   selectedSymbol,
   selectedTimeframe,
   bars,
@@ -72,11 +91,20 @@ export function useBuilderPreviewRefresh({
   previewStatus: PreviewStatus;
   previewResult: RunResult | null;
   manualEditVersion: number;
+  /** Phase 5A-5 — the current canonical indicator-input values, sent
+   * straight into `submitRunPreview` exactly as `state.settings` reads at
+   * run time (mirrors how `sgscript` is always read fresh, never a stale
+   * closure). */
+  settings: Record<string, SettingValue>;
+  /** Phase 5A-5 — bumped once per Settings-panel edit (`useBuilderProject`'s
+   * `updateSetting`), the same "an edit just happened" counter shape
+   * `manualEditVersion` already established for code edits. */
+  settingsVersion: number;
   selectedSymbol: string;
   selectedTimeframe: Timeframe;
   bars: Bar[];
   barsLoading: boolean;
-  submitRunPreview: (bars: Bar[]) => Promise<void>;
+  submitRunPreview: (bars: Bar[], settings?: Record<string, SettingValue>) => Promise<void>;
 }): { previewContext: PreviewContext | null; triggerManualRun: () => void } {
   const [previewContext, setPreviewContext] = useState<PreviewContext | null>(null);
   const pendingContextRef = useRef<PreviewContext | null>(null);
@@ -93,14 +121,14 @@ export function useBuilderPreviewRefresh({
    * Manual retries (`triggerManualRun`) deliberately bypass this check
    * entirely — an explicit click is always allowed to reattempt an
    * unchanged, still-failing signature on purpose. */
-  const lastAttemptedRef = useRef<PreviewContext | null>(null);
+  const lastAttemptedRef = useRef<AttemptSignature | null>(null);
 
   // Kept in a ref (not the effect closures below) so every trigger path —
   // automatic or manual — always reads the truly-current values, exactly
   // the same reasoning `useBuilderProject.ts` already applies to
   // `indicatorIdRef`.
-  const latestRef = useRef({ sgscript, selectedSymbol, selectedTimeframe, bars, barsLoading, previewStatus });
-  latestRef.current = { sgscript, selectedSymbol, selectedTimeframe, bars, barsLoading, previewStatus };
+  const latestRef = useRef({ sgscript, settings, selectedSymbol, selectedTimeframe, bars, barsLoading, previewStatus });
+  latestRef.current = { sgscript, settings, selectedSymbol, selectedTimeframe, bars, barsLoading, previewStatus };
 
   function clearPendingDebounce() {
     if (debounceTimerRef.current !== null) {
@@ -115,8 +143,8 @@ export function useBuilderPreviewRefresh({
     isRunningRef.current = true;
     const ctx: PreviewContext = { symbol: l.selectedSymbol, timeframe: l.selectedTimeframe, sgscript: l.sgscript };
     pendingContextRef.current = ctx;
-    lastAttemptedRef.current = ctx;
-    void submitRunPreview(l.bars).finally(() => {
+    lastAttemptedRef.current = { ...ctx, settingsKey: JSON.stringify(l.settings) };
+    void submitRunPreview(l.bars, l.settings).finally(() => {
       isRunningRef.current = false;
     });
   }
@@ -136,7 +164,11 @@ export function useBuilderPreviewRefresh({
     if (!canRunPreview(l.sgscript, l.previewStatus, l.bars.length > 0)) return;
     const attempted = lastAttemptedRef.current;
     const alreadyAttempted =
-      attempted !== null && attempted.symbol === l.selectedSymbol && attempted.timeframe === l.selectedTimeframe && attempted.sgscript === l.sgscript;
+      attempted !== null &&
+      attempted.symbol === l.selectedSymbol &&
+      attempted.timeframe === l.selectedTimeframe &&
+      attempted.sgscript === l.sgscript &&
+      attempted.settingsKey === JSON.stringify(l.settings);
     if (alreadyAttempted) return;
     runNow();
   }
@@ -188,7 +220,24 @@ export function useBuilderPreviewRefresh({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [manualEditVersion]);
 
-  // Trigger 4 — retry-once-free (§7): re-evaluates whenever previewStatus
+  // Trigger 4 — Phase 5A-5, a Settings-panel edit: identical debounced
+  // shape to Trigger 3 (same constant, same timer ref — a settings change
+  // and a code edit arriving close together share one timer and coalesce
+  // into a single rerun). Guarded on `settingsVersion > 0` for the same
+  // reason as `manualEditVersion` — hydrating a reopened project's
+  // persisted settings must not itself look like a manual edit.
+  useEffect(() => {
+    if (settingsVersion === 0) return;
+    clearPendingDebounce();
+    debounceTimerRef.current = setTimeout(() => {
+      debounceTimerRef.current = null;
+      attemptAutoRun();
+    }, MANUAL_EDIT_DEBOUNCE_MS);
+    return clearPendingDebounce;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settingsVersion]);
+
+  // Trigger 5 — retry-once-free (§7): re-evaluates whenever previewStatus
   // changes, including the moment a run finishes. No queue, no flag — a
   // trigger that arrived while busy simply left the signature mismatched,
   // and this is what notices that once free.

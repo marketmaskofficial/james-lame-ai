@@ -1,5 +1,6 @@
 import type { BuildResult } from "@/lib/project.functions";
-import type { IndicatorSpec } from "@/lib/spec/types";
+import { coerceSpec, type IndicatorSpec } from "@/lib/spec/types";
+import { defaultSettingsFromSpec } from "@/lib/spec/inputDefaults";
 import { classifyBuildResult, formatBuildIssuesForRepair, type BuildOutcomeStatus } from "@/lib/spec/buildOutcome";
 import type { RunResult } from "@/lib/sgscript/types";
 
@@ -39,6 +40,29 @@ export type LifecycleStatus = "idle" | "generating" | "success" | "generationFai
  * Phase 5A-4b audit requires. */
 export type PreviewStatus = "idle" | "running" | "success" | "error";
 
+/** Matches the shape `indicators.settings`/`indicator_versions.settings`
+ * already persist everywhere in this codebase (Studio's own `settings`
+ * state, `defaultSettingsFromSpec`'s return type) — never a Builder-local
+ * settings shape. */
+export type SettingValue = number | boolean | string;
+
+/** The exact columns `getIndicator`/`restoreVersion`'s `restored` payload
+ * already return (`src/lib/indicators.functions.ts`) — Phase 5A-5's
+ * `hydrateFromIndicator` accepts either shape without needing every column,
+ * since a restored-version row has no `current_version`/`id` of its own
+ * (the live indicator's id/version are threaded in separately by the
+ * caller). No new server function or endpoint is introduced by this type —
+ * it just names what already comes back from the two reused functions. */
+export type IndicatorRow = {
+  id: string;
+  name: string;
+  code: string;
+  pine?: string | null;
+  spec?: unknown;
+  settings?: unknown;
+  current_version?: number | null;
+};
+
 export type BuilderMessageRole = "user" | "ai";
 /** Mirrors `indicator_messages.kind` exactly — Builder only ever produces
  * "build" turns in Phase 5A-2 (no Explain feature yet). */
@@ -74,9 +98,32 @@ export type BuildValidation = BuildResult["validation"];
 
 export type BuilderProjectState = {
   indicatorId: string | null;
+  /** Phase 5A-5 — the canonical display/persisted name. `null` means
+   * "nothing has named this project yet" (brand-new `/builder`, before any
+   * successful build or hydration); `BuilderToolbar` falls back to
+   * `spec?.name` then the literal "Untitled Indicator" — see `displayName`
+   * below. Set from the AI's own `spec.name` the first time a project gets
+   * one, from the persisted row on reopen, or by an explicit user rename —
+   * never silently overwritten by a later AI refinement once it has a real
+   * value (see `applyBuildSuccess`). */
+  name: string | null;
   spec: IndicatorSpec | null;
   pine: string;
   sgscript: string;
+  /** Phase 5A-5 — the canonical, editable indicator-input values. Starts at
+   * `{}` for a brand-new project; a successful build/modify merges in
+   * defaults for any newly-declared input while preserving whatever the
+   * user already set for inputs that still exist (`mergeSettingsWithDefaults`)
+   * — never blindly recomputed, which would silently discard a manual
+   * settings edit on the next AI turn. Reopening a persisted project loads
+   * the persisted `settings` column directly (already merged the same way,
+   * see `hydrateFromIndicator`). */
+  settings: Record<string, SettingValue>;
+  /** Phase 5A-5 — mirrors `indicators.current_version` for display
+   * (`BuilderToolbar`'s version badge) and as the base `restoreVersion`
+   * conceptually restores relative to. `null` until the indicator has been
+   * created (first successful build) or hydrated from a persisted row. */
+  currentVersion: number | null;
   summary: string;
   changelog: string;
   validation: BuildValidation | null;
@@ -84,12 +131,26 @@ export type BuilderProjectState = {
   messages: BuilderMessage[];
   status: LifecycleStatus;
   failedDraft: FailedDraft | null;
-  /** True once a successful generated result exists that has not been
-   * explicitly saved through the (Phase 5A-6) manual Save Version UX. Never
-   * set for an unsent prompt or a failed generation with no committed
-   * result — see the Phase 5A-2 scope decision. No discard-confirmation UX
-   * reads this yet; it exists so later phases have a truthful foundation. */
+  /** True whenever local Builder state has changes that are not yet
+   * reflected in the persisted `indicators` row: a manual SGScript edit, a
+   * manual settings edit, a manual rename, or a successful AI generation/
+   * refinement whose automatic persistence (`persistIndicator` in
+   * `useBuilderProject.ts`) has not yet succeeded. False for a brand-new
+   * workspace, immediately after hydrating a persisted project, and after a
+   * successful Save / Save Version / Restore Version — see each of those
+   * functions' own doc comments for exactly which transition clears it.
+   * Drives `BuilderToolbar`'s Save enablement and the Phase 5A-5D
+   * navigation/`beforeunload` discard guard. */
   dirty: boolean;
+  /** Phase 5A-5 — set when a successful AI build/refinement's OWN visible
+   * result committed fine, but the automatic `persistIndicator` write that
+   * should have followed it failed (network/server error). Deliberately
+   * separate from `error` (an AI/network failure with NO result at all) —
+   * conflating the two would make a perfectly good generated indicator look
+   * like a failed one. `dirty` stays true whenever this is set, so the UI
+   * never claims local work is safely stored. Cleared by the next
+   * successful auto-persist, explicit Save, or Save Version. */
+  autoPersistError: string | null;
   /** The last generation/network failure message, if any — cleared on the
    * next successful or validation-failed outcome. */
   error: string | null;
@@ -127,9 +188,12 @@ export type BuilderProjectState = {
 
 export const INITIAL_BUILDER_PROJECT_STATE: BuilderProjectState = {
   indicatorId: null,
+  name: null,
   spec: null,
   pine: "",
   sgscript: "",
+  settings: {},
+  currentVersion: null,
   summary: "",
   changelog: "",
   validation: null,
@@ -138,6 +202,7 @@ export const INITIAL_BUILDER_PROJECT_STATE: BuilderProjectState = {
   status: "idle",
   failedDraft: null,
   dirty: false,
+  autoPersistError: null,
   error: null,
   validationPending: false,
   validationError: null,
@@ -145,6 +210,96 @@ export const INITIAL_BUILDER_PROJECT_STATE: BuilderProjectState = {
   previewResult: null,
   previewError: null,
 };
+
+/** Honest display name: an explicit name (renamed or already persisted)
+ * wins, then the AI's own spec name, then the literal placeholder — never a
+ * hardcoded string shown regardless of real state (the Phase 5A-5 audit's
+ * naming-bug finding). */
+export function displayName(state: BuilderProjectState): string {
+  return state.name ?? state.spec?.name ?? "Untitled Indicator";
+}
+
+/** Merges a persisted/previous settings object with a spec's declared
+ * inputs: an input the user already has a value for keeps that value, an
+ * input that's new (or the project is brand-new) gets its declared default,
+ * and an input no longer declared is dropped. Reused identically by a
+ * successful AI build/modify (`applyBuildSuccess`) and by hydrating a
+ * persisted project (`hydrateFromIndicator`) — one merge rule, not two. */
+export function mergeSettingsWithDefaults(existing: Record<string, SettingValue>, spec: IndicatorSpec): Record<string, SettingValue> {
+  const defaults = defaultSettingsFromSpec(spec);
+  const merged: Record<string, SettingValue> = { ...defaults };
+  for (const key of Object.keys(defaults)) {
+    if (key in existing) merged[key] = existing[key];
+  }
+  return merged;
+}
+
+/**
+ * Phase 5A-5 — the ONE place a manual Settings-panel edit touches state.
+ * Purely local, exactly like `setManualSgscript`: no AI call, no DB write,
+ * no second settings store. Marks `dirty` the same way a code edit does, so
+ * Save/the discard guard treat a settings change identically to any other
+ * unsaved local change.
+ */
+export function updateSetting(state: BuilderProjectState, name: string, value: SettingValue): BuilderProjectState {
+  return { ...state, settings: { ...state.settings, [name]: value }, dirty: true };
+}
+
+/** Phase 5A-5 — the ONE place a manual rename touches state. Local only:
+ * persistence happens through Save, exactly like a code or settings edit —
+ * never a dedicated rename endpoint. */
+export function renameIndicator(state: BuilderProjectState, name: string): BuilderProjectState {
+  return { ...state, name, dirty: true };
+}
+
+/**
+ * Phase 5A-5 — reopening an existing project. Builds a FRESH state off
+ * `INITIAL_BUILDER_PROJECT_STATE` (never merges with whatever the previous
+ * session had) from the exact columns `getIndicator`/`restoreVersion`
+ * already return — no new endpoint, no second persistence shape. `dirty`
+ * is false: everything here is already exactly what's stored. Chat history
+ * is deliberately NOT populated here — `useBuilderProject.ts`'s existing
+ * `messagesQuery` (already wired for "resume a project" since Phase 5A-2)
+ * loads it once `indicatorId` is set to this foreign id, the same as it
+ * always has.
+ */
+export function hydrateFromIndicator(row: IndicatorRow): BuilderProjectState {
+  const spec = coerceSpec(row.spec);
+  return {
+    ...INITIAL_BUILDER_PROJECT_STATE,
+    indicatorId: row.id,
+    name: row.name,
+    spec,
+    pine: row.pine ?? "",
+    sgscript: row.code,
+    settings: mergeSettingsWithDefaults((row.settings ?? {}) as Record<string, SettingValue>, spec),
+    currentVersion: row.current_version ?? 1,
+    status: "success",
+  };
+}
+
+/** A successful AI build/refinement whose automatic persistence
+ * (`persistIndicator`) ALSO succeeded — the only path that clears `dirty`
+ * for an AI-driven change, per the Phase 5A-5 dirty-semantics spec. */
+export function applyAutoPersistSuccess(state: BuilderProjectState, indicatorId: string, currentVersion: number | null): BuilderProjectState {
+  return { ...state, indicatorId, currentVersion, dirty: false, autoPersistError: null };
+}
+
+/** The generated result itself is fine (already committed by
+ * `applyBuildSuccess`) but writing it to `indicators`/`indicator_versions`
+ * failed. `dirty` is left exactly as `applyBuildSuccess` set it (true) —
+ * this must never look like a safely-stored project. */
+export function applyAutoPersistFailure(state: BuilderProjectState, message: string): BuilderProjectState {
+  return { ...state, autoPersistError: message };
+}
+
+/** A successful explicit Save (`snapshot:false`) or Save Version
+ * (`snapshot:true`) — both clear `dirty` and any stale auto-persist error
+ * the same way, differing only in whether `currentVersion` also advances
+ * (a plain Save never bumps it). */
+export function applySaveSuccess(state: BuilderProjectState, currentVersion?: number | null): BuilderProjectState {
+  return { ...state, dirty: false, autoPersistError: null, currentVersion: currentVersion ?? state.currentVersion };
+}
 
 function newMessageId(): string {
   return typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `local-${Date.now()}-${Math.random()}`;
@@ -203,9 +358,13 @@ export function applyBuildSuccess(state: BuilderProjectState, result: BuildResul
     ...state,
     messages: [...state.messages, aiMessage],
     status: "success",
+    // Never clobber a name the user (or a persisted row) already gave this
+    // project — only a project that has never had one takes the AI's.
+    name: state.name ?? result.spec.name,
     spec: result.spec,
     pine: result.pine,
     sgscript: result.sgscript,
+    settings: mergeSettingsWithDefaults(state.settings, result.spec),
     summary: result.summary,
     changelog: result.changelog,
     validation: result.validation,
@@ -223,10 +382,6 @@ export function applyBuildSuccess(state: BuilderProjectState, result: BuildResul
  * spec/pine/sgscript changes. */
 export function applyBuildFailure(state: BuilderProjectState, message: string): BuilderProjectState {
   return { ...state, status: "generationFailed", error: message };
-}
-
-export function withIndicatorId(state: BuilderProjectState, indicatorId: string): BuilderProjectState {
-  return { ...state, indicatorId };
 }
 
 export function markMessagePersisted(state: BuilderProjectState, messageId: string): BuilderProjectState {
@@ -293,6 +448,22 @@ export function applyValidationFailure(state: BuilderProjectState, message: stri
 export function canSubmitValidate(sgscript: string, status: LifecycleStatus, validationPending: boolean, signedIn: boolean): boolean {
   return sgscript.trim().length > 0 && status !== "generating" && !validationPending && signedIn;
 }
+
+/** Phase 5A-5 — Save is only ever a patch to an EXISTING row: a brand-new
+ * `/builder` session with no `indicatorId` yet must never create an empty
+ * indicator merely because someone clicked Save (see the 5A-5B audit's
+ * "do not create empty indicators when somebody merely opens /builder"
+ * rule) — the first `indicatorId` only ever comes from a successful AI
+ * build. Also requires real unsaved local changes and no save already in
+ * flight. */
+export function canSave(indicatorId: string | null, dirty: boolean, savePending: boolean, signedIn: boolean): boolean {
+  return indicatorId !== null && dirty && !savePending && signedIn;
+}
+
+/** Save Version shares Save's exact gate — the only difference between the
+ * two actions is the `snapshot` flag sent to the SAME `updateIndicator`
+ * call, never a second precondition set. */
+export const canSaveVersion = canSave;
 
 /**
  * Phase 5A-4b — Preview execution lifecycle. `runIndicator` is a pure

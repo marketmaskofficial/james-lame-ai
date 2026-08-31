@@ -90,7 +90,11 @@ const previewRefreshHookSrc = read("src/components/builder/useBuilderPreviewRefr
       /listIndicatorMessages/.test(useBuilderProjectSrc) &&
       /appendIndicatorMessage/.test(useBuilderProjectSrc),
   );
-  ok("useBuilderProject.ts reuses defaultSettingsFromSpec (not a second settings-derivation)", /defaultSettingsFromSpec/.test(useBuilderProjectSrc));
+  ok(
+    "Phase 5A-5C: defaultSettingsFromSpec is reused (not a second settings-derivation) — now via generationState.ts's mergeSettingsWithDefaults, called from both a successful AI build and hydrateFromIndicator",
+    /defaultSettingsFromSpec/.test(generationStateSrc),
+  );
+  ok("Phase 5A-5C: useBuilderProject.ts itself reuses the SAME mergeSettingsWithDefaults (not a second settings-merge)", /mergeSettingsWithDefaults/.test(useBuilderProjectSrc));
   ok(
     "useBuilderProject.ts reuses classifyBuildResult from the shared buildOutcome module (not a second classify())",
     /classifyBuildResult/.test(useBuilderProjectSrc) && /from\s*["']@\/lib\/spec\/buildOutcome["']/.test(useBuilderProjectSrc),
@@ -598,8 +602,8 @@ const previewRefreshHookSrc = read("src/components/builder/useBuilderPreviewRefr
 // ---- 15. Phase 5A-4d/4e: Run Preview / auto-refresh reach only submitRunPreview ----
 {
   ok(
-    "useBuilderPreviewRefresh's runNow calls the EXISTING submitRunPreview(bars) with the real fetched bars — no second execution path, no new runIndicator call site",
-    /function runNow\(\)\s*\{[\s\S]*?submitRunPreview\(l\.bars\)[\s\S]*?\}/.test(previewRefreshHookSrc),
+    "useBuilderPreviewRefresh's runNow calls the EXISTING submitRunPreview(bars, settings) with the real fetched bars AND the real canonical settings (Phase 5A-5C) — no second execution path, no new runIndicator call site",
+    /function runNow\(\)\s*\{[\s\S]*?submitRunPreview\(l\.bars,\s*l\.settings\)[\s\S]*?\}/.test(previewRefreshHookSrc),
   );
   ok(
     "the preview-refresh hook never calls buildProject/validateProject/createIndicator/updateIndicator/appendIndicatorMessage — automatic and manual Preview both never generate, validate, or persist",

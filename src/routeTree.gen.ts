@@ -21,6 +21,7 @@ import { Route as StudioRouteImport } from './routes/studio'
 import { Route as TradesRouteImport } from './routes/trades'
 import { Route as ApiGenerateRouteImport } from './routes/api/generate'
 import { Route as ApiKlinesRouteImport } from './routes/api/klines'
+import { Route as BuilderIdRouteImport } from './routes/builder_.$id'
 import { Route as CheckoutReturnRouteImport } from './routes/checkout.return'
 import { Route as SIdRouteImport } from './routes/s.$id'
 import { Route as ApiPublicHooksCheckAlertsRouteImport } from './routes/api/public/hooks/check-alerts'
@@ -86,6 +87,11 @@ const ApiKlinesRoute = ApiKlinesRouteImport.update({
   path: '/api/klines',
   getParentRoute: () => rootRouteImport,
 } as any)
+const BuilderIdRoute = BuilderIdRouteImport.update({
+  id: '/builder_/$id',
+  path: '/builder/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const CheckoutReturnRoute = CheckoutReturnRouteImport.update({
   id: '/checkout/return',
   path: '/checkout/return',
@@ -122,6 +128,7 @@ export interface FileRoutesByFullPath {
   '/trades': typeof TradesRoute
   '/api/generate': typeof ApiGenerateRoute
   '/api/klines': typeof ApiKlinesRoute
+  '/builder/$id': typeof BuilderIdRoute
   '/checkout/return': typeof CheckoutReturnRoute
   '/s/$id': typeof SIdRoute
   '/api/public/hooks/check-alerts': typeof ApiPublicHooksCheckAlertsRoute
@@ -140,6 +147,7 @@ export interface FileRoutesByTo {
   '/trades': typeof TradesRoute
   '/api/generate': typeof ApiGenerateRoute
   '/api/klines': typeof ApiKlinesRoute
+  '/builder/$id': typeof BuilderIdRoute
   '/checkout/return': typeof CheckoutReturnRoute
   '/s/$id': typeof SIdRoute
   '/api/public/hooks/check-alerts': typeof ApiPublicHooksCheckAlertsRoute
@@ -159,6 +167,7 @@ export interface FileRoutesById {
   '/trades': typeof TradesRoute
   '/api/generate': typeof ApiGenerateRoute
   '/api/klines': typeof ApiKlinesRoute
+  '/builder_/$id': typeof BuilderIdRoute
   '/checkout/return': typeof CheckoutReturnRoute
   '/s/$id': typeof SIdRoute
   '/api/public/hooks/check-alerts': typeof ApiPublicHooksCheckAlertsRoute
@@ -179,6 +188,7 @@ export interface FileRouteTypes {
     | '/trades'
     | '/api/generate'
     | '/api/klines'
+    | '/builder/$id'
     | '/checkout/return'
     | '/s/$id'
     | '/api/public/hooks/check-alerts'
@@ -197,6 +207,7 @@ export interface FileRouteTypes {
     | '/trades'
     | '/api/generate'
     | '/api/klines'
+    | '/builder/$id'
     | '/checkout/return'
     | '/s/$id'
     | '/api/public/hooks/check-alerts'
@@ -215,6 +226,7 @@ export interface FileRouteTypes {
     | '/trades'
     | '/api/generate'
     | '/api/klines'
+    | '/builder_/$id'
     | '/checkout/return'
     | '/s/$id'
     | '/api/public/hooks/check-alerts'
@@ -234,6 +246,7 @@ export interface RootRouteChildren {
   TradesRoute: typeof TradesRoute
   ApiGenerateRoute: typeof ApiGenerateRoute
   ApiKlinesRoute: typeof ApiKlinesRoute
+  BuilderIdRoute: typeof BuilderIdRoute
   CheckoutReturnRoute: typeof CheckoutReturnRoute
   SIdRoute: typeof SIdRoute
   ApiPublicHooksCheckAlertsRoute: typeof ApiPublicHooksCheckAlertsRoute
@@ -326,6 +339,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiKlinesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/builder_/$id': {
+      id: '/builder_/$id'
+      path: '/builder/$id'
+      fullPath: '/builder/$id'
+      preLoaderRoute: typeof BuilderIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/checkout/return': {
       id: '/checkout/return'
       path: '/checkout/return'
@@ -370,6 +390,7 @@ const rootRouteChildren: RootRouteChildren = {
   TradesRoute: TradesRoute,
   ApiGenerateRoute: ApiGenerateRoute,
   ApiKlinesRoute: ApiKlinesRoute,
+  BuilderIdRoute: BuilderIdRoute,
   CheckoutReturnRoute: CheckoutReturnRoute,
   SIdRoute: SIdRoute,
   ApiPublicHooksCheckAlertsRoute: ApiPublicHooksCheckAlertsRoute,
