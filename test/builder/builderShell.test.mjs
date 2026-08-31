@@ -102,13 +102,15 @@ const toolbarSrc = sources["src/components/builder/BuilderToolbar.tsx"];
 }
 
 // ---- Toolbar: Save/Add to Chart still unconditionally disabled; Phase
-// ---- 5A-3 deliberately activates Validate, and only Validate. -----------
+// ---- 5A-3 activates Validate, Phase 5A-4d additionally activates Run
+// ---- Preview — no OTHER button ever computes a conditional disabled state.
 {
   const buttonBlocks = toolbarSrc.split(/<button/).slice(1); // one entry per <button ...>...</button> region
-  ok("BuilderToolbar renders at least 3 action buttons (Save, Validate, Add to Chart)", buttonBlocks.length >= 3);
+  ok("BuilderToolbar renders at least 4 action buttons (Save, Validate, Run Preview, Add to Chart)", buttonBlocks.length >= 4);
 
   const saveBlock = buttonBlocks.find((b) => /aria-label="Save"/.test(b));
   const validateBlock = buttonBlocks.find((b) => /aria-label="Validate"/.test(b));
+  const runPreviewBlock = buttonBlocks.find((b) => /aria-label="Run Preview"/.test(b));
   const addToChartBlock = buttonBlocks.find((b) => /aria-label="Add to Chart"/.test(b));
 
   ok(
@@ -120,15 +122,20 @@ const toolbarSrc = sources["src/components/builder/BuilderToolbar.tsx"];
     Boolean(addToChartBlock) && /\bdisabled(\s|>)/.test(addToChartBlock.slice(0, 60)) && !/disabled=\{/.test(addToChartBlock.slice(0, 60)),
   );
   ok(
-    "Validate is the ONE Phase 5A-3 exception: conditionally disabled via disabled={!canValidate}, driven by canValidate (a real prop, not a hardcoded true)",
+    "Validate is a Phase 5A-3 exception: conditionally disabled via disabled={!canValidate}, driven by canValidate (a real prop, not a hardcoded true)",
     Boolean(validateBlock) && /disabled=\{!canValidate\}/.test(validateBlock),
   );
   ok(
-    "no button OTHER than Validate ever computes a conditional disabled state (disabled={...})",
-    (toolbarSrc.match(/disabled=\{/g) ?? []).length === 1,
+    "Phase 5A-4d: Run Preview is conditionally disabled via disabled={!canRunPreview}, driven by canRunPreview (a real prop, not a hardcoded true)",
+    Boolean(runPreviewBlock) && /disabled=\{!canRunPreview\}/.test(runPreviewBlock),
+  );
+  ok(
+    "no button OTHER than Validate/Run Preview ever computes a conditional disabled state (disabled={...})",
+    (toolbarSrc.match(/disabled=\{/g) ?? []).length === 2,
   );
   ok('Save button is present', /aria-label="Save"/.test(toolbarSrc));
   ok('Validate button is present', /aria-label="Validate"/.test(toolbarSrc));
+  ok('Run Preview button is present', /aria-label="Run Preview"/.test(toolbarSrc));
   ok('Add to Chart button is present', /aria-label="Add to Chart"/.test(toolbarSrc));
 }
 

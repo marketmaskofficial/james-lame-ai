@@ -301,9 +301,19 @@ export function canSubmitValidate(sgscript: string, status: LifecycleStatus, val
  * authenticate against. Blocks a second run only while one is already in
  * flight (the stale-result guard in `useBuilderProject.ts` additionally
  * protects against an old run's result ever winning over a newer one).
+ *
+ * Phase 5A-4d adds `hasBars` — the runtime itself hard-throws "No market
+ * data loaded" against an empty `Bar[]` (see the Phase 5A-4b runtime audit),
+ * so a run with zero bars is guaranteed to fail; gating on it here means the
+ * button-enablement check and `submitRunPreview`'s own internal guard share
+ * the identical rule, exactly like every other canX function in this file.
+ * Deliberately NOT `barsLoading` — that is Builder's market-data-hook's own
+ * transient UI concept, not a generic execution precondition, so it stays
+ * out of this module and is combined at the call site instead (see
+ * `useBuilderMarketData.ts`).
  */
-export function canRunPreview(sgscript: string, previewStatus: PreviewStatus): boolean {
-  return sgscript.trim().length > 0 && previewStatus !== "running";
+export function canRunPreview(sgscript: string, previewStatus: PreviewStatus, hasBars: boolean): boolean {
+  return sgscript.trim().length > 0 && previewStatus !== "running" && hasBars;
 }
 
 /** Marks an explicit Preview run as in flight. Never touches `spec`/`pine`/

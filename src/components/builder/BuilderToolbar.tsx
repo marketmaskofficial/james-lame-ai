@@ -1,19 +1,25 @@
-import { Code2, Loader2, PlusSquare, Save, ShieldCheck } from "lucide-react";
+import { Code2, Loader2, Play, PlusSquare, Save, ShieldCheck } from "lucide-react";
 
 /**
- * Phase 5A-1/5A-3 — the top Builder toolbar.
+ * Phase 5A-1/5A-3/5A-4d — the top Builder toolbar.
  *
  * Reserves the permanent locations for indicator name / draft state /
- * version indicator / Save / Validate / Add to Chart. Save and Add to Chart
- * stay unconditionally disabled — never a fake-success stub — until the
- * phase that actually wires them (Save/version history in 5A-6, Add to
- * Chart in 5A-7). Validate is the one action Phase 5A-3 activates, via
- * `canValidate` computed from the canonical Builder state
- * (`canSubmitValidate` in `src/lib/builder/generationState.ts`) — never a
- * hardcoded `true`.
+ * version indicator / Save / Validate / Run Preview / Add to Chart. Save and
+ * Add to Chart stay unconditionally disabled — never a fake-success stub —
+ * until the phase that actually wires them (Save/version history in 5A-6,
+ * Add to Chart in 5A-7). Validate (5A-3) and Run Preview (5A-4d) are both
+ * activated via `canX` booleans computed from the canonical Builder state in
+ * `src/lib/builder/generationState.ts` — never a hardcoded `true`.
  *
- * Below `sm` (640px) the three actions collapse to icon-only (label still
- * available via `title`) — at 375px wide, three full-text buttons plus the
+ * Run Preview sits beside Validate deliberately: both are manual,
+ * non-AI, non-persisting actions that operate on the current canonical
+ * `state.sgscript` — Run Preview additionally requires real historical bars
+ * to already be loaded (`canRunPreview`'s `hasBars` parameter), so a click
+ * here is never able to trigger the runtime's own "No market data loaded"
+ * failure through a state the button should have already prevented.
+ *
+ * Below `sm` (640px) the four actions collapse to icon-only (label still
+ * available via `title`) — at 375px wide, four full-text buttons plus the
  * indicator-name area do not both fit, and since the name side is the one
  * that must never disappear, the action buttons are the side that shrinks.
  */
@@ -21,10 +27,16 @@ export function BuilderToolbar({
   canValidate,
   validationPending,
   onValidate,
+  canRunPreview,
+  previewRunning,
+  onRunPreview,
 }: {
   canValidate: boolean;
   validationPending: boolean;
   onValidate: () => void;
+  canRunPreview: boolean;
+  previewRunning: boolean;
+  onRunPreview: () => void;
 }) {
   return (
     <header className="flex shrink-0 items-center gap-2 border-b border-border bg-sidebar px-3 py-2.5 sm:gap-3 sm:px-4">
@@ -56,6 +68,17 @@ export function BuilderToolbar({
         >
           {validationPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5" />}
           <span className="hidden sm:inline">{validationPending ? "Validating…" : "Validate"}</span>
+        </button>
+        <button
+          type="button"
+          disabled={!canRunPreview}
+          onClick={onRunPreview}
+          title={canRunPreview ? "Run Preview — execute the current code against the loaded historical bars" : "Run Preview — needs real code and loaded market data"}
+          aria-label="Run Preview"
+          className="flex items-center gap-1.5 rounded-md border border-border px-1.5 py-1 text-[11px] font-medium text-muted-foreground disabled:cursor-not-allowed disabled:opacity-40 sm:px-2.5"
+        >
+          {previewRunning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+          <span className="hidden sm:inline">{previewRunning ? "Running…" : "Run Preview"}</span>
         </button>
         <button
           type="button"

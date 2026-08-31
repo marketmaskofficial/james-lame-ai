@@ -1,19 +1,16 @@
+import { useEffect, useRef, useState } from "react";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { AppNavRail } from "@/components/AppNavRail";
-import { canSubmitValidate } from "@/lib/builder/generationState";
-import type { Bar } from "@/lib/sgscript/types";
+import { canRunPreview as canRunPreviewCheck, canSubmitValidate } from "@/lib/builder/generationState";
+import type { Timeframe } from "@/lib/marketdata";
 import { BuilderToolbar } from "./BuilderToolbar";
 import { ChatPanel } from "./ChatPanel";
 import { CodeEditorPanel } from "./CodeEditorPanel";
-import { PreviewPanel } from "./PreviewPanel";
+import { PreviewPanel, type PreviewContext } from "./PreviewPanel";
 import { SettingsPanel } from "./SettingsPanel";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
+import { useBuilderMarketData } from "./useBuilderMarketData";
 import { useBuilderProject } from "./useBuilderProject";
-
-/** Phase 5A-4c: Builder has no symbol/timeframe/market-data of its own yet
- * (Phase 5A-4d) — a stable module-level empty array so `PreviewPanel`
- * never receives a freshly-allocated `[]` on every render. */
-const EMPTY_BARS: Bar[] = [];
 
 /**
  * Phase 5A-1 — the dedicated Indicator Builder workspace shell.
@@ -67,8 +64,21 @@ const EMPTY_BARS: Bar[] = [];
  *
  * Phase 5A-4c — `PreviewPanel` now mounts the real `StudioChart` renderer,
  * fed from `state.previewStatus`/`previewResult`/`previewError` (Phase
- * 5A-4b's execution state) plus `EMPTY_BARS` until Phase 5A-4d supplies
- * real market data.
+ * 5A-4b's execution state).
+ *
+ * Phase 5A-4d — `useBuilderMarketData` (a separate, Builder-local hook —
+ * deliberately NOT folded into `useBuilderProject`/`BuilderProjectState`,
+ * see that hook's own doc comment) supplies real `bars`/`barsLoading`/
+ * `marketDataError`/`selectedSymbol`/`selectedTimeframe`. Run Preview is a
+ * real, manual, `BuilderToolbar` action that calls the EXISTING
+ * `submitRunPreview(bars)` with these real bars — no second execution path,
+ * no automatic re-run on symbol/timeframe/code change (that's Phase
+ * 5A-4e's job). `previewContext`/`pendingPreviewContextRef` below exist
+ * solely to know which symbol/timeframe the currently-displayed
+ * `previewResult` was actually computed against, so `PreviewPanel` can
+ * honestly disclose staleness rather than ever drawing an indicator
+ * computed against one symbol's bars on top of a different symbol's
+ * candles.
  */
 
 export type BuilderTab = "chat" | "code" | "preview" | "settings";
@@ -89,7 +99,30 @@ export function BuilderWorkspace({
   onTabChange: (tab: BuilderTab) => void;
   signedIn: boolean;
 }) {
-  const { state, prompt, setPrompt, submitPrompt, submitFixError, updateSgscript, submitValidate } = useBuilderProject(signedIn);
+  const { state, prompt, setPrompt, submitPrompt, submitFixError, updateSgscript, submitValidate, submitRunPreview } = useBuilderProject(signedIn);
+  const { selectedSymbol, setSelectedSymbol, selectedTimeframe, setSelectedTimeframe, bars, barsLoading, marketDataError } = useBuilderMarketData();
+
+  /** Tracks which symbol/timeframe the CURRENTLY-DISPLAYED `previewResult`
+   * was actually run against. Updated only when `previewResult` changes to
+   * a new successful value (never on failure — `applyPreviewFailure` never
+   * touches `previewResult`, so this must not update either, or a failed
+   * run against a NEW symbol would incorrectly relabel the OLD, still-
+   * displayed chart as belonging to the new one). `pendingPreviewContextRef`
+   * captures the context a Run Preview click was made under; the effect
+   * below only promotes it once `previewResult`'s reference actually
+   * changes, tying this strictly to real success. */
+  const pendingPreviewContextRef = useRef<PreviewContext | null>(null);
+  const [previewContext, setPreviewContext] = useState<PreviewContext | null>(null);
+  useEffect(() => {
+    if (state.previewResult && pendingPreviewContextRef.current) {
+      setPreviewContext(pendingPreviewContextRef.current);
+    }
+  }, [state.previewResult]);
+
+  function handleRunPreview() {
+    pendingPreviewContextRef.current = { symbol: selectedSymbol, timeframe: selectedTimeframe };
+    void submitRunPreview(bars);
+  }
 
   const chat = (
     <ChatPanel project={state} prompt={prompt} onPromptChange={setPrompt} onSubmit={submitPrompt} onFixError={submitFixError} signedIn={signedIn} />
@@ -104,19 +137,34 @@ export function BuilderWorkspace({
   );
   const preview = (
     <PreviewPanel
-      bars={EMPTY_BARS}
+      bars={bars}
+      barsLoading={barsLoading}
+      marketDataError={marketDataError}
+      selectedSymbol={selectedSymbol}
+      selectedTimeframe={selectedTimeframe}
+      onSymbolChange={setSelectedSymbol}
+      onTimeframeChange={(tf: Timeframe) => setSelectedTimeframe(tf)}
       previewStatus={state.previewStatus}
       previewResult={state.previewResult}
       previewError={state.previewError}
+      previewContext={previewContext}
     />
   );
   const canValidate = canSubmitValidate(state.sgscript, state.status, state.validationPending, signedIn);
+  const canRunPreview = canRunPreviewCheck(state.sgscript, state.previewStatus, bars.length > 0) && !barsLoading;
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
       <AppNavRail />
       <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden">
-        <BuilderToolbar canValidate={canValidate} validationPending={state.validationPending} onValidate={submitValidate} />
+        <BuilderToolbar
+          canValidate={canValidate}
+          validationPending={state.validationPending}
+          onValidate={submitValidate}
+          canRunPreview={canRunPreview}
+          previewRunning={state.previewStatus === "running"}
+          onRunPreview={handleRunPreview}
+        />
 
         <div className="min-h-0 flex-1 overflow-hidden">
           {/* Desktop / large tablet: Chat (left) | Preview-over-Code (right, nested split). */}
