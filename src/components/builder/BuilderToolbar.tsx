@@ -5,6 +5,7 @@ import {
   Clock,
   Code2,
   FolderOpen,
+  Gauge,
   History as HistoryIcon,
   Loader2,
   Play,
@@ -73,6 +74,12 @@ export function BuilderToolbar({
   savedIndicatorsLoading,
   onOpenMenuOpenChange,
   currentIndicatorId,
+
+  canHandoff,
+  handoffPending,
+  handoffError,
+  onAddToChart,
+  onBacktest,
 }: {
   name: string;
   onRename: (name: string) => void;
@@ -108,6 +115,24 @@ export function BuilderToolbar({
   savedIndicatorsLoading: boolean;
   onOpenMenuOpenChange: (open: boolean) => void;
   currentIndicatorId: string | null;
+
+  /** Phase 5A-6A/C — shared gate for Add to Chart AND Backtest: a real
+   * persisted indicatorId exists and nothing is already saving/generating.
+   * Neither action is gated on `dirty` — a dirty project is saved first
+   * (see `onAddToChart`/`onBacktest`'s own callers), not blocked. */
+  canHandoff: boolean;
+  /** True while a save-before-handoff is in flight (reuses `savePending` at
+   * the call site — there is no second "handoff" mutation). */
+  handoffPending: boolean;
+  handoffError: string | null;
+  /** Saves first (only if dirty) via the SAME Save path the Save button
+   * uses, then navigates to Studio with `?indicatorId=<id>` — never a
+   * version snapshot, never a duplicate indicator. */
+  onAddToChart: () => void;
+  /** Identical save-before-handoff behavior, then navigates to Studio with
+   * `?indicatorId=<id>&openTester=true` so the Strategy Tester focuses the
+   * same loaded indicator. */
+  onBacktest: () => void;
 }) {
   const [nameDraft, setNameDraft] = useState(name);
   const [editingName, setEditingName] = useState(false);
@@ -121,7 +146,7 @@ export function BuilderToolbar({
   }
 
   return (
-    <header className="flex shrink-0 items-center gap-2 border-b border-border bg-sidebar px-3 py-2.5 sm:gap-3 sm:px-4">
+    <header className="relative flex shrink-0 items-center gap-2 border-b border-border bg-sidebar px-3 py-2.5 sm:gap-3 sm:px-4">
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <Code2 className="h-4 w-4 shrink-0 text-brand" />
         {editingName ? (
@@ -322,15 +347,32 @@ export function BuilderToolbar({
         </button>
         <button
           type="button"
-          disabled
-          title="Add to Chart — available once the Chart Studio hand-off is wired in a later phase"
+          disabled={!canHandoff || handoffPending}
+          onClick={onBacktest}
+          title={canHandoff ? "Backtest — open this saved indicator in Chart Studio's Strategy Tester" : "Backtest — build and save an indicator first"}
+          aria-label="Backtest"
+          className="flex items-center gap-1.5 rounded-md border border-border px-1.5 py-1 text-[11px] font-medium text-muted-foreground disabled:cursor-not-allowed disabled:opacity-40 sm:px-2.5"
+        >
+          {handoffPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Gauge className="h-3.5 w-3.5" />}
+          <span className="hidden sm:inline">Backtest</span>
+        </button>
+        <button
+          type="button"
+          disabled={!canHandoff || handoffPending}
+          onClick={onAddToChart}
+          title={canHandoff ? "Add to Chart — open this saved indicator on the live Chart Studio chart" : "Add to Chart — build and save an indicator first"}
           aria-label="Add to Chart"
           className="flex items-center gap-1.5 rounded-md bg-brand px-1.5 py-1 text-[11px] font-medium text-brand-foreground disabled:cursor-not-allowed disabled:opacity-40 sm:px-2.5"
         >
-          <PlusSquare className="h-3.5 w-3.5" />
+          {handoffPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PlusSquare className="h-3.5 w-3.5" />}
           <span className="hidden sm:inline">Add to Chart</span>
         </button>
       </div>
+      {handoffError && (
+        <p className="absolute right-3 top-full mt-1 rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-[10px] text-destructive shadow-sm">
+          Could not save before handoff: {handoffError}
+        </p>
+      )}
     </header>
   );
 }

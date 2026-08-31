@@ -1,10 +1,10 @@
-import { useState } from "react";
-import { useBlocker } from "@tanstack/react-router";
+import { useRef, useState } from "react";
+import { useBlocker, useNavigate } from "@tanstack/react-router";
 import { ChevronUp } from "lucide-react";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { AppNavRail } from "@/components/AppNavRail";
-import { canRunPreview as canRunPreviewCheck, canSave, canSaveVersion, canSubmitValidate, displayName } from "@/lib/builder/generationState";
+import { canHandoff as canHandoffCheck, canRunPreview as canRunPreviewCheck, canSave, canSaveVersion, canSubmitValidate, displayName } from "@/lib/builder/generationState";
 import type { Timeframe } from "@/lib/marketdata";
 import { BuilderToolbar } from "./BuilderToolbar";
 import { ChatPanel } from "./ChatPanel";
@@ -104,8 +104,42 @@ export function BuilderWorkspace({
     savedIndicators,
     savedIndicatorsLoading,
     setOpenMenuOpen,
+    ensureSavedForHandoff,
   } = useBuilderProject(signedIn, initialIndicatorId);
   const { selectedSymbol, setSelectedSymbol, selectedTimeframe, setSelectedTimeframe, bars, barsLoading, marketDataError } = useBuilderMarketData();
+  const navigate = useNavigate();
+
+  /** Set synchronously, immediately before an intentional post-save
+   * `navigate()` call in `handleHandoff` below, so the dirty-guard's
+   * `shouldBlockFn` (see the `useBlocker` call just below) never blocks
+   * OUR OWN navigation on a stale `state.dirty` read. A plain boolean
+   * closure over `state.dirty` is correct for every OTHER navigation (rail
+   * links, Open, New) — the one case it can't handle is "we just saved and
+   * are immediately navigating away in the same tick," because `state`
+   * inside `shouldBlockFn`'s already-registered closure can lag one commit
+   * behind the `setState` that `ensureSavedForHandoff`'s success path just
+   * triggered. A ref sidesteps that entirely: it's read and written
+   * directly, with no dependency on React having re-rendered yet. */
+  const suppressBlockerRef = useRef(false);
+
+  /**
+   * Phase 5A-6A/C — Add to Chart / Backtest: identity-only handoff. Saves
+   * the current canonical project state first ONLY if dirty (via the
+   * SAME Save path the Save button uses — `ensureSavedForHandoff` never
+   * snapshots a version and never creates a second indicator), then
+   * navigates to Studio carrying nothing but `indicatorId` in the URL —
+   * never sgscript/pine/spec/settings. A failed save leaves the user in
+   * Builder with `saveError` displayed and does not navigate.
+   */
+  async function handleHandoff(openTester: boolean) {
+    if (!canHandoffCheck(state.indicatorId, state.status, savePending)) return;
+    const ok = await ensureSavedForHandoff();
+    if (!ok) return;
+    suppressBlockerRef.current = true;
+    navigate({ to: "/studio", search: { indicatorId: state.indicatorId as string, openTester: openTester || undefined } });
+  }
+  const handleAddToChart = () => void handleHandoff(false);
+  const handleBacktest = () => void handleHandoff(true);
 
   const { previewContext, triggerManualRun } = useBuilderPreviewRefresh({
     sgscript: state.sgscript,
@@ -129,9 +163,12 @@ export function BuilderWorkspace({
   // every render (closing over the current `state.dirty`), so the
   // underlying `history.block` registration self-heals on every dirty-state
   // change — no separate ref/staleness handling needed for a boolean this
-  // cheap to recompute.
+  // cheap to recompute. The ONE exception is `suppressBlockerRef` (Phase
+  // 5A-6A) — Add to Chart/Backtest's own post-save navigation, which a
+  // stale `state.dirty` closure could otherwise incorrectly block (see that
+  // ref's own doc comment above).
   const blocker = useBlocker({
-    shouldBlockFn: () => state.dirty,
+    shouldBlockFn: () => !suppressBlockerRef.current && state.dirty,
     enableBeforeUnload: state.dirty,
     withResolver: true,
   });
@@ -211,6 +248,11 @@ export function BuilderWorkspace({
           savedIndicatorsLoading={savedIndicatorsLoading}
           onOpenMenuOpenChange={setOpenMenuOpen}
           currentIndicatorId={state.indicatorId}
+          canHandoff={canHandoffCheck(state.indicatorId, state.status, savePending)}
+          handoffPending={savePending}
+          handoffError={saveError}
+          onAddToChart={handleAddToChart}
+          onBacktest={handleBacktest}
         />
 
         <div className="min-h-0 flex-1 overflow-hidden">

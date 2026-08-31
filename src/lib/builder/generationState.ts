@@ -466,6 +466,20 @@ export function canSave(indicatorId: string | null, dirty: boolean, savePending:
 export const canSaveVersion = canSave;
 
 /**
+ * Phase 5A-6A/C — guards BOTH Add to Chart and Backtest: both are a
+ * "hand off this persisted project to Studio" action, differing only in
+ * whether Studio also focuses the Strategy Tester afterward. Requires a
+ * real persisted `indicatorId` (a brand-new, never-built `/builder` session
+ * has nothing to hand off yet) and no build/save already in flight — never
+ * gated on `dirty`, since a dirty project is handled by saving first
+ * (`ensureSavedForHandoff` in `useBuilderProject.ts`), not by disabling the
+ * button.
+ */
+export function canHandoff(indicatorId: string | null, status: LifecycleStatus, savePending: boolean): boolean {
+  return indicatorId !== null && status !== "generating" && !savePending;
+}
+
+/**
  * Phase 5A-4b — Preview execution lifecycle. `runIndicator` is a pure
  * client-side Worker call (no server, no auth), so unlike `canSubmitPrompt`/
  * `canSubmitValidate` this guard takes no `signedIn` — there is nothing to

@@ -55,6 +55,7 @@ import {
   Link2,
   BarChart3,
   Gauge,
+  Code2,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useSubscription } from "@/hooks/useSubscription";
@@ -105,6 +106,7 @@ import {
   createIndicator,
   deleteIndicator,
   duplicateIndicator,
+  getIndicator,
   listIndicators,
   listVersions,
   restoreVersion,
@@ -236,6 +238,22 @@ export const Route = createFileRoute("/studio")({
     if (access === "unauthenticated") throw redirect({ to: "/auth" });
     if (access === "unpaid") throw redirect({ to: "/pricing" });
   },
+  // Phase 5A-6A — the Builder → Studio Add to Chart / Backtest handoff
+  // contract: an `indicatorId` ONLY (never source/spec/settings in the URL —
+  // see the load effect below, which fetches the real row through the same
+  // RLS-scoped `getIndicator` Chart Studio's own Saved widget already uses).
+  // `openTester` additionally focuses the Strategy Tester dock tab once
+  // loaded (Phase 5A-6C's Backtest action). Mirrors the exact
+  // typeof-string-check `validateSearch` convention already established by
+  // src/routes/checkout.return.tsx / trades.tsx / journal.tsx — not a new
+  // search-param pattern.
+  validateSearch: (search: Record<string, unknown>): { indicatorId?: string; openTester?: boolean } => ({
+    indicatorId: typeof search.indicatorId === "string" ? search.indicatorId : undefined,
+    // Accepts either a raw URL string ("true", from a typed/shared link) or
+    // an already-boolean value (a same-app `navigate({ search: { openTester:
+    // true } })` call, per the router's own typed search-param codec).
+    openTester: search.openTester === "true" || search.openTester === true,
+  }),
   pendingComponent: StudioLoadingScreen,
   head: () => ({
     meta: [
@@ -655,6 +673,10 @@ function StudioWorkspace() {
   const { user } = useAuth();
   const qc = useQueryClient();
   const signedIn = !!user;
+  // Phase 5A-6A/C — Builder → Studio handoff search params (see the Route's
+  // own validateSearch doc comment above for the contract). Read once here,
+  // consumed by the load effect further down (after `runCode` is defined).
+  const { indicatorId: handoffIndicatorId, openTester: handoffOpenTester } = Route.useSearch();
 
   // UI-4g-2: chart runtime state is now genuinely per-instance, keyed by the
   // same workspace-tree instanceId UI-4g-1 already derived (was a
@@ -1700,6 +1722,7 @@ function StudioWorkspace() {
   );
 
   const listIndicatorsFn = useServerFn(listIndicators);
+  const getIndicatorFn = useServerFn(getIndicator);
   const createIndicatorFn = useServerFn(createIndicator);
   const updateIndicatorFn = useServerFn(updateIndicator);
   const deleteIndicatorFn = useServerFn(deleteIndicator);
@@ -2921,6 +2944,69 @@ function StudioWorkspace() {
       .finally(() => setTranslating(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /**
+   * Phase 5A-6A — Builder → Studio Add to Chart / Backtest handoff. Reuses
+   * the EXACT same RLS-scoped `getIndicator` read, the EXACT same
+   * spec/code/settings → editor-state assignment the "Edit code" button
+   * already performs (`setCode`/`setSettings`/`setValidation`/
+   * `checkedSourceRef`/`setProjectSpec`/`setAiIndicatorId`/`setDock`), and
+   * the EXACT same `runCode(row.code, {settings, key: `saved-${id}`,
+   * savedId: id})` the "Add to chart" button already performs — this effect
+   * is genuinely just "do both of those, driven by the URL instead of a
+   * click," never a second load/render pipeline. `runCode` already calls
+   * `setEditingKey(key)` internally, which is also what makes the loaded
+   * indicator the Strategy Tester's target (`testerProject`'s own priority
+   * order below falls back to `editingKey`) — Phase 5A-6C's `openTester`
+   * needs no separate "select this indicator for the tester" mechanism.
+   *
+   * The `saved-${id}` key matches the Saved-list "Add to chart" button's own
+   * convention exactly, so if the user later reopens the Saved panel and
+   * clicks that same row's Add to chart, it upserts into the SAME chart slot
+   * instead of creating a second visual copy.
+   *
+   * Relies ONLY on the dependency array (never re-fetches on an unrelated
+   * re-render, only when `handoffIndicatorId`/`handoffOpenTester` actually
+   * change) plus the standard `cancelled`-flag pattern for a stale response
+   * — deliberately NOT an additional persistent ref-based "already handled"
+   * guard: an earlier version of this effect used one, and it actively
+   * broke the load under React 18 StrictMode's dev-only double-invoke
+   * (mount → cleanup → mount again for the SAME deps) — the ref, being
+   * shared across that synthetic remount, made the SECOND (surviving)
+   * invocation see "already handled" and skip starting its own fetch,
+   * while the FIRST invocation's fetch completed with the right data but
+   * discarded it because its OWN `cancelled` flag had already flipped true.
+   * The plain `cancelled`-flag-only pattern is exactly what React's own
+   * docs prescribe for this and is correct under both StrictMode and a
+   * real remount.
+   */
+  useEffect(() => {
+    if (!handoffIndicatorId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const row = await getIndicatorFn({ data: { id: handoffIndicatorId } });
+        if (cancelled) return;
+        const rowSettings = (row.settings ?? {}) as Record<string, number | boolean | string>;
+        setCode(row.code);
+        setSettings(rowSettings);
+        setValidation({ status: "idle", error: null });
+        checkedSourceRef.current = null;
+        setProjectSpec(coerceSpec(row.spec));
+        setAiIndicatorId(row.id);
+        setDock("code");
+        await runCode(row.code, { settings: rowSettings, key: `saved-${row.id}`, savedId: row.id });
+        if (cancelled) return;
+        if (handoffOpenTester) focusWidgetTab("strategy-tester");
+      } catch (e) {
+        if (!cancelled) setNotice(`Could not load that indicator: ${e instanceof Error ? e.message : "unknown error"}`);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [handoffIndicatorId, handoffOpenTester]);
 
   // ---- saved indicators ---------------------------------------------------
   const saveMut = useMutation({
@@ -4271,6 +4357,14 @@ function StudioWorkspace() {
                 >
                   <TypeIcon className="h-3.5 w-3.5" />
                 </button>
+                <Link
+                  title="Edit in Builder"
+                  to="/builder/$id"
+                  params={{ id: row.id }}
+                  className="rounded p-1 text-muted-foreground hover:text-foreground"
+                >
+                  <Code2 className="h-3.5 w-3.5" />
+                </Link>
                 <button
                   title="Duplicate"
                   onClick={() => duplicateMut.mutate(row.id)}
