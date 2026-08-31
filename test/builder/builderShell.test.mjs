@@ -5,8 +5,10 @@
 //   - /builder is registered with the same access-gating pattern every
 //     other top-level route uses,
 //   - AppNavRail links to it,
-//   - the toolbar's Save/Validate/Add to Chart actions are unconditionally
-//     disabled (never a fake-success stub),
+//   - the toolbar's Save/Save Version/Validate/Run Preview actions are all
+//     driven by real conditional guards (never a hardcoded true/fake-success
+//     stub), and Add to Chart remains the one action still unconditionally
+//     disabled (that hand-off is a later phase),
 //   - the Builder shell never imports the canonical SGScript/Pine/AI/
 //     renderer/backtest implementation modules — Phase 5A-1 is UI shell +
 //     routing only, and this enforces the "one canonical chain, never a
@@ -56,6 +58,7 @@ const read = (relPath) => stripComments(readFileSync(join(repoRoot, relPath), "u
 
 const BUILDER_FILES = [
   "src/routes/builder.tsx",
+  "src/components/builder/BuilderGate.tsx",
   "src/components/builder/BuilderWorkspace.tsx",
   "src/components/builder/BuilderToolbar.tsx",
   "src/components/builder/ChatPanel.tsx",
@@ -67,6 +70,7 @@ const BUILDER_FILES = [
 
 const sources = Object.fromEntries(BUILDER_FILES.map((f) => [f, read(f)]));
 const routeSrc = sources["src/routes/builder.tsx"];
+const gateSrc = sources["src/components/builder/BuilderGate.tsx"];
 const navRailSrc = read("src/components/AppNavRail.tsx");
 const toolbarSrc = sources["src/components/builder/BuilderToolbar.tsx"];
 
@@ -74,23 +78,25 @@ const toolbarSrc = sources["src/components/builder/BuilderToolbar.tsx"];
 {
   ok('builder.tsx declares createFileRoute("/builder")', /createFileRoute\(\s*["']\/builder["']\s*\)/.test(routeSrc));
   ok("builder.tsx is client-only (ssr: false), matching every other gated top-level route", /ssr:\s*false/.test(routeSrc));
+  // Phase 5A-5A extracted the client-side auth-watch/tab-state logic out of
+  // builder.tsx into a shared BuilderGate component (src/components/builder/
+  // BuilderGate.tsx) so /builder/$id can reuse it verbatim rather than a
+  // second copy. checkStudioAccess() still gates builder.tsx's OWN
+  // beforeLoad directly; the test/bypass trio now lives in BuilderGate.tsx —
+  // checked across BOTH files rather than routeSrc alone.
+  const gateChainSrc = routeSrc + "\n" + gateSrc;
   ok(
-    "builder.tsx imports the SAME checkStudioAccess/isStudioGateTestBypassed/isStudioGateLocalPaidBypassed trio every other gated route uses — no new auth architecture",
-    /import\s*\{[^}]*checkStudioAccess[^}]*isStudioGateTestBypassed[^}]*isStudioGateLocalPaidBypassed[^}]*\}\s*from\s*["']@\/lib\/subscription-status["']/.test(
-      routeSrc,
-    ) ||
-      /import\s*\{[^}]*isStudioGateTestBypassed[^}]*isStudioGateLocalPaidBypassed[^}]*checkStudioAccess[^}]*\}\s*from\s*["']@\/lib\/subscription-status["']/.test(
-        routeSrc,
-      ) ||
-      (/checkStudioAccess/.test(routeSrc) &&
-        /isStudioGateTestBypassed/.test(routeSrc) &&
-        /isStudioGateLocalPaidBypassed/.test(routeSrc) &&
-        /from\s*["']@\/lib\/subscription-status["']/.test(routeSrc)),
+    "the /builder route + BuilderGate together import the SAME checkStudioAccess/isStudioGateTestBypassed/isStudioGateLocalPaidBypassed trio every other gated route uses — no new auth architecture",
+    /checkStudioAccess/.test(gateChainSrc) &&
+      /isStudioGateTestBypassed/.test(gateChainSrc) &&
+      /isStudioGateLocalPaidBypassed/.test(gateChainSrc) &&
+      /from\s*["']@\/lib\/subscription-status["']/.test(gateChainSrc),
   );
   ok("builder.tsx's beforeLoad calls checkStudioAccess()", /beforeLoad:[\s\S]{0,200}checkStudioAccess\(\)/.test(routeSrc));
   ok('unauthenticated redirects to /auth', /access === "unauthenticated"[\s\S]{0,60}redirect\(\{\s*to:\s*["']\/auth["']/.test(routeSrc));
   ok('unpaid redirects to /pricing', /access === "unpaid"[\s\S]{0,60}redirect\(\{\s*to:\s*["']\/pricing["']/.test(routeSrc));
-  ok("builder.tsx renders BuilderWorkspace as its component", /BuilderWorkspace/.test(routeSrc));
+  ok("builder.tsx renders BuilderGate as its component", /BuilderGate/.test(routeSrc));
+  ok("BuilderGate renders BuilderWorkspace", /BuilderWorkspace/.test(gateSrc));
 }
 
 // ---- AppNavRail wiring -----------------------------------------------------
@@ -101,9 +107,10 @@ const toolbarSrc = sources["src/components/builder/BuilderToolbar.tsx"];
   ok("Chart Studio's own rail link is untouched (still LineChart / \"Chart Studio\")", /to="\/studio"[\s\S]{0,120}title="Chart Studio"/.test(navRailSrc));
 }
 
-// ---- Toolbar: Save/Add to Chart still unconditionally disabled; Phase
-// ---- 5A-3 activates Validate, Phase 5A-4d additionally activates Run
-// ---- Preview — no OTHER button ever computes a conditional disabled state.
+// ---- Toolbar: Phase 5A-5 activates Save/Save Version/Restore as real,
+// ---- conditionally-guarded actions (never a hardcoded true); Add to Chart
+// ---- is the ONE action that remains unconditionally disabled — that
+// ---- hand-off is still a later phase.
 {
   const buttonBlocks = toolbarSrc.split(/<button/).slice(1); // one entry per <button ...>...</button> region
   ok("BuilderToolbar renders at least 4 action buttons (Save, Validate, Run Preview, Add to Chart)", buttonBlocks.length >= 4);
@@ -114,29 +121,32 @@ const toolbarSrc = sources["src/components/builder/BuilderToolbar.tsx"];
   const addToChartBlock = buttonBlocks.find((b) => /aria-label="Add to Chart"/.test(b));
 
   ok(
-    "Save remains unconditionally disabled (a literal `disabled` attribute, never `disabled={someCondition}`)",
-    Boolean(saveBlock) && /\bdisabled(\s|>)/.test(saveBlock.slice(0, 60)) && !/disabled=\{/.test(saveBlock.slice(0, 60)),
+    "Phase 5A-5B: Save is conditionally disabled via disabled={!canSave}, driven by a real canSave(indicatorId, dirty, ...) guard — never a hardcoded true, and never able to create an empty indicator from a brand-new /builder session",
+    Boolean(saveBlock) && /disabled=\{!canSave\}/.test(saveBlock),
   );
   ok(
-    "Add to Chart remains unconditionally disabled (a literal `disabled` attribute, never `disabled={someCondition}`)",
+    "Add to Chart remains unconditionally disabled (a literal `disabled` attribute, never `disabled={someCondition}`) — still a later phase",
     Boolean(addToChartBlock) && /\bdisabled(\s|>)/.test(addToChartBlock.slice(0, 60)) && !/disabled=\{/.test(addToChartBlock.slice(0, 60)),
   );
   ok(
-    "Validate is a Phase 5A-3 exception: conditionally disabled via disabled={!canValidate}, driven by canValidate (a real prop, not a hardcoded true)",
+    "Validate is conditionally disabled via disabled={!canValidate}, driven by canValidate (a real prop, not a hardcoded true)",
     Boolean(validateBlock) && /disabled=\{!canValidate\}/.test(validateBlock),
   );
   ok(
-    "Phase 5A-4d: Run Preview is conditionally disabled via disabled={!canRunPreview}, driven by canRunPreview (a real prop, not a hardcoded true)",
+    "Run Preview is conditionally disabled via disabled={!canRunPreview}, driven by canRunPreview (a real prop, not a hardcoded true)",
     Boolean(runPreviewBlock) && /disabled=\{!canRunPreview\}/.test(runPreviewBlock),
   );
   ok(
-    "no button OTHER than Validate/Run Preview ever computes a conditional disabled state (disabled={...})",
-    (toolbarSrc.match(/disabled=\{/g) ?? []).length === 2,
+    "Phase 5A-5B: exactly the expected set of conditional disabled states exist — Save, Save Version, Restore, Validate, Run Preview (Open and Add to Chart are the only non-conditional actions)",
+    (toolbarSrc.match(/disabled=\{/g) ?? []).length === 5,
   );
+  ok("Phase 5A-5B: Save Version's own conditional guard also reads a real canSaveVersion prop", /disabled=\{!canSaveVersion/.test(toolbarSrc));
+  ok("Phase 5A-5B: Restore's own conditional guard checks restorePending/currentVersion, never a hardcoded true", /disabled=\{restorePending/.test(toolbarSrc));
   ok('Save button is present', /aria-label="Save"/.test(toolbarSrc));
   ok('Validate button is present', /aria-label="Validate"/.test(toolbarSrc));
   ok('Run Preview button is present', /aria-label="Run Preview"/.test(toolbarSrc));
   ok('Add to Chart button is present', /aria-label="Add to Chart"/.test(toolbarSrc));
+  ok('Open button is present (Phase 5A-5F saved-project discovery)', /aria-label="Open"/.test(toolbarSrc));
 }
 
 // ---- No duplicated canonical logic + no server/AI call on load -----------
