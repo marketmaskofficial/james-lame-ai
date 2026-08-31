@@ -3,25 +3,20 @@ import {
   Eye,
   EyeOff,
   Lock,
+  Settings2,
   Trash2,
   Unlock,
 } from "lucide-react";
-import type { Drawing, DrawStyle } from "./StudioChart";
+import type { Drawing } from "./StudioChart";
+import { TOOL_BY_ID } from "@/lib/drawing/registry";
 
-const TOOL_LABEL: Record<string, string> = {
-  trend: "Trend line",
-  ray: "Ray",
-  hline: "Horizontal line",
-  vline: "Vertical line",
-  rect: "Rectangle",
-  fib: "Fib retracement",
-  text: "Text",
-  arrow: "Arrow",
-  marker: "Marker",
-  measure: "Measure",
-  long: "Long position",
-  short: "Short position",
-};
+/** Human label for a drawing's tool — sourced from the SAME registry the
+ * toolbar and settings popover read, not a second hardcoded map that could
+ * drift out of sync with it. Falls back to the raw tool id only for a
+ * pathological case (a tool id that somehow isn't in the registry at all). */
+function toolLabel(d: Drawing): string {
+  return TOOL_BY_ID[d.tool]?.name ?? d.tool;
+}
 
 /**
  * Object tree + style controls for chart drawings. Everything edits the same
@@ -34,6 +29,7 @@ export function DrawingInspector({
   onUpdate,
   onRemove,
   onDuplicate,
+  onOpenSettings,
   onClose,
 }: {
   drawings: Drawing[];
@@ -42,6 +38,10 @@ export function DrawingInspector({
   onUpdate: (d: Drawing) => void;
   onRemove: (id: string) => void;
   onDuplicate: (d: Drawing) => void;
+  /** Opens the full DrawingSettingsPopover for this drawing — the actual
+   * settings surface; this panel stays a lightweight object list + quick
+   * visibility/lock/duplicate/delete actions. */
+  onOpenSettings: (d: Drawing) => void;
   onClose: () => void;
 }) {
   const selected = drawings.find((d) => d.id === selectedId) ?? null;
@@ -81,7 +81,7 @@ export function DrawingInspector({
               onClick={() => onSelect(d.id)}
               className="flex-1 truncate text-left"
             >
-              {d.text ? d.text : (TOOL_LABEL[d.tool] ?? d.tool)}
+              {d.text ? d.text : toolLabel(d)}
             </button>
             <button
               title={d.hidden ? "Show" : "Hide"}
@@ -96,6 +96,16 @@ export function DrawingInspector({
               className="text-muted-foreground hover:text-foreground"
             >
               {d.locked ? <Lock className="h-3 w-3" /> : <Unlock className="h-3 w-3" />}
+            </button>
+            <button
+              title="Settings"
+              onClick={() => {
+                onSelect(d.id);
+                onOpenSettings(d);
+              }}
+              className="text-muted-foreground hover:text-foreground"
+            >
+              <Settings2 className="h-3 w-3" />
             </button>
             <button
               title="Duplicate"
@@ -116,65 +126,12 @@ export function DrawingInspector({
       </ul>
 
       {selected && (
-        <div className="mt-2 space-y-1.5 border-t border-border pt-2">
-          <div className="flex items-center gap-2">
-            <span className="text-muted-foreground">Color</span>
-            <input
-              type="color"
-              value={selected.color ?? "#e6b800"}
-              onChange={(e) => onUpdate({ ...selected, color: e.target.value })}
-              className="h-5 w-8 rounded border border-border bg-transparent"
-            />
-            <span className="ml-auto text-muted-foreground">Width</span>
-            <input
-              type="number"
-              min={1}
-              max={8}
-              step={0.5}
-              value={selected.width ?? 1.5}
-              onChange={(e) =>
-                onUpdate({ ...selected, width: Number(e.target.value) })
-              }
-              className="w-12 rounded border border-border bg-background px-1 py-0.5 text-[11px] outline-none focus:border-brand"
-            />
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-muted-foreground">Opacity</span>
-            <input
-              type="range"
-              min={10}
-              max={100}
-              value={Math.round((selected.opacity ?? 1) * 100)}
-              onChange={(e) =>
-                onUpdate({ ...selected, opacity: Number(e.target.value) / 100 })
-              }
-              className="flex-1 accent-[var(--brand,#e6b800)]"
-            />
-          </div>
-          <div className="flex items-center gap-1">
-            {(["solid", "dashed", "dotted"] as DrawStyle[]).map((s) => (
-              <button
-                key={s}
-                onClick={() => onUpdate({ ...selected, style: s })}
-                className={`flex-1 rounded border px-1 py-0.5 capitalize ${
-                  (selected.style ?? "solid") === s
-                    ? "border-brand text-brand"
-                    : "border-border text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                {s}
-              </button>
-            ))}
-          </div>
-          {(selected.tool === "text" || selected.tool === "marker") && (
-            <input
-              value={selected.text ?? ""}
-              placeholder="Label"
-              onChange={(e) => onUpdate({ ...selected, text: e.target.value })}
-              className="w-full rounded border border-border bg-background px-2 py-1 text-[11px] outline-none focus:border-brand"
-            />
-          )}
-        </div>
+        <button
+          onClick={() => onOpenSettings(selected)}
+          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-[6px] border border-border py-1 text-[10.5px] hover:bg-accent"
+        >
+          <Settings2 className="h-3 w-3" /> Open settings
+        </button>
       )}
     </div>
   );

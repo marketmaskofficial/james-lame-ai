@@ -28,35 +28,8 @@ export function takeStudioHandoff(): StudioHandoff | null {
   }
 }
 
-const DRAWINGS_KEY = "sg.studio.drawings";
-
-export function loadDrawings(symbol: string, interval: string): unknown[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const all = JSON.parse(localStorage.getItem(DRAWINGS_KEY) ?? "{}") as Record<
-      string,
-      unknown[]
-    >;
-    return all[`${symbol}:${interval}`] ?? [];
-  } catch {
-    return [];
-  }
-}
-
-export function saveDrawings(
-  symbol: string,
-  interval: string,
-  drawings: unknown[],
-) {
-  if (typeof window === "undefined") return;
-  try {
-    const all = JSON.parse(localStorage.getItem(DRAWINGS_KEY) ?? "{}") as Record<
-      string,
-      unknown[]
-    >;
-    all[`${symbol}:${interval}`] = drawings;
-    localStorage.setItem(DRAWINGS_KEY, JSON.stringify(all));
-  } catch {
-    /* storage full or blocked */
-  }
-}
+// Drawing persistence lives in src/lib/workspace/drawings.ts now (keyed by
+// chart instance id, not just symbol:interval — see that file's doc comment
+// for why the old symbol:interval-only key collided across chart instances).
+// The legacy "sg.studio.drawings" localStorage key it used to read/write is
+// still read once, as a fallback, by that module's `loadDrawingsFor`.

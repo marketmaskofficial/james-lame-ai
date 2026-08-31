@@ -2,6 +2,74 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import type { Bar, MarkerOut, RunResult } from "@/lib/sgscript/types";
 import { MARKER_PRESETS, DEFAULT_MAX_VISIBLE } from "@/lib/sgscript/style";
+import {
+  logicalToTime,
+  timeToLogicalExtrapolated,
+  nearestBarIndex,
+  snapPoint,
+  distToSegment,
+  pixelDist,
+  projectLineForward,
+  projectLineBackward,
+  pointInEllipse,
+  pointInPolygon,
+  fibChannelLevelOffset,
+  distToEllipseRing,
+  fibSpiralPoints,
+  parallelChannelSecondRail,
+  quadraticBezierPoints,
+  cubicBezierPoints,
+  directionalArrowGlyph,
+  pointInSector,
+  normalizeSectorSweep,
+} from "@/lib/drawing/geometry";
+import {
+  DEFAULT_FIB_LEVELS,
+  computeFibLevels,
+  computeFibExtensionLevels,
+  computeFibTimeZoneLevels,
+  computeFibSpeedFanTargets,
+  defaultFibLevelsForTool,
+  lerpMarketPoint,
+  anchoredVwap,
+  computePositionMetrics,
+  movePositionEntry,
+  movePositionTarget,
+  movePositionStop,
+  resizePositionWidth,
+  movePositionBody,
+  cyclicLineTimes,
+  timeCyclesTimes,
+  sineLinePoints,
+  gannGridFractions,
+  gannSquareFixedCorner,
+  gannFanSlope,
+  gannFanRatioLabel,
+  GANN_FAN_DEFAULT_LEVELS,
+  computeLinearRegression,
+  pitchforkHandle,
+  pitchforkTarget,
+  pitchforkTeethAnchors,
+  captureRelativePattern,
+  computePriceRange,
+  computeDateRange,
+  type PitchforkVariant,
+  type FibLevel,
+} from "@/lib/drawing/calc";
+import { getToolStyleDefaults } from "@/lib/drawing/styleDefaults";
+import {
+  computeFixedRangeVolumeProfile,
+  computeAnchoredVolumeProfile,
+  type DrawingVolumeProfileResult,
+} from "@/lib/drawing/volumeProfile";
+import { uploadChartImage, createChartImageSignedUrl, validateChartImageFile } from "@/lib/storage/chartImages";
+
+/** Magnet strength for drawing-anchor snapping (distinct from the chart's own
+ * `crosshairMagnet` display setting, which only affects the crosshair, not
+ * where a drawing's anchor is actually placed). "off" never alters a user's
+ * chosen coordinate; "weak" only pulls in when already close to a candle's
+ * O/H/L/C; "strong" always snaps to the nearest of the four. */
+export type MagnetMode = "off" | "weak" | "strong";
 
 /**
  * Single source of truth for the chart's canvas-rendered chrome colors.
@@ -28,29 +96,162 @@ export type LoadedIndicator = {
 };
 
 export type DrawTool =
+  // Cursor / Interaction
   | "cursor"
   | "select"
+  // Trend / Line Tools
   | "trend"
+  | "ray"
+  | "extended"
+  | "info-line"
+  | "trend-angle"
   | "hline"
   | "vline"
-  | "ray"
-  | "rect"
-  | "fib"
-  | "text"
+  | "hray"
+  | "crossline"
+  | "channel"
+  | "regression-trend"
+  | "flat-channel"
+  | "disjoint-channel"
+  | "pitchfork"
+  | "schiff-pitchfork"
+  | "modified-schiff-pitchfork"
+  | "inside-pitchfork"
   | "arrow"
-  | "marker"
-  | "measure"
+  // Fibonacci Tools — one shared Fib engine (src/lib/drawing/calc.ts) backs
+  // every variant below; only "fib" is implemented this phase, the rest are
+  // registry/architecture placeholders (see registry.ts's `implemented`
+  // flag) never creatable via the pointer-interaction effect below.
+  | "fib"
+  | "fib-ext"
+  | "fib-channel"
+  | "fib-time"
+  | "fib-speed-fan"
+  | "fib-time-trend"
+  | "fib-circles"
+  | "fib-spiral"
+  | "fib-speed-arcs"
+  | "fib-wedge"
+  | "pitchfan"
+  // Gann Tools (registry/architecture placeholders only — see registry.ts)
+  | "gann-box"
+  | "gann-square-fixed"
+  | "gann-square"
+  | "gann-fan"
+  // Pattern Tools (menu/registry only — see registry.ts, deferred per spec —
+  // manual anchor placement, deliberately NOT automatic pattern detection)
+  | "xabcd"
+  | "cypher"
+  | "head-shoulders"
+  | "abcd"
+  | "triangle-pattern"
+  | "three-drives"
+  // Elliott Waves (registry/architecture placeholders only — see registry.ts)
+  | "elliott-impulse"
+  | "elliott-correction"
+  | "elliott-triangle"
+  | "elliott-double-combo"
+  | "elliott-triple-combo"
+  // Cycles (registry/architecture placeholders only — see registry.ts)
+  | "cyclic-lines"
+  | "time-cycles"
+  | "sine-line"
+  // Position / Forecast
   | "long"
   | "short"
+  | "forecast"
+  | "bars-pattern"
+  | "ghost-feed"
+  | "sector"
+  // Volume-based
+  | "vwap"
+  | "vp-fixed"
+  | "vp-anchored"
+  // Brushes / Freehand
+  | "brush"
+  | "highlighter"
+  // Arrows
+  | "arrow-up"
+  | "arrow-down"
+  | "arrow-marker"
+  // Shapes
+  | "rect"
+  | "circle"
+  | "triangle"
+  | "rotated-rect"
+  | "ellipse"
+  | "polyline"
+  | "path"
+  | "arc"
+  | "curve"
+  | "double-curve"
+  // Text / Notes
+  | "text"
+  | "marker"
+  | "price-note"
+  | "pin"
+  | "table"
+  | "callout"
+  | "comment"
+  | "price-label"
+  | "signpost"
+  | "flag-mark"
+  // Measurement
+  | "price-range"
+  | "date-range"
+  | "measure"
+  | "ruler"
+  // Content (architecture-ready only, lowest priority — see registry.ts)
+  | "image"
+  | "content-icon"
+  | "emoji"
+  // legacy point-eraser tool, superseded by Delete/Backspace on a selection
+  // but kept functional rather than ripped out mid-phase
   | "erase";
 
 export type DrawStyle = "solid" | "dashed" | "dotted";
 
+/** A single anchor in MARKET coordinates — bar time (unix seconds) + price.
+ * Never a raw screen pixel: pixel position is re-derived from this every
+ * render frame (see `logicalToPixel`/`timeToLogicalExtrapolated`), which is
+ * what keeps a drawing's geometry correct across resize, layout changes, and
+ * history backfill (which shifts every bar's logical INDEX but never its
+ * time). See src/lib/drawing/geometry.ts's module doc for the full story. */
+export type MarketPoint = { time: number; price: number };
+
+/** Free-form bag for tool-specific configuration that doesn't need its own
+ * typed field — Fib's level set, VWAP's cached series, position tick
+ * metadata overrides, extend-line flags, fill color/opacity, font
+ * size/weight, label visibility, etc. Kept loose (not a big discriminated
+ * union per tool) so new tools can add settings without a schema change;
+ * `DrawingSettingsPopover.tsx` and each tool's render/calc code are the only
+ * things that need to agree on the keys they use for `d.tool`. */
+export type DrawingSettings = Record<string, unknown>;
+
+/**
+ * One persisted drawing object. `tool` is this object's "type" (the spec's
+ * external-facing schema calls it `type`; kept as `tool` here to match
+ * every existing call site and avoid a purely-cosmetic rename across this
+ * file's ~2000 lines) and `p1`/`p2`/`points` together are its "anchors" (a
+ * uniform `anchors: MarketPoint[]` array wasn't worth the churn either, since
+ * two-anchor tools are the overwhelming majority and read far more clearly
+ * as named `p1`/`p2` in the hit-test/render code below — `anchorsOf()`
+ * exposes the uniform view for serialization/tests/multi-anchor tools).
+ */
 export type Drawing = {
   id: string;
   tool: Exclude<DrawTool, "cursor" | "select" | "erase">;
-  p1: { logical: number; price: number };
-  p2: { logical: number; price: number };
+  /** Owning chart instance — stamped on creation, authoritative for
+   * multi-chart isolation (see `anchorsOf`/persistence). Optional only so a
+   * pre-this-phase persisted drawing (which never had this field) still
+   * parses; every current call site stamps it. */
+  chartInstanceId?: string;
+  p1: MarketPoint;
+  p2: MarketPoint;
+  /** Extra anchors beyond p1/p2: brush's freehand path (arbitrary length),
+   * or a single third point for Parallel Channel (channel width) / Triangle
+   * (third vertex). */
+  points?: MarketPoint[];
   text?: string;
   /** Position tools carry a third anchor: the protective stop. */
   stop?: number;
@@ -60,7 +261,134 @@ export type Drawing = {
   style?: DrawStyle;
   locked?: boolean;
   hidden?: boolean;
+  settings?: DrawingSettings;
+  metadata?: Record<string, unknown>;
+  createdAt?: number;
+  updatedAt?: number;
 };
+
+/** Uniform anchors view — every point this drawing is defined by, in one
+ * array, for code (serialization, tests, "does this fit on screen at all")
+ * that genuinely doesn't care about each tool's specific anchor roles. */
+export function anchorsOf(d: Pick<Drawing, "p1" | "p2" | "points" | "tool">): MarketPoint[] {
+  // Brush/Highlighter (freehand), Polyline/Path (Phase 3A's controlled
+  // multi-click chain), AND the Phase 3D-1 chart-pattern tools (see
+  // MULTI_ANCHOR_PATTERN_TOOLS below) all store their COMPLETE ordered
+  // vertex list in `points` — p1/p2 are kept mirrored to points[0]/
+  // points[last] purely so generic (tool-agnostic) code that only knows
+  // about p1/p2 still resolves a sane position, never the authoritative
+  // geometry.
+  if (d.tool === "brush" || d.tool === "highlighter" || d.tool === "polyline" || d.tool === "path" || MULTI_ANCHOR_PATTERN_TOOLS.has(d.tool)) {
+    return d.points?.length ? d.points : [d.p1, d.p2];
+  }
+  return [d.p1, d.p2, ...(d.points ?? [])];
+}
+
+/** Chart-pattern AND Elliott Wave tools (Phase 3D-1, extended Phase 3D-2)
+ * built on ONE shared labeled multi-anchor primitive instead of eleven
+ * independent mini drawing engines: each stores its complete ordered anchor
+ * list in `points` (Polyline/Path's exact convention above), gets
+ * per-vertex editing/hit-testing/move for free via the SAME code paths
+ * those two tools already use, and only needs its own label set + (where
+ * the geometry isn't a plain zigzag) segment topology — see
+ * PATTERN_ANCHOR_LABELS/patternSegments below. */
+export const MULTI_ANCHOR_PATTERN_TOOLS = new Set<DrawTool>([
+  "xabcd",
+  "cypher",
+  "head-shoulders",
+  "abcd",
+  "triangle-pattern",
+  "three-drives",
+  "elliott-impulse",
+  "elliott-correction",
+  "elliott-triangle",
+  "elliott-double-combo",
+  "elliott-triple-combo",
+  // Disjoint Channel (Phase 3D-5): two independent 2-point rails — see
+  // PATTERN_SEGMENT_OVERRIDES below for its non-sequential segment pairing.
+  "disjoint-channel",
+  // Double Curve (Phase 3D-6): 4 anchors (start/control1/control2/end) for
+  // a cubic Bezier — see its own render branch (BEFORE the generic
+  // zigzag/paintLabeledPattern check) and PATTERN_ANCHOR_LABELS' own doc
+  // comment for why it's here despite having no visible labels.
+  "double-curve",
+]);
+
+/** Anchor point labels for each pattern tool, in anchor order — drawn next
+ * to each vertex (see paintLabeledPattern) whenever the tool's `anchorLabel`
+ * capability's "Show anchor marker + label" setting is on (default on, same
+ * setting key Anchored VWAP already uses). Array length also doubles as
+ * that tool's required anchor count for construction (see the onDown
+ * pattern-tool branch) — one source of truth instead of two.
+ *
+ * The five Elliott tools (Phase 3D-2) all start from an unlabeled "0" origin
+ * anchor before their named wave sequence, matching TradingView's own
+ * Elliott tools and each one's registry anchorCount (e.g. Impulse's
+ * "1-2-3-4-5" name is 5 waves but 6 anchors: 0,1,2,3,4,5). Triple Combo
+ * repeats "X" at indices 2 and 4 on purpose — anchor identity is always the
+ * INDEX into this array / `points`, never the label string, so a repeated
+ * label can never collide in editing, hit-testing, or persistence. */
+export const PATTERN_ANCHOR_LABELS: Partial<Record<DrawTool, string[]>> = {
+  xabcd: ["X", "A", "B", "C", "D"],
+  cypher: ["X", "A", "B", "C", "D"],
+  abcd: ["A", "B", "C", "D"],
+  "head-shoulders": ["LS", "H", "RS", "N1", "N2"],
+  "triangle-pattern": ["1", "2", "3", "4"],
+  "three-drives": ["1", "2", "3", "4", "5", "6"],
+  "elliott-impulse": ["0", "1", "2", "3", "4", "5"],
+  "elliott-correction": ["0", "A", "B", "C"],
+  "elliott-triangle": ["0", "A", "B", "C", "D", "E"],
+  "elliott-double-combo": ["0", "W", "X", "Y"],
+  "elliott-triple-combo": ["0", "W", "X", "Y", "X", "Z"],
+  // Double Curve (Phase 3D-6): four EMPTY labels — there's nothing to name
+  // (a cubic Bezier's control points aren't conventionally lettered like a
+  // harmonic pattern's anchors), but the array's LENGTH is what
+  // MULTI_ANCHOR_PATTERN_TOOLS' onDown reads to know it needs 4 clicks
+  // (one source of truth for anchor count, see that constant's own doc
+  // comment) — and paintLabeledPattern already skips drawing a falsy
+  // label, so this costs nothing visually. Double Curve never actually
+  // reaches paintLabeledPattern anyway (its own render branch intercepts
+  // first), but per-vertex hit-testing/dragging/persistence all still flow
+  // through the shared `points`-array machinery this map is part of.
+  "double-curve": ["", "", "", ""],
+};
+
+/** Anchor-index PAIRS that get a connecting segment, for the two pattern
+ * tools whose geometry ISN'T simply "connect every anchor to the next"
+ * (Polyline's default zigzag, used by every other pattern tool here):
+ * Triangle Pattern draws two converging trendlines (anchor 0->2 and 1->3,
+ * not a 0-1-2-3 zigzag), and Head and Shoulders' last two anchors are an
+ * independent neckline, not a continuation of the shoulder/head zigzag. */
+const PATTERN_SEGMENT_OVERRIDES: Partial<Record<DrawTool, [number, number][]>> = {
+  "triangle-pattern": [[0, 2], [1, 3]],
+  "head-shoulders": [[0, 1], [1, 2], [3, 4]],
+  // Disjoint Channel (Phase 3D-5): two fully INDEPENDENT rails (0->1 and
+  // 2->3) — deliberately not connected to each other, unlike every other
+  // pattern tool's default zigzag.
+  "disjoint-channel": [[0, 1], [2, 3]],
+};
+
+/** Pitchfork family (Phase 3D-5) — see calc.ts's own doc comment for the
+ * shared geometry model each variant reads from. Kept as its own small set
+ * (not folded into MULTI_ANCHOR_PATTERN_TOOLS) because these are plain
+ * p1/p2/points[0] tools — the SAME 3-anchor convention Fib Wedge/Pitchfan
+ * already use — not the labeled `points`-array-of-N primitive. */
+const PITCHFORK_TOOLS = new Set<DrawTool>(["pitchfork", "schiff-pitchfork", "modified-schiff-pitchfork", "inside-pitchfork"]);
+
+function pitchforkVariantOf(tool: DrawTool): PitchforkVariant {
+  if (tool === "schiff-pitchfork") return "schiff";
+  if (tool === "modified-schiff-pitchfork") return "modified-schiff";
+  if (tool === "inside-pitchfork") return "inside";
+  return "standard";
+}
+
+function patternSegments(tool: DrawTool, count: number): [number, number][] {
+  const override = PATTERN_SEGMENT_OVERRIDES[tool];
+  if (override) return override;
+  const segs: [number, number][] = [];
+  for (let i = 1; i < count; i++) segs.push([i - 1, i]);
+  return segs;
+}
 
 const DEFAULT_DRAW_COLOR = "#e6b800";
 
@@ -68,6 +396,33 @@ function dash(style: DrawStyle | undefined, width: number): number[] {
   if (style === "dashed") return [Math.max(4, width * 3), Math.max(3, width * 2)];
   if (style === "dotted") return [1, Math.max(3, width * 2)];
   return [];
+}
+
+/** Sign of the signed area of triangle (x1,y1)-(x2,y2)-(x3,y3) — the
+ * standard barycentric same-side test used by `pointInTriangle`. */
+function triSign(px: number, py: number, x1: number, y1: number, x2: number, y2: number): number {
+  return (px - x2) * (y1 - y2) - (x1 - x2) * (py - y2);
+}
+
+/** True if (px,py) lies inside (or on) the triangle — used so a Triangle
+ * drawing's whole filled interior is a valid select/drag hit region, not
+ * just its three edges. */
+function pointInTriangle(
+  px: number,
+  py: number,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  x3: number,
+  y3: number,
+): boolean {
+  const d1 = triSign(px, py, x1, y1, x2, y2);
+  const d2 = triSign(px, py, x2, y2, x3, y3);
+  const d3 = triSign(px, py, x3, y3, x1, y1);
+  const hasNeg = d1 < 0 || d2 < 0 || d3 < 0;
+  const hasPos = d1 > 0 || d2 > 0 || d3 > 0;
+  return !(hasNeg && hasPos);
 }
 
 function withAlpha(hex: string, opacity: number): string {
@@ -253,7 +608,13 @@ const DEFAULT_VISIBLE_BARS = 200;
 
 export const DEFAULT_CHART_SETTINGS: ChartSettings = {
   grid: true,
-  crosshairMagnet: true,
+  // TradingView-style crosshair: the horizontal line should follow the
+  // mouse's exact Y position rather than snapping to the nearest bar's
+  // OHLC/close (CrosshairMode.Magnet). Existing saved workspaces that
+  // already persisted a `crosshairMagnet` value (including `true` baked in
+  // from the old default) win over this via the `{...DEFAULT_CHART_SETTINGS,
+  // ...persisted}` merge at load time — this only changes brand-new charts.
+  crosshairMagnet: false,
   logScale: false,
   upColor: "#22c55e",
   downColor: "#ef4444",
@@ -291,6 +652,12 @@ type ChartApi = {
   priceScale: (id: string) => { applyOptions: (o: Record<string, unknown>) => void };
   subscribeCrosshairMove: (cb: (p: CrosshairParam) => void) => void;
   panes: () => Array<{ setHeight: (h: number) => void; getHeight: () => number }>;
+  /** Externally drives the native crosshair (Phase 3D-15 follow-up) — the
+   * library's own documented mechanism for "synchronise the crosshairs of
+   * two separate charts," reused here so it stays visible while a drawing
+   * tool's overlay is the one actually receiving mouse events. */
+  setCrosshairPosition: (price: number, horizontalPosition: number, seriesApi: SeriesApi) => void;
+  clearCrosshairPosition: () => void;
 };
 
 type CrosshairParam = {
@@ -332,16 +699,169 @@ function heikinAshi(bars: Bar[]): Bar[] {
   return out;
 }
 
-const FIB_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
-
 function money(n: number) {
   return `$${Math.abs(n).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+}
+
+/** Humanizes a duration in seconds for the Date Range tool — "3d 4h", "2h 15m", "45s". */
+function fmtDuration(seconds: number): string {
+  const s = Math.round(Math.abs(seconds));
+  const days = Math.floor(s / 86400);
+  const hours = Math.floor((s % 86400) / 3600);
+  const mins = Math.floor((s % 3600) / 60);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${mins}m`;
+  if (mins > 0) return `${mins}m`;
+  return `${s}s`;
 }
 
 function fmt(n: number) {
 
   const abs = Math.abs(n);
   return n.toFixed(abs >= 1000 ? 1 : abs >= 1 ? 2 : 6);
+}
+
+/**
+ * Content Icon (Phase 3D-13): a small curated set of REAL lucide-react icon
+ * geometries (their exact `<path>` `d` data, transcribed from the installed
+ * lucide-react v0.575.0 package — see each icon's own upstream file under
+ * `node_modules/lucide-react/dist/esm/icons/`), drawn on canvas via Path2D
+ * instead of the DOM-only React components lucide ships. This is
+ * deliberately a SMALL fixed catalog (not "a huge custom icon catalog
+ * manually" built from scratch) reusing an icon source already a dependency
+ * of this project, per the phase brief. `DrawingSettingsPopover.tsx`'s
+ * picker renders the real `<Star/>`/`<Heart/>`/etc. React components for
+ * the UI (that's a normal DOM context); only the canvas render path below
+ * needs the raw path data.
+ */
+const ICON_GLYPH_PATHS: Record<string, string[]> = {
+  star: ["M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"],
+  heart: ["M2 9.5a5.5 5.5 0 0 1 9.591-3.676.56.56 0 0 0 .818 0A5.49 5.49 0 0 1 22 9.5c0 2.29-1.5 4-3 5.5l-5.492 5.313a2 2 0 0 1-3 .019L5 15c-1.5-1.5-3-3.2-3-5.5"],
+  check: ["M20 6 9 17l-5-5"],
+  x: ["M18 6 6 18", "m6 6 12 12"],
+  zap: ["M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"],
+  "triangle-alert": ["m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3", "M12 9v4", "M12 17h.01"],
+  "thumbs-up": ["M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z", "M7 10v12"],
+  bell: ["M10.268 21a2 2 0 0 0 3.464 0", "M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"],
+};
+
+/** Content Icon and Emoji share this size scale (Phase 3D-13) — deliberately
+ * a different, larger lookup than `LABEL_FONT_PX` below: both are meant to
+ * read as a small ICON on the chart, not a text label. */
+const GLYPH_ICON_PX: Record<string, number> = { tiny: 16, small: 22, normal: 28, large: 36 };
+
+function drawIconGlyph(ctx: CanvasRenderingContext2D, iconKey: string, x: number, y: number, size: number, col: string, alpha: number): void {
+  const paths = ICON_GLYPH_PATHS[iconKey] ?? ICON_GLYPH_PATHS.star;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(size / 24, size / 24);
+  ctx.translate(-12, -12);
+  ctx.setLineDash([]);
+  ctx.strokeStyle = withAlpha(col, alpha);
+  ctx.lineWidth = 2;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  for (const d of paths) ctx.stroke(new Path2D(d));
+  ctx.restore();
+}
+
+type AnnotationGlyphShape = "pin" | "flag" | "signpost" | "comment" | "note";
+
+/**
+ * Small distinctive marker glyphs for the Text/Notes annotation family
+ * (Phase 3D-7) — each of Pin/Flag Mark/Signpost/Comment/Price Note's ONE
+ * visual difference from plain Text/Note, drawn once here instead of five
+ * near-duplicate inline shape blocks. Always paired with a `drawTextLabel`
+ * call for the actual text content, so every one of these tools still gets
+ * the exact same font/color/background/border/alignment machinery Text
+ * already has — this function only ever draws the marker, never text.
+ */
+function drawAnnotationGlyph(ctx: CanvasRenderingContext2D, shape: AnnotationGlyphShape, x: number, y: number, col: string, alpha: number): void {
+  ctx.save();
+  ctx.setLineDash([]);
+  ctx.fillStyle = withAlpha(col, alpha);
+  ctx.strokeStyle = withAlpha(col, alpha);
+  ctx.lineWidth = 1.5;
+  if (shape === "pin") {
+    ctx.beginPath();
+    ctx.arc(x, y - 6, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(x - 4, y - 3);
+    ctx.lineTo(x, y + 6);
+    ctx.lineTo(x + 4, y - 3);
+    ctx.closePath();
+    ctx.fill();
+  } else if (shape === "flag") {
+    ctx.beginPath();
+    ctx.moveTo(x, y - 14);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x, y - 14);
+    ctx.lineTo(x + 12, y - 10);
+    ctx.lineTo(x, y - 6);
+    ctx.closePath();
+    ctx.fill();
+  } else if (shape === "signpost") {
+    ctx.beginPath();
+    ctx.moveTo(x, y - 16);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.rect(x, y - 16, 20, 8);
+    ctx.fill();
+  } else if (shape === "comment") {
+    const w = 16;
+    const h = 11;
+    ctx.beginPath();
+    ctx.moveTo(x - w / 2, y - h - 6);
+    ctx.lineTo(x + w / 2, y - h - 6);
+    ctx.lineTo(x + w / 2, y - 6);
+    ctx.lineTo(x - w / 2 + 5, y - 6);
+    ctx.lineTo(x - w / 2 + 2, y);
+    ctx.lineTo(x - w / 2 + 2, y - 6);
+    ctx.lineTo(x - w / 2, y - 6);
+    ctx.closePath();
+    ctx.stroke();
+  } else if (shape === "note") {
+    ctx.beginPath();
+    ctx.rect(x - 6, y - 16, 12, 14);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+/**
+ * Shared renderer for Text/Note's `capabilities.text` settings (content,
+ * color, size, bold, italic, alignment, background, border) — replaces two
+ * near-identical inline "draw the text" blocks that used to live in
+ * drawOverlay (a Text drawing's p1 always equals p2, so BOTH the
+ * x2/y2-known and x2/y2-unknown render branches used to duplicate this).
+ */
+function drawTextLabel(ctx: CanvasRenderingContext2D, d: Drawing, x: number, y: number, col: string, alpha: number): void {
+  const settings = d.settings ?? {};
+  const bold = Boolean(settings.bold);
+  const italic = Boolean(settings.italic);
+  const fontPx = LABEL_FONT_PX[(settings.fontSize as string) ?? "normal"] ?? 11;
+  const align = (settings.align as CanvasTextAlign | undefined) ?? "left";
+  const text = d.text ?? "";
+  ctx.font = `${italic ? "italic " : ""}${bold ? "700" : "400"} ${fontPx}px ui-sans-serif, system-ui`;
+  ctx.textAlign = align;
+  const textW = ctx.measureText(text).width;
+  const boxLeft = align === "left" ? x - 3 : align === "right" ? x - textW - 3 : x - textW / 2 - 3;
+  if (settings.background) {
+    ctx.fillStyle = withAlpha((settings.backgroundColor as string | undefined) ?? "#0b0d12", (settings.backgroundOpacity as number | undefined) ?? 0.85);
+    ctx.fillRect(boxLeft, y - fontPx - 2, textW + 6, fontPx + 6);
+  }
+  if (settings.border) {
+    ctx.strokeStyle = withAlpha((settings.borderColor as string | undefined) ?? col, 1);
+    ctx.lineWidth = 1;
+    ctx.setLineDash([]);
+    ctx.strokeRect(boxLeft, y - fontPx - 2, textW + 6, fontPx + 6);
+  }
+  ctx.fillStyle = withAlpha(col, alpha);
+  ctx.fillText(text, x, y);
 }
 
 export function StudioChart({
@@ -366,6 +886,13 @@ export function StudioChart({
   onReady,
   selectedId = null,
   onSelectDrawing,
+  onOpenDrawingSettings,
+  /** Right-click on the chart while a drawing tool is armed (Phase 3D-15
+   * follow-up): cancels the in-progress placement and asks the parent to
+   * switch back to the canonical Select tool. Never fired for "select"
+   * itself, so the pre-existing right-click "price under cursor" order
+   * menu (see the contextmenu effect below) is untouched there. */
+  onCancelTool,
   /**
    * Fired every drawOverlay() frame with what actually happened to every
    * indicator-drawn primitive this frame — received/drawn/offscreen/
@@ -374,6 +901,18 @@ export function StudioChart({
    * says nothing about whether anything ended up on screen.
    */
   onRenderStats,
+  /** Owning chart instance, stamped onto every new Drawing this canvas
+   * creates — the multi-chart-isolation source of truth. */
+  chartInstanceId,
+  /** Drawing-anchor snap strength — see `MagnetMode`'s doc comment. */
+  magnet = "off",
+  /** Authenticated user id (Phase 3D-14) — used ONLY to build the Image
+   * tool's upload path ("{userId}/{uuid}.{ext}", matching the
+   * chart-images bucket's owner-scoped RLS policies). Optional/nullable:
+   * every other tool works with no auth at all, and the inactive-pane
+   * StudioChart instance (tool="cursor", never creates drawings) never
+   * needs it either. */
+  userId = null,
 
 }: {
   bars: Bar[];
@@ -403,7 +942,17 @@ export function StudioChart({
   /** Currently selected drawing (select tool). */
   selectedId?: string | null;
   onSelectDrawing?: (id: string | null) => void;
+  /** Fired when the user double-clicks a completed drawing (Select/Cursor
+   * mode only — see the dblclick effect below for why other tools don't
+   * trigger this). `screen` is VIEWPORT coordinates (clientX/clientY), not
+   * chart-relative, so the caller can position a `position: fixed` popover
+   * without needing to know this canvas's own offset. */
+  onOpenDrawingSettings?: (id: string, screen: { x: number; y: number }) => void;
+  onCancelTool?: () => void;
   onRenderStats?: (statsByIndicatorKey: Record<string, RenderStats>) => void;
+  chartInstanceId?: string;
+  magnet?: MagnetMode;
+  userId?: string | null;
 }) {
 
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -432,8 +981,132 @@ export function StudioChart({
   settingsRef.current = settings;
 
   // Live refs for the overlay renderer (avoids stale closures in rAF).
-  const stateRef = useRef({ indicators, drawings, tool, bars, instrument, selectedId });
-  stateRef.current = { indicators, drawings, tool, bars, instrument, selectedId };
+  const stateRef = useRef({ indicators, drawings, tool, bars, instrument, selectedId, magnet, chartInstanceId });
+  stateRef.current = { indicators, drawings, tool, bars, instrument, selectedId, magnet, chartInstanceId };
+
+  const newId = () => `d${Date.now()}${Math.round(Math.random() * 1e4)}`;
+  // Always mints a FRESH id here, regardless of whatever placeholder the
+  // caller's draft object was carrying (draftRef entries use the constant
+  // "__draft__" while a shape is still being dragged/multi-clicked, purely
+  // so the in-progress object has some id shape — see draftRef assignments
+  // in the pointer-interaction effect below). Committing every drawing's
+  // real id in exactly one place is what guarantees two drawings can never
+  // collide on id, which id-keyed selection/update/delete/persistence all
+  // depend on. Hoisted to component scope (Phase 3D-14) rather than living
+  // only inside that effect's closure, so the Image tool's async upload-
+  // then-finalize handler (a plain event handler, not part of that effect)
+  // can stamp a new drawing through this exact same single source of truth
+  // instead of a second id-minting copy. Reads only `stateRef.current` (a
+  // ref) and the imported `getToolStyleDefaults`, so redefining it every
+  // render is harmless — nothing here is per-render state.
+  const stampNew = (d: Omit<Drawing, "id" | "chartInstanceId" | "createdAt" | "updatedAt"> & { id?: string }): Drawing => {
+    const now = Date.now();
+    // Per-tool "last used style" — a Trend Line restyled to yellow/2px/
+    // dashed makes future Trend Lines start that way; scoped strictly per
+    // DrawTool id so it can never bleed into an unrelated tool's defaults
+    // (see src/lib/drawing/styleDefaults.ts). Applied as a BASE, under
+    // whatever the draft itself already carries — no creation path above
+    // sets color/width/style/settings on the draft directly, so this never
+    // actually collides with real drawn geometry (p1/p2/points/stop/tool).
+    const remembered = getToolStyleDefaults(d.tool);
+    return {
+      ...remembered,
+      ...d,
+      ...(remembered?.settings || d.settings ? { settings: { ...remembered?.settings, ...d.settings } } : {}),
+      id: newId(),
+      chartInstanceId: stateRef.current.chartInstanceId,
+      locked: false,
+      hidden: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+  };
+
+  // Phase 3D-14: the Image tool's RUNTIME-ONLY signed-URL/loaded-image
+  // cache, keyed by the drawing's persisted `settings.imagePath`. Never
+  // read from or written into anything persisted — a signed URL expires,
+  // so it can never be treated as durable drawing state (see
+  // src/lib/storage/chartImages.ts's own doc comment). `drawOverlay()`
+  // already runs on every animation frame regardless of React state (see
+  // its own doc comment above), so mutating this plain ref/Map from an
+  // async `.then()` needs no forceRerender/setState hack — the next frame
+  // just picks up whatever status this cache now holds.
+  const imageCacheRef = useRef<
+    Map<string, { status: "loading" | "loaded" | "error"; img: HTMLImageElement | null; resolvedAt: number }>
+  >(new Map());
+  // Re-resolve a bit before the signed URL's actual TTL elapses, not
+  // exactly at it — avoids a race where a render reuses a URL that expires
+  // between the check and the (already-loaded) `<img>` staying valid.
+  const IMAGE_URL_REFRESH_MS = 55 * 60 * 1000;
+  // drawOverlay() runs every animation frame (60fps) — without a cooldown
+  // on the "error" status too (not just "loading"/"loaded"), a genuinely
+  // failed resolve (missing bucket, deleted object, RLS rejection) would
+  // get re-fetched on literally every frame forever, hammering Storage
+  // with a failing request 60 times a second instead of failing once and
+  // occasionally retrying in case the asset becomes available again.
+  const IMAGE_ERROR_RETRY_MS = 30 * 1000;
+  function ensureChartImageLoaded(path: string) {
+    const cache = imageCacheRef.current;
+    const existing = cache.get(path);
+    if (existing) {
+      const age = Date.now() - existing.resolvedAt;
+      if (existing.status === "loading") return existing;
+      if (existing.status === "loaded" && age < IMAGE_URL_REFRESH_MS) return existing;
+      if (existing.status === "error" && age < IMAGE_ERROR_RETRY_MS) return existing;
+    }
+    const placeholder = { status: "loading" as const, img: null, resolvedAt: Date.now() };
+    cache.set(path, placeholder);
+    createChartImageSignedUrl(path)
+      .then((signedUrl) => {
+        const img = new Image();
+        img.onload = () => cache.set(path, { status: "loaded", img, resolvedAt: Date.now() });
+        img.onerror = () => cache.set(path, { status: "error", img: null, resolvedAt: Date.now() });
+        img.src = signedUrl;
+      })
+      .catch(() => cache.set(path, { status: "error", img: null, resolvedAt: Date.now() }));
+    return placeholder;
+  }
+
+  // Set by the pointer-interaction effect's onUp handler the instant an
+  // Image drag-box is released, read back by handleImageFileChange once
+  // the (necessarily async) upload resolves — the gap between those two
+  // moments is exactly why Image can't go through the generic synchronous
+  // `stampNew`-and-done path every other drag tool uses.
+  const pendingImagePlacementRef = useRef<{ p1: MarketPoint; p2: MarketPoint } | null>(null);
+  const imageFileInputRef = useRef<HTMLInputElement | null>(null);
+  const userIdRef = useRef(userId);
+  userIdRef.current = userId;
+
+  async function handleImageFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0] ?? null;
+    e.target.value = ""; // so picking the exact same file again still fires a change event
+    const placement = pendingImagePlacementRef.current;
+    pendingImagePlacementRef.current = null;
+    if (!file || !placement) return; // user cancelled the OS file picker — place nothing
+    const invalid = validateChartImageFile(file);
+    if (invalid) {
+      window.alert(invalid === "too-large" ? "Image exceeds the 5 MB limit." : "Unsupported image type — use PNG, JPEG, WEBP, or GIF.");
+      return;
+    }
+    const uid = userIdRef.current;
+    if (!uid) {
+      window.alert("Sign in to upload an image.");
+      return;
+    }
+    try {
+      const path = await uploadChartImage(file, uid);
+      // Pre-warm the runtime signed-URL cache (the "resolve signed url"
+      // step) so the image is already loading — or loaded — by the time
+      // this drawing's very first frame renders, rather than starting cold.
+      ensureChartImageLoaded(path);
+      onAddDrawing(stampNew({ tool: "image", p1: placement.p1, p2: placement.p2, settings: { imagePath: path } }));
+    } catch (err) {
+      // Upload genuinely failed (network/RLS/bucket-limit rejection) — no
+      // drawing is added, matching "no broken/empty persistent drawing
+      // left behind" exactly like the user cancelling the picker above.
+      window.alert(err instanceof Error ? err.message : "Failed to upload image.");
+    }
+  }
 
   // Render telemetry, recomputed every drawOverlay() frame and pushed to the
   // parent so it can drive an honest success/failure notice instead of a
@@ -455,11 +1128,74 @@ export function StudioChart({
   onRenderStatsRef.current = onRenderStats;
 
   const draftRef = useRef<Drawing | null>(null);
+  /** Last known mouse position over the chart, in market coordinates, while
+   * a non-"cursor" tool is armed (Phase 3D-15 follow-up) — read every frame
+   * by the RAF loop below to keep re-asserting the native crosshair via
+   * `chart.setCrosshairPosition`. A single set-on-pointermove call gets
+   * silently overwritten by the chart's own periodic internal crosshair
+   * recompute (tied to live-data repaints, not to our external call), so
+   * it has to be refreshed continuously rather than once per event — see
+   * the pointer-interaction effect's host listener for where this is
+   * written, and the `loop()` function for where it's replayed. */
+  const crosshairPosRef = useRef<MarketPoint | null>(null);
+  // `point:${index}` is Polyline/Path's per-vertex anchor kind (Phase 3A) —
+  // distinct from "p1"/"p2" so dragging vertex 0 or the last vertex can
+  // never be mistaken for the generic p1/p2 anchor path, which (for these
+  // two tools) would move the drawing's `points[0]`/`points[last]` mirror
+  // WITHOUT touching the authoritative `points` array itself, desyncing the
+  // rendered geometry from the dragged handle. See hitTest/onMove below.
+  // "entry"/"target"/"left"/"right" are Long/Short Position's dedicated
+  // anchors (Phase 3D-15) — "entry"/"target" drag only `p1.price`/`p2.price`
+  // (never touching time), "left"/"right" drag only the box's time extent
+  // (never touching price), all distinct from the generic "p1"/"p2" corner
+  // anchors (which move both time AND price together) so the two anchor
+  // families can't be confused. See hitTest/onMove below.
+  type AnchorKind = "p1" | "p2" | "p3" | "stop" | "entry" | "target" | "left" | "right" | "body" | `point:${number}`;
   const editRef = useRef<{
     drawing: Drawing;
-    anchor: "p1" | "p2" | "body";
-    start: { logical: number; price: number };
+    anchor: AnchorKind;
+    start: MarketPoint;
   } | null>(null);
+  /** In-progress anchors for multi-click tools (Triangle: 3 plain clicks;
+   * Parallel Channel: a drag for p1/p2 followed by one more click for the
+   * width point). Cleared on commit, Escape, or a tool change. */
+  const pendingRef = useRef<{ tool: DrawTool; anchors: MarketPoint[] } | null>(null);
+
+  // ---- Volume Profile (Phase 3B) calculation cache --------------------------
+  // Binning + Value Area math (see src/lib/drawing/volumeProfile.ts) is real
+  // work over however many bars fall in a profile's range — cheap for one
+  // call, but `drawOverlay()` below runs on EVERY animation frame (60fps,
+  // continuously, not just on interaction), so calling it unmemoized would
+  // redo that binning 60 times a second per Volume Profile drawing even while
+  // completely idle. Keyed by drawing id, with the cache entry itself carrying
+  // a composite key of every actual INPUT to the calculation (bar-array
+  // identity via length + first/last bar time, the resolved start/end time,
+  // rows, Value Area %) — a symbol/timeframe switch changes the bars key
+  // component automatically (new array, different length/edges), so a stale
+  // profile from a previous symbol can never leak through un-recomputed, with
+  // no special-case invalidation code needed. A plain component-scoped ref
+  // (not React state) so reading/writing it never triggers a re-render; one
+  // cache per StudioChart instance keeps it naturally isolated per chart pane
+  // in a multi-chart grid, same as every other per-instance ref here.
+  const vpCacheRef = useRef(new Map<string, { key: string; result: DrawingVolumeProfileResult }>());
+  const getVolumeProfileResult = (d: Drawing, bars: Bar[]): DrawingVolumeProfileResult => {
+    const rows = Math.max(2, Math.min(200, Math.round(Number(d.settings?.vpRows) || 24)));
+    const valueAreaPct = Math.min(1, Math.max(0.05, Number(d.settings?.vpValueAreaPct) || 0.7));
+    const lastBarTime = bars.length ? bars[bars.length - 1].time : 0;
+    const firstBarTime = bars.length ? bars[0].time : 0;
+    const endTime = d.tool === "vp-anchored" ? lastBarTime : d.p2.time;
+    const key = `${bars.length}:${firstBarTime}:${lastBarTime}:${d.p1.time}:${endTime}:${rows}:${valueAreaPct}`;
+    const cached = vpCacheRef.current.get(d.id);
+    if (cached && cached.key === key) return cached.result;
+    const result =
+      d.tool === "vp-anchored"
+        ? computeAnchoredVolumeProfile(bars, d.p1.time, rows, valueAreaPct)
+        : computeFixedRangeVolumeProfile(bars, d.p1.time, endTime, rows, valueAreaPct);
+    vpCacheRef.current.set(d.id, { key, result });
+    return result;
+  };
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
 
   const [ready, setReady] = useState(0);
 
@@ -649,6 +1385,13 @@ export function StudioChart({
 
       const loop = () => {
         drawOverlayRef.current();
+        // Re-assert every frame, not just on pointermove (Phase 3D-15
+        // follow-up) — see `crosshairPosRef`'s doc comment for why a
+        // single per-event call isn't enough to keep the native crosshair
+        // visible on this live-updating chart.
+        const pos = crosshairPosRef.current;
+        const series = priceSeriesRef.current;
+        if (pos && series) chart.setCrosshairPosition(pos.price, pos.time, series);
         raf = requestAnimationFrame(loop);
       };
       raf = requestAnimationFrame(loop);
@@ -1133,6 +1876,17 @@ export function StudioChart({
     };
 
     const { indicators: inds, drawings: draws } = stateRef.current;
+    // Drop cached Volume Profile results for any drawing that no longer
+    // exists (deleted, or undone off the end of history) — keeps the cache
+    // from growing unbounded over a long session. Cheap: only ever iterates
+    // once per frame over however many profiles have EVER existed this
+    // session, not the whole drawings list.
+    if (vpCacheRef.current.size > 0) {
+      const liveIds = new Set(draws.map((d) => d.id));
+      for (const id of vpCacheRef.current.keys()) {
+        if (!liveIds.has(id) && id !== "__draft__") vpCacheRef.current.delete(id);
+      }
+    }
     const planBoxes: Array<{ id: string; x: number; y: number }> = [];
 
     // Telemetry for this frame, per indicator (not a global aggregate — with
@@ -1465,36 +2219,905 @@ export function StudioChart({
     lastRenderStatsRef.current = statsByKey;
     onRenderStatsRef.current?.(statsByKey);
 
+    // Time -> pixel for user drawings (as opposed to indicator primitives,
+    // which use the stricter geometryReady-gated `x()` above): a drawing's
+    // anchor time can legitimately sit outside the loaded range (a ray drawn
+    // toward the future, a channel's baseline extending past the last bar),
+    // and — unlike an indicator result — there's no "stale computation"
+    // reading to guard against, so extrapolation is always safe here.
+    const toLogicalD = (t: number) => timeToLogicalExtrapolated(stateRef.current.bars, t);
+    const px = (p: MarketPoint) => (geometryReady ? logicalToPixel(ts, toLogicalD(p.time), host.clientWidth) : null);
+    const py = (p: MarketPoint) => y(p.price);
+
+    // ---- Shared Fibonacci projection paint helpers (Trend-Based Extension /
+    // Channel / Wedge) --------------------------------------------------------
+    // Used both for a COMMITTED drawing (from the main `all` loop below) and
+    // for the live in-progress preview while the user is still placing
+    // anchors (the pending-preview block further down) — one paint routine
+    // per tool, called from both places, so "what you see while
+    // constructing" and "what actually renders once committed" can never
+    // drift into two hand-synced copies of the same geometry.
+    const levelLabelText = (ratio: number, showLabel: boolean, showPrice: boolean, priceValue: number | null): string => {
+      const parts = [showLabel ? `${(ratio * 100).toFixed(1)}%` : null, showPrice && priceValue != null ? fmt(priceValue) : null].filter(
+        (p): p is string => p != null,
+      );
+      return parts.join("  ");
+    };
+
+    /** Trend-Based Fib Extension: horizontal level lines projected from C by
+     * the A->B move (see calc.ts's computeFibExtensionLevels) — visually the
+     * same "horizontal rules at each level price" convention Fib Retracement
+     * already uses, just anchored at C instead of between two anchors. */
+    const paintFibExtension = (
+      a: MarketPoint,
+      b: MarketPoint,
+      c: MarketPoint,
+      levels: FibLevel[],
+      extendRight: boolean,
+      showLabel: boolean,
+      showPrice: boolean,
+      col: string,
+    ) => {
+      const cx = px(c);
+      if (cx == null) return;
+      const computed = computeFibExtensionLevels(a.price, b.price, c.price, levels.filter((l) => l.enabled !== false));
+      const ax = px(a);
+      const bx = px(b);
+      const legWidth = ax != null && bx != null ? Math.abs(bx - ax) : 80;
+      const rightX = extendRight ? host.clientWidth : cx + Math.max(60, legWidth);
+      ctx.save();
+      ctx.setLineDash([]);
+      for (const lvl of computed) {
+        const ly = y(lvl.price);
+        if (ly == null) continue;
+        ctx.strokeStyle = withAlpha(lvl.color ?? col, 0.6);
+        ctx.beginPath();
+        ctx.moveTo(cx, ly);
+        ctx.lineTo(rightX, ly);
+        ctx.stroke();
+        const label = levelLabelText(lvl.value, showLabel, showPrice, lvl.price);
+        if (label) {
+          ctx.fillStyle = withAlpha(lvl.color ?? col, 0.9);
+          ctx.fillText(label, rightX + 4, ly - 2);
+        }
+      }
+      ctx.restore();
+    };
+
+    /** Fib Channel: the pre-existing Parallel Channel's exact trend + width-
+     * anchor geometry, with Fibonacci-ratio-spaced parallel rails (see
+     * geometry.ts's fibChannelLevelOffset) instead of one single offset. The
+     * trend line is extended both directions across the visible canvas first
+     * (`projectLineBackward`/`projectLineForward` — the "proper extension
+     * along the trend direction" requirement), then every rail is that SAME
+     * extended segment translated by its own pixel offset, so every rail
+     * stays exactly parallel no matter how far it extends. */
+    const paintFibChannel = (
+      p1: MarketPoint,
+      p2: MarketPoint,
+      p3: MarketPoint,
+      levels: FibLevel[],
+      fillOpacity: number,
+      showLabel: boolean,
+      showPrice: boolean,
+      col: string,
+    ) => {
+      const x1 = px(p1);
+      const y1 = py(p1);
+      const x2 = px(p2);
+      const y2 = py(p2);
+      const x3 = px(p3);
+      const y3 = py(p3);
+      if (x1 == null || y1 == null || x2 == null || y2 == null || x3 == null || y3 == null) return;
+      const { x: sx, y: sy } = projectLineBackward(x1, y1, x2, y2);
+      const { x: ex, y: ey } = projectLineForward(x1, y1, x2, y2, host.clientWidth);
+      const enabled = levels.filter((l) => l.enabled !== false);
+      if (enabled.length === 0) return;
+      ctx.save();
+      ctx.setLineDash([]);
+      const ratios = enabled.map((l) => l.value);
+      const minRatio = Math.min(...ratios, 0);
+      const maxRatio = Math.max(...ratios, 0);
+      const lo = fibChannelLevelOffset(x1, y1, x2, y2, x3, y3, minRatio);
+      const hi = fibChannelLevelOffset(x1, y1, x2, y2, x3, y3, maxRatio);
+      ctx.beginPath();
+      ctx.moveTo(sx + lo.dx, sy + lo.dy);
+      ctx.lineTo(ex + lo.dx, ey + lo.dy);
+      ctx.lineTo(ex + hi.dx, ey + hi.dy);
+      ctx.lineTo(sx + hi.dx, sy + hi.dy);
+      ctx.closePath();
+      ctx.fillStyle = withAlpha(col, fillOpacity);
+      ctx.fill();
+      for (const lvl of enabled) {
+        const { dx, dy } = fibChannelLevelOffset(x1, y1, x2, y2, x3, y3, lvl.value);
+        ctx.strokeStyle = withAlpha(lvl.color ?? col, 0.75);
+        ctx.beginPath();
+        ctx.moveTo(sx + dx, sy + dy);
+        ctx.lineTo(ex + dx, ey + dy);
+        ctx.stroke();
+        const priceHere = price.coordinateToPrice(y2 + dy);
+        const label = levelLabelText(lvl.value, showLabel, showPrice, priceHere);
+        if (label) {
+          ctx.fillStyle = withAlpha(lvl.color ?? col, 0.9);
+          ctx.fillText(label, ex + dx + 4, ey + dy - 2);
+        }
+      }
+      ctx.restore();
+    };
+
+    /** Fib Wedge: a genuine radial ray fan from a shared pivot (A) — NOT
+     * parallel horizontal lines. Each enabled ratio's ray passes through
+     * `lerpMarketPoint(B, C, ratio)`, computed in MARKET coordinates
+     * (independent time/price interpolation) so the fan's geometry is
+     * correct even when price and time don't share a pixel scale; only the
+     * already-interpolated point gets converted to a pixel position (via
+     * px/py) and then extended in pixel space with the same
+     * `projectLineForward` Ray/Extended Line already use.
+     *
+     * Shared verbatim with Pitchfan (Phase 3C-3) via a nullable
+     * `fillOpacity` — Pitchfan is this exact same pivot-ray-fan geometry per
+     * this function's own original name ("Pitchfan-style"), differing only
+     * in that a traditional pitchfork is unfilled lines, never a closed
+     * fill wedge. `fillOpacity == null` skips the fill-closing block below
+     * entirely rather than duplicating this whole function for one tool
+     * that needs identical ray math and no fill. */
+    const paintFibWedge = (
+      pivot: MarketPoint,
+      b: MarketPoint,
+      c: MarketPoint,
+      levels: FibLevel[],
+      fillOpacity: number | null,
+      showLabel: boolean,
+      showPrice: boolean,
+      col: string,
+    ) => {
+      const ax = px(pivot);
+      const ay = py(pivot);
+      if (ax == null || ay == null) return;
+      const enabled = [...levels.filter((l) => l.enabled !== false)].sort((l1, l2) => l1.value - l2.value);
+      if (enabled.length === 0) return;
+      ctx.save();
+      ctx.setLineDash([]);
+      const rayEnds: { x: number; y: number }[] = [];
+      for (const lvl of enabled) {
+        const target = lerpMarketPoint(b, c, lvl.value);
+        const tx = px(target);
+        const ty = py(target);
+        if (tx == null || ty == null) continue;
+        const { x: ex, y: ey } = projectLineForward(ax, ay, tx, ty, host.clientWidth);
+        rayEnds.push({ x: ex, y: ey });
+        ctx.strokeStyle = withAlpha(lvl.color ?? col, 0.75);
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(ex, ey);
+        ctx.stroke();
+        const label = levelLabelText(lvl.value, showLabel, showPrice, target.price);
+        if (label) {
+          ctx.fillStyle = withAlpha(lvl.color ?? col, 0.9);
+          ctx.fillText(label, ex + 4, ey - 2);
+        }
+      }
+      if (fillOpacity != null && rayEnds.length >= 2) {
+        const first = rayEnds[0];
+        const last = rayEnds[rayEnds.length - 1];
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(first.x, first.y);
+        ctx.lineTo(last.x, last.y);
+        ctx.closePath();
+        ctx.fillStyle = withAlpha(col, fillOpacity);
+        ctx.fill();
+      }
+      ctx.restore();
+    };
+
+    /** Fib Time Zone / Trend-Based Fib Time: full-height vertical lines at
+     * whole-Fibonacci-sequence multiples of a base time interval (see
+     * calc.ts's computeFibTimeZoneLevels) — the same vertical-line
+     * convention the pre-existing `vline` tool already uses, one line per
+     * enabled level instead of a single line at one fixed time. Labels show
+     * the raw sequence VALUE (0, 1, 2, 3, 5, ...), never a percentage —
+     * these levels aren't ratios of anything.
+     *
+     * Takes the already-resolved `startTime`/`interval` rather than two
+     * MarketPoints so Trend-Based Fib Time (Phase 3C-3) can share this
+     * verbatim: Fib Time Zone's own two anchors ARE the start/interval
+     * (`p1.time`, `p2.time - p1.time`), while Trend-Based Fib Time measures
+     * its interval from A->B and projects from a separate third anchor C
+     * (`p3.time`, `p2.time - p1.time`) — same rendering, different inputs,
+     * no second vertical-line renderer. */
+    const paintFibTimeZone = (startTime: number, interval: number, levels: FibLevel[], showLabel: boolean, col: string) => {
+      const computed = computeFibTimeZoneLevels(startTime, interval, levels.filter((l) => l.enabled !== false));
+      ctx.save();
+      ctx.setLineDash([]);
+      for (const lvl of computed) {
+        const lx = geometryReady ? logicalToPixel(ts, toLogicalD(lvl.time), host.clientWidth) : null;
+        if (lx == null) continue;
+        ctx.strokeStyle = withAlpha(lvl.color ?? col, 0.55);
+        ctx.beginPath();
+        ctx.moveTo(lx, 0);
+        ctx.lineTo(lx, host.clientHeight);
+        ctx.stroke();
+        if (showLabel) {
+          ctx.fillStyle = withAlpha(lvl.color ?? col, 0.9);
+          ctx.fillText(String(lvl.value), lx + 3, 12);
+        }
+      }
+      ctx.restore();
+    };
+
+    /** Fib Speed Resistance Fan: fan rays from the first anchor (the shared
+     * ray origin, Wedge-pivot-style) through points a Fibonacci-ratio
+     * fraction of the measured A->B price move, taken at B's OWN time (see
+     * calc.ts's computeFibSpeedFanTargets) — every ray's "far" point shares
+     * the exact same time, only price varies, giving the classic Speed
+     * Resistance Fan look (one measured vertical move fanned out from a
+     * single origin), unlike Fib Wedge's fully free third anchor. Rendered
+     * with the same pixel-space `projectLineForward` extension every other
+     * ray-based Fib tool already uses. */
+    const paintFibSpeedFan = (p1: MarketPoint, p2: MarketPoint, levels: FibLevel[], showLabel: boolean, showPrice: boolean, col: string) => {
+      const ax = px(p1);
+      const ay = py(p1);
+      if (ax == null || ay == null) return;
+      const enabled = [...levels.filter((l) => l.enabled !== false)].sort((l1, l2) => l1.value - l2.value);
+      if (enabled.length === 0) return;
+      const targets = computeFibSpeedFanTargets(p1, p2, enabled);
+      ctx.save();
+      ctx.setLineDash([]);
+      for (const target of targets) {
+        const tx = px(target);
+        const ty = py(target);
+        if (tx == null || ty == null) continue;
+        const { x: ex, y: ey } = projectLineForward(ax, ay, tx, ty, host.clientWidth);
+        ctx.strokeStyle = withAlpha(target.color ?? col, 0.75);
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(ex, ey);
+        ctx.stroke();
+        const label = levelLabelText(target.value, showLabel, showPrice, target.price);
+        if (label) {
+          ctx.fillStyle = withAlpha(target.color ?? col, 0.9);
+          ctx.fillText(label, ex + 4, ey - 2);
+        }
+      }
+      ctx.restore();
+    };
+
+    /** Fib Circles: concentric un-filled ellipse rings at Fibonacci-ratio
+     * fractions of the p1->p2 pixel distance, centered on p1. Radii are
+     * derived independently per axis (rx0 = pixel dx, ry0 = pixel dy)
+     * exactly like Ellipse/Circle's own rendering — this is what "accounts
+     * for non-uniform time/price screen scaling" means in practice: a
+     * "circle" that's proportionally correct in MARKET terms will generally
+     * render as a visual ellipse, since price and time never share a pixel
+     * scale. Recomputed fresh from p1/p2 every call, same no-cached-state
+     * convention as every other Fib tool here. */
+    const paintFibCircles = (p1: MarketPoint, p2: MarketPoint, levels: FibLevel[], showLabel: boolean, showPrice: boolean, col: string) => {
+      const cx = px(p1);
+      const cy = py(p1);
+      const cx2 = px(p2);
+      const cy2 = py(p2);
+      if (cx == null || cy == null || cx2 == null || cy2 == null) return;
+      const rx0 = Math.abs(cx2 - cx);
+      const ry0 = Math.abs(cy2 - cy);
+      const enabled = [...levels.filter((l) => l.enabled !== false)].sort((l1, l2) => l1.value - l2.value);
+      ctx.save();
+      ctx.setLineDash([]);
+      for (const lvl of enabled) {
+        if (lvl.value <= 0) continue;
+        const rx = rx0 * lvl.value;
+        const ry = ry0 * lvl.value;
+        if (rx <= 0 && ry <= 0) continue;
+        ctx.strokeStyle = withAlpha(lvl.color ?? col, 0.7);
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        const levelPrice = p1.price + (p2.price - p1.price) * lvl.value;
+        const label = levelLabelText(lvl.value, showLabel, showPrice, levelPrice);
+        if (label) {
+          ctx.fillStyle = withAlpha(lvl.color ?? col, 0.9);
+          ctx.fillText(label, cx + rx + 4, cy - 2);
+        }
+      }
+      ctx.restore();
+    };
+
+    /** Fib Speed Resistance Arcs: the SAME concentric ellipse-ring geometry
+     * as Fib Circles above (shared rx0/ry0 derivation), but drawing only the
+     * half-ellipse arc facing the direction of the measured p1->p2 move —
+     * "real arc geometry, not full circles" per the phase brief. Canvas
+     * ellipse angles run clockwise from 0 at 3 o'clock: 0->π is the LOWER
+     * half, π->2π is the UPPER half, so which half to draw is a plain sign
+     * check on the pixel-space vertical delta (screen y grows downward, so
+     * p2 being visually ABOVE p1 - i.e. a price increase - means cy2 < cy). */
+    const paintFibSpeedArcs = (p1: MarketPoint, p2: MarketPoint, levels: FibLevel[], showLabel: boolean, showPrice: boolean, col: string) => {
+      const cx = px(p1);
+      const cy = py(p1);
+      const cx2 = px(p2);
+      const cy2 = py(p2);
+      if (cx == null || cy == null || cx2 == null || cy2 == null) return;
+      const rx0 = Math.abs(cx2 - cx);
+      const ry0 = Math.abs(cy2 - cy);
+      const upperHalf = cy2 <= cy;
+      const [startAngle, endAngle] = upperHalf ? [Math.PI, Math.PI * 2] : [0, Math.PI];
+      const enabled = [...levels.filter((l) => l.enabled !== false)].sort((l1, l2) => l1.value - l2.value);
+      ctx.save();
+      ctx.setLineDash([]);
+      for (const lvl of enabled) {
+        if (lvl.value <= 0) continue;
+        const rx = rx0 * lvl.value;
+        const ry = ry0 * lvl.value;
+        if (rx <= 0 && ry <= 0) continue;
+        ctx.strokeStyle = withAlpha(lvl.color ?? col, 0.7);
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, rx, ry, 0, startAngle, endAngle);
+        ctx.stroke();
+        const levelPrice = p1.price + (p2.price - p1.price) * lvl.value;
+        const label = levelLabelText(lvl.value, showLabel, showPrice, levelPrice);
+        if (label) {
+          const labelY = upperHalf ? cy - ry - 4 : cy + ry + 10;
+          ctx.fillStyle = withAlpha(lvl.color ?? col, 0.9);
+          ctx.fillText(label, cx + 4, labelY);
+        }
+      }
+      ctx.restore();
+    };
+
+    /** Fib Spiral: a single continuous logarithmic-growth curve (see
+     * geometry.ts's fibSpiralPoints) radiating from p1, with p2 fixing the
+     * spiral's initial radius/rotation — NOT multiple discrete Fibonacci
+     * levels (no `levels` capability; a spiral is one curve, not a set of
+     * rings), so unlike Circles/Arcs above this does NOT reset the dash
+     * pattern - a simple single-stroke object respects `d.style` exactly
+     * like Trend Line/Ray already do. Renders as one connected polyline,
+     * same convention as Polyline/Brush's own point-array rendering. */
+    const paintFibSpiral = (p1: MarketPoint, p2: MarketPoint, col: string) => {
+      const cx = px(p1);
+      const cy = py(p1);
+      const cx2 = px(p2);
+      const cy2 = py(p2);
+      if (cx == null || cy == null || cx2 == null || cy2 == null) return;
+      const r0 = pixelDist(cx, cy, cx2, cy2);
+      if (r0 < 1) return;
+      const angle0 = Math.atan2(cy2 - cy, cx2 - cx);
+      const pts = fibSpiralPoints(cx, cy, r0, angle0);
+      ctx.save();
+      ctx.strokeStyle = withAlpha(col, 0.85);
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (const p of pts.slice(1)) ctx.lineTo(p.x, p.y);
+      ctx.stroke();
+      ctx.restore();
+    };
+
+    /** Shared render primitive for every Phase 3D-1 chart-pattern tool (see
+     * MULTI_ANCHOR_PATTERN_TOOLS above) — draws that tool's connecting
+     * segments (patternSegments: a plain zigzag by default, or Triangle
+     * Pattern/Head and Shoulders' own topology) plus each anchor's label,
+     * from the SAME ordered anchor array the shared hit-test/edit code
+     * below reads. One function instead of six near-identical ones. */
+    const paintLabeledPattern = (tool: DrawTool, anchors: MarketPoint[], showLabels: boolean, col: string) => {
+      const pts = anchors.map((p) => ({ x: px(p), y: py(p) }));
+      const segs = patternSegments(tool, anchors.length);
+      ctx.beginPath();
+      let any = false;
+      for (const [a, b] of segs) {
+        const pa = pts[a];
+        const pb = pts[b];
+        if (!pa || !pb || pa.x == null || pa.y == null || pb.x == null || pb.y == null) continue;
+        ctx.moveTo(pa.x, pa.y);
+        ctx.lineTo(pb.x, pb.y);
+        any = true;
+      }
+      if (any) ctx.stroke();
+      if (showLabels) {
+        const labels = PATTERN_ANCHOR_LABELS[tool];
+        if (labels) {
+          ctx.fillStyle = withAlpha(col, 0.9);
+          anchors.forEach((_p, i) => {
+            const sp = pts[i];
+            if (!sp || sp.x == null || sp.y == null) return;
+            const label = labels[i];
+            if (label) ctx.fillText(label, sp.x + 6, sp.y - 6);
+          });
+        }
+      }
+    };
+
+    /** The chart's currently visible TIME range, in market-coordinate
+     * seconds — computed from the two pixel edges (0, host.clientWidth) via
+     * the timeScale's own inverse-of-px conversion (same
+     * coordinateToLogical -> logicalToTime pair `rawPoint` already uses for
+     * pointer input, just applied to the viewport edges instead of a
+     * click). Cyclic Lines' "repeat across the whole visible chart" policy
+     * needs this; Time Cycles' fixed-count policy doesn't. Returns null if
+     * the chart isn't laid out yet (matches every other px()/py() null-guard
+     * in this file). */
+    const visibleTimeRange = (): [number, number] | null => {
+      const startLogical = ts.coordinateToLogical(0);
+      const endLogical = ts.coordinateToLogical(host.clientWidth);
+      if (startLogical == null || endLogical == null) return null;
+      const bars = stateRef.current.bars;
+      const a = logicalToTime(bars, startLogical);
+      const b = logicalToTime(bars, endLogical);
+      return a <= b ? [a, b] : [b, a];
+    };
+
+    /** Cyclic Lines (Phase 3D-3): repeating vertical lines at every
+     * calc.ts's cyclicLineTimes() result within the visible range — see
+     * that function's own doc comment for why this repeats indefinitely in
+     * BOTH directions (Cyclic Lines' actual identity), unlike Time Cycles
+     * just below. Canonical state is only ever p1/p2 (the defining anchors)
+     * — every repeated line is regenerated fresh here, never persisted. */
+    const paintCyclicLines = (p1: MarketPoint, p2: MarketPoint) => {
+      const range = visibleTimeRange();
+      if (!range) return;
+      const interval = Math.abs(p2.time - p1.time);
+      const times = cyclicLineTimes(p1.time, interval, range[0], range[1]);
+      ctx.beginPath();
+      for (const t of times) {
+        const x = px({ time: t, price: p1.price });
+        if (x == null) continue;
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, host.clientHeight);
+      }
+      ctx.stroke();
+    };
+
+    /** Time Cycles (Phase 3D-3): the SAME repeating-vertical-line rendering
+     * as Cyclic Lines above, reading the SAME interval math, but a fixed
+     * forward-only count (calc.ts's timeCyclesTimes) instead of "fill the
+     * visible range" — see that function's doc comment for why this is a
+     * real behavioral difference, not a style one. Anchored at
+     * Math.min(p1.time, p2.time) rather than p1.time directly so a
+     * reversed drag (p2 placed before p1 in time) still repeats forward
+     * from the EARLIER anchor and both original anchors land exactly on the
+     * generated grid (k=0 and k=1), instead of walking away from p2 entirely. */
+    const paintTimeCycles = (p1: MarketPoint, p2: MarketPoint) => {
+      const interval = Math.abs(p2.time - p1.time);
+      const anchorTime = Math.min(p1.time, p2.time);
+      const times = timeCyclesTimes(anchorTime, interval);
+      ctx.beginPath();
+      for (const t of times) {
+        const x = px({ time: t, price: p1.price });
+        if (x == null) continue;
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, host.clientHeight);
+      }
+      ctx.stroke();
+    };
+
+    /** Sine Line (Phase 3D-3): calc.ts's sineLinePoints already returns a
+     * deterministic MARKET-coordinate parametric curve — this just converts
+     * to pixels and strokes it, the exact same "map points then draw one
+     * continuous path" shape as Polyline/Fib Spiral's own renderers. */
+    const paintSineLine = (p1: MarketPoint, p2: MarketPoint) => {
+      const pts = sineLinePoints(p1, p2);
+      ctx.beginPath();
+      let started = false;
+      for (const p of pts) {
+        const x = px(p);
+        const y = py(p);
+        if (x == null || y == null) continue;
+        if (!started) {
+          ctx.moveTo(x, y);
+          started = true;
+        } else ctx.lineTo(x, y);
+      }
+      if (started) ctx.stroke();
+    };
+
+    /** Shared grid render primitive for Gann Box / Square / Square Fixed
+     * (Phase 3D-4) — an N-division grid (calc.ts's gannGridFractions, whose
+     * 0/1 fractions already draw the box's own outer border) plus the
+     * box's two corner-to-corner diagonals. Divisions default to 4
+     * (TradingView's own default) — no dedicated settings-popover control
+     * for changing it this phase, matching every prior "reuse `stroke`,
+     * don't build a bespoke settings UI" precedent in this file. */
+    const paintGannGrid = (p1: MarketPoint, p2: MarketPoint, divisions = 4) => {
+      const x1 = px(p1);
+      const y1 = py(p1);
+      const x2 = px(p2);
+      const y2 = py(p2);
+      if (x1 == null || y1 == null || x2 == null || y2 == null) return;
+      const fracs = gannGridFractions(divisions);
+      ctx.beginPath();
+      for (const f of fracs) {
+        const vx = x1 + (x2 - x1) * f;
+        ctx.moveTo(vx, y1);
+        ctx.lineTo(vx, y2);
+        const hy = y1 + (y2 - y1) * f;
+        ctx.moveTo(x1, hy);
+        ctx.lineTo(x2, hy);
+      }
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.moveTo(x1, y2);
+      ctx.lineTo(x2, y1);
+      ctx.stroke();
+    };
+
+    /** Gann Fan (Phase 3D-4): real sloped rays from the pivot p1, each at
+     * `gannFanSlope(baseRate, ratio)` where `baseRate` is the tool's own
+     * p1->p2 rate (its user-drawn "1x1" angle) — mathematically distinct
+     * from Fib Speed Resistance Fan's fixed-fractional-target rays (see
+     * gannFanSlope's own doc comment). Extended to the canvas edge via the
+     * SAME projectLineForward every Fib Wedge/Pitchfan ray already uses —
+     * reused verbatim, not reimplemented. */
+    const paintGannFan = (p1: MarketPoint, p2: MarketPoint, levels: FibLevel[], showLabel: boolean, col: string) => {
+      const x1 = px(p1);
+      const y1 = py(p1);
+      if (x1 == null || y1 == null) return;
+      const dt = p2.time - p1.time;
+      if (dt === 0) return;
+      const baseRate = (p2.price - p1.price) / dt;
+      const enabled = [...levels.filter((l) => l.enabled !== false)].sort((a, b) => a.value - b.value);
+      ctx.save();
+      ctx.setLineDash([]);
+      for (const lvl of enabled) {
+        const slope = gannFanSlope(baseRate, lvl.value);
+        const ref = { time: p1.time + dt, price: p1.price + slope * dt };
+        const x2 = px(ref);
+        const y2 = py(ref);
+        if (x2 == null || y2 == null) continue;
+        const { x: ex, y: ey } = projectLineForward(x1, y1, x2, y2, host.clientWidth);
+        ctx.strokeStyle = withAlpha(lvl.color ?? col, 0.8);
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(ex, ey);
+        ctx.stroke();
+        if (showLabel) {
+          ctx.fillStyle = withAlpha(lvl.color ?? col, 0.9);
+          ctx.fillText(gannFanRatioLabel(lvl.value), ex + 4, ey - 2);
+        }
+      }
+      ctx.restore();
+    };
+
+    /** Shared render primitive for all four Pitchfork variants (Phase
+     * 3D-5) — see calc.ts's own doc comment for how each variant's
+     * handle/target/teeth differ. Median + both teeth are extended via the
+     * SAME projectLineForward every other ray-fan tool in this file uses. */
+    const paintPitchfork = (p0: MarketPoint, p1: MarketPoint, p2: MarketPoint, variant: PitchforkVariant) => {
+      const handle = pitchforkHandle(p0, p1, p2, variant);
+      const target = pitchforkTarget(p0, p1, p2, variant);
+      const [tooth1, tooth2] = pitchforkTeethAnchors(p0, p1, p2, variant);
+      const hx = px(handle);
+      const hy = py(handle);
+      if (hx == null || hy == null) return;
+      ctx.save();
+      ctx.setLineDash([]);
+      const tx = px(target);
+      const ty = py(target);
+      if (tx != null && ty != null) {
+        const { x: ex, y: ey } = projectLineForward(hx, hy, tx, ty, host.clientWidth);
+        ctx.beginPath();
+        ctx.moveTo(hx, hy);
+        ctx.lineTo(ex, ey);
+        ctx.stroke();
+      }
+      const dt = target.time - handle.time;
+      const dp = target.price - handle.price;
+      for (const tooth of [tooth1, tooth2]) {
+        const ref = { time: tooth.time + dt, price: tooth.price + dp };
+        const tx1 = px(tooth);
+        const ty1 = py(tooth);
+        const tx2 = px(ref);
+        const ty2 = py(ref);
+        if (tx1 == null || ty1 == null || tx2 == null || ty2 == null) continue;
+        const { x: ex, y: ey } = projectLineForward(tx1, ty1, tx2, ty2, host.clientWidth);
+        ctx.beginPath();
+        ctx.moveTo(tx1, ty1);
+        ctx.lineTo(ex, ey);
+        ctx.stroke();
+      }
+      ctx.restore();
+    };
+
+    /** Flat Top/Bottom (Phase 3D-5): the SAME sloped-rail-plus-offset-rail
+     * shape as Parallel Channel's own render code just below in the main
+     * loop, except the second rail is forced HORIZONTAL at p3's price
+     * (`y3`) instead of a perpendicular-parallel offset — its one genuine
+     * geometric difference from Parallel Channel. */
+    const paintFlatChannel = (x1: number, y1: number, x2: number, y2: number, p3: MarketPoint | undefined) => {
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      if (!p3) return;
+      const y3 = py(p3);
+      if (y3 == null) return;
+      ctx.beginPath();
+      ctx.moveTo(x1, y3);
+      ctx.lineTo(x2, y3);
+      ctx.stroke();
+      ctx.save();
+      ctx.globalAlpha = 0.08;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.lineTo(x2, y3);
+      ctx.lineTo(x1, y3);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    };
+
+    /** Regression Trend (Phase 3D-5): genuine ordinary-least-squares
+     * regression (calc.ts's computeLinearRegression) over every bar's
+     * close price within [p1.time, p2.time] — NOT Parallel Channel's
+     * anchor-driven rails. The channel bounds are the fitted line offset
+     * by `deviations` multiples of the residual standard deviation, the
+     * conventional "regression channel" construction. Anchor HANDLES still
+     * sit at the raw p1/p2 drag points (drives the fitted TIME RANGE), not
+     * on the fitted line itself — dragging either one still correctly
+     * resizes the range and the regression regenerates fresh. */
+    const paintRegressionTrend = (p1: MarketPoint, p2: MarketPoint, deviations: number) => {
+      const lo = Math.min(p1.time, p2.time);
+      const hi = Math.max(p1.time, p2.time);
+      const inRange = stateRef.current.bars.filter((b) => b.time >= lo && b.time <= hi).map((b) => ({ time: b.time, value: b.close }));
+      if (inRange.length < 2) return;
+      const { slope, intercept, stdDev } = computeLinearRegression(inRange);
+      const yAt = (t: number) => slope * t + intercept;
+      const x1r = px({ time: lo, price: 0 });
+      const x2r = px({ time: hi, price: 0 });
+      const y1r = py({ time: lo, price: yAt(lo) });
+      const y2r = py({ time: hi, price: yAt(hi) });
+      if (x1r == null || x2r == null || y1r == null || y2r == null) return;
+      ctx.beginPath();
+      ctx.moveTo(x1r, y1r);
+      ctx.lineTo(x2r, y2r);
+      ctx.stroke();
+      const upperY1 = py({ time: lo, price: yAt(lo) + stdDev * deviations });
+      const upperY2 = py({ time: hi, price: yAt(hi) + stdDev * deviations });
+      const lowerY1 = py({ time: lo, price: yAt(lo) - stdDev * deviations });
+      const lowerY2 = py({ time: hi, price: yAt(hi) - stdDev * deviations });
+      if (upperY1 != null && upperY2 != null) {
+        ctx.beginPath();
+        ctx.moveTo(x1r, upperY1);
+        ctx.lineTo(x2r, upperY2);
+        ctx.stroke();
+      }
+      if (lowerY1 != null && lowerY2 != null) {
+        ctx.beginPath();
+        ctx.moveTo(x1r, lowerY1);
+        ctx.lineTo(x2r, lowerY2);
+        ctx.stroke();
+      }
+      if (upperY1 != null && upperY2 != null && lowerY1 != null && lowerY2 != null) {
+        ctx.save();
+        ctx.globalAlpha = 0.08;
+        ctx.beginPath();
+        ctx.moveTo(x1r, upperY1);
+        ctx.lineTo(x2r, upperY2);
+        ctx.lineTo(x2r, lowerY2);
+        ctx.lineTo(x1r, lowerY1);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+    };
+
+    /** Position Forecast (Phase 3D-8): a genuine 3-anchor projection
+     * sketch — a dashed zigzag through all three anchors with an
+     * arrowhead at the end (reusing directionalArrowGlyph), deliberately
+     * NOT Long/Short's entry/stop/target risk box. */
+    const paintForecast = (p1: MarketPoint, p2: MarketPoint, p3: MarketPoint) => {
+      const x1 = px(p1);
+      const y1 = py(p1);
+      const x2 = px(p2);
+      const y2 = py(p2);
+      const x3 = px(p3);
+      const y3 = py(p3);
+      if (x1 == null || y1 == null || x2 == null || y2 == null || x3 == null || y3 == null) return;
+      ctx.save();
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.lineTo(x3, y3);
+      ctx.stroke();
+      const angle = Math.atan2(y3 - y2, x3 - x2);
+      const glyph = directionalArrowGlyph(x3, y3, angle, 8);
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(glyph.tip.x, glyph.tip.y);
+      ctx.lineTo(glyph.base1.x, glyph.base1.y);
+      ctx.lineTo(glyph.base2.x, glyph.base2.y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    };
+
+    /** Bars Pattern (Phase 3D-8, closeout-upgraded to a real three-stage
+     * gesture): draws a faint dotted box over the captured SOURCE range
+     * (p1->p2), a thin connector to the independent DESTINATION anchor
+     * (points[0] — the third click, editable/movable on its own afterward
+     * via the generic "p3" anchor machinery), then projects the actual
+     * captured relative pattern (calc.ts's captureRelativePattern — real
+     * close-price deltas from the loaded bars, computed once at creation
+     * time and stored in settings, never regenerated from live data)
+     * forward from that destination using the source's own bar spacing.
+     * Moving the destination only ever changes WHERE the projection is
+     * drawn — it never touches the already-captured settings.pattern. */
+    const paintBarsPattern = (p1: MarketPoint, p2: MarketPoint, destination: MarketPoint, deltas: number[], barInterval: number) => {
+      const x1 = px(p1);
+      const y1 = py(p1);
+      const x2 = px(p2);
+      const y2 = py(p2);
+      const dx = px(destination);
+      const dy = py(destination);
+      if (x1 != null && y1 != null && x2 != null && y2 != null) {
+        ctx.save();
+        ctx.setLineDash([2, 3]);
+        ctx.globalAlpha = 0.5;
+        ctx.strokeRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
+        if (dx != null && dy != null) {
+          ctx.beginPath();
+          ctx.moveTo(x2, y2);
+          ctx.lineTo(dx, dy);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+      if (deltas.length < 2 || !(barInterval > 0) || dx == null || dy == null) return;
+      ctx.save();
+      ctx.setLineDash([4, 2]);
+      ctx.beginPath();
+      let started = false;
+      for (let i = 0; i < deltas.length; i++) {
+        const sx = px({ time: destination.time + i * barInterval, price: destination.price + deltas[i] });
+        const sy = py({ time: destination.time + i * barInterval, price: destination.price + deltas[i] });
+        if (sx == null || sy == null) continue;
+        if (!started) {
+          ctx.moveTo(sx, sy);
+          started = true;
+        } else ctx.lineTo(sx, sy);
+      }
+      if (started) ctx.stroke();
+      ctx.restore();
+    };
+
+    /** Ghost Feed (Phase 3D-8): a deterministic, low-opacity/dashed
+     * extension of the tool's own p1->p2 trend rate — reuses the exact
+     * same projectLineForward every Ray/Extended Line/ray-fan tool already
+     * uses. No live/future data — purely a function of p1/p2, which is
+     * what makes its "ghost" (faded) look the honest visual cue that this
+     * is a projection, not real price action. */
+    const paintGhostFeed = (p1: MarketPoint, p2: MarketPoint) => {
+      const x1 = px(p1);
+      const y1 = py(p1);
+      const x2 = px(p2);
+      const y2 = py(p2);
+      if (x1 == null || y1 == null || x2 == null || y2 == null) return;
+      const { x: ex, y: ey } = projectLineForward(x1, y1, x2, y2, host.clientWidth);
+      ctx.save();
+      ctx.setLineDash([2, 4]);
+      ctx.globalAlpha = 0.4;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(ex, ey);
+      ctx.stroke();
+      ctx.restore();
+    };
+
+    /** Sector (Phase 3D-8): a genuine pie-slice — p1 is the origin/pivot,
+     * p2 and p3 are the two radial boundary endpoints, and the arc
+     * boundary is the native canvas arc primitive between their two
+     * angles (exact geometry, not a bezier approximation). Returns the
+     * computed pixel-space sector (used by the hit-test below) so the two
+     * can never drift apart. */
+    const paintSector = (p1: MarketPoint, p2: MarketPoint, p3: MarketPoint) => {
+      const ox = px(p1);
+      const oy = py(p1);
+      const x2 = px(p2);
+      const y2 = py(p2);
+      const x3 = px(p3);
+      const y3 = py(p3);
+      if (ox == null || oy == null || x2 == null || y2 == null || x3 == null || y3 == null) return;
+      const r1 = pixelDist(ox, oy, x2, y2);
+      const r2 = pixelDist(ox, oy, x3, y3);
+      const radius = (r1 + r2) / 2;
+      const rawA1 = Math.atan2(y2 - oy, x2 - ox);
+      const rawA2 = Math.atan2(y3 - oy, x3 - ox);
+      // Deterministic sweep (Phase 3D-8 closeout): always the <=180° side
+      // between the two raw boundary angles, regardless of which anchor
+      // was placed first — see normalizeSectorSweep's own doc comment.
+      const { startAngle, endAngle } = normalizeSectorSweep(rawA1, rawA2);
+      ctx.beginPath();
+      ctx.moveTo(ox, oy);
+      ctx.lineTo(ox + radius * Math.cos(startAngle), oy + radius * Math.sin(startAngle));
+      ctx.arc(ox, oy, radius, startAngle, endAngle);
+      ctx.lineTo(ox, oy);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    };
+
     const all = draftRef.current ? [...draws, draftRef.current] : draws;
+    const pending = pendingRef.current;
     const selected = stateRef.current.selectedId;
     const handles: Array<{ x: number; y: number }> = [];
+
     for (const d of all) {
       if (d.hidden) continue;
-      const x1 = x(d.p1.logical);
-      const x2 = x(d.p2.logical);
-      const y1 = y(d.p1.price);
-      const y2 = y(d.p2.price);
+      const x1 = px(d.p1);
+      const x2 = px(d.p2);
+      const y1 = py(d.p1);
+      const y2 = py(d.p2);
       if (x1 == null || y1 == null) continue;
       const col = d.color ?? DEFAULT_DRAW_COLOR;
       const alpha = d.opacity ?? 1;
-      const lw = d.width ?? 1.5;
+      const lw = d.width ?? (d.tool === "highlighter" ? 10 : 1.5);
       ctx.save();
       ctx.strokeStyle = withAlpha(col, alpha);
-      ctx.fillStyle = withAlpha(col, alpha * 0.14);
+      const fillOpacity = (d.settings?.fillOpacity as number | undefined) ?? 0.14;
+      ctx.fillStyle = withAlpha(col, d.tool === "highlighter" ? Math.min(alpha, 0.35) : alpha * fillOpacity);
       ctx.lineWidth = lw;
+      ctx.lineCap = d.tool === "brush" || d.tool === "highlighter" ? "round" : "butt";
+      ctx.lineJoin = "round";
       ctx.setLineDash(dash(d.style, lw));
       ctx.font = "11px ui-sans-serif, system-ui";
 
       if (d.id === selected) {
-        handles.push({ x: x1, y: y1 });
-        if (x2 != null && y2 != null && d.tool !== "hline" && d.tool !== "vline")
-          handles.push({ x: x2, y: y2 });
+        if (d.tool === "polyline" || d.tool === "path" || MULTI_ANCHOR_PATTERN_TOOLS.has(d.tool)) {
+          // Every vertex gets its own handle (not just p1/p2) — Phase 3A's
+          // "each vertex has an editable anchor" requirement, reused verbatim
+          // for Phase 3D-1's chart-pattern tools. p1/p2 are points[0]/
+          // points[last], so this already covers the endpoints too; no
+          // separate p1/p2 push needed.
+          const allPts = d.points && d.points.length > 0 ? d.points : [d.p1, d.p2];
+          for (const pt of allPts) {
+            const hx = px(pt);
+            const hy = py(pt);
+            if (hx != null && hy != null) handles.push({ x: hx, y: hy });
+          }
+        } else {
+          handles.push({ x: x1, y: y1 });
+          if (x2 != null && y2 != null && !NO_ANCHOR_2_TOOLS.has(d.tool))
+            handles.push({ x: x2, y: y2 });
+          const p3 = d.points?.[0];
+          if (
+            p3 &&
+            (d.tool === "channel" ||
+              d.tool === "triangle" ||
+              d.tool === "fib-ext" ||
+              d.tool === "fib-channel" ||
+              d.tool === "fib-wedge" ||
+              d.tool === "fib-time-trend" ||
+              d.tool === "pitchfan" ||
+              d.tool === "flat-channel" ||
+              d.tool === "rotated-rect" ||
+              d.tool === "curve" ||
+              d.tool === "forecast" ||
+              d.tool === "sector" ||
+              d.tool === "bars-pattern" ||
+              PITCHFORK_TOOLS.has(d.tool))
+          ) {
+            const hx = px(p3);
+            const hy = py(p3);
+            if (hx != null && hy != null) handles.push({ x: hx, y: hy });
+          }
+        }
       }
 
       if (d.tool === "vline") {
         ctx.beginPath();
         ctx.moveTo(x1, 0);
         ctx.lineTo(x1, host.clientHeight);
+        ctx.stroke();
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "crossline") {
+        // Both a full horizontal AND full vertical line through the one
+        // anchor — Horizontal Line's and Vertical Line's own render code
+        // combined, not a third geometry.
+        ctx.beginPath();
+        ctx.moveTo(x1, 0);
+        ctx.lineTo(x1, host.clientHeight);
+        ctx.moveTo(0, y1);
+        ctx.lineTo(host.clientWidth, y1);
         ctx.stroke();
         ctx.restore();
         continue;
@@ -1527,72 +3150,817 @@ export function StudioChart({
         ctx.restore();
         continue;
       }
-
-
-
-      if (d.tool === "hline") {
+      if (d.tool === "content-icon") {
+        const iconKey = (d.settings?.icon as string | undefined) ?? "star";
+        const size = GLYPH_ICON_PX[(d.settings?.fontSize as string) ?? "normal"] ?? 28;
+        drawIconGlyph(ctx, iconKey, x1, y1, size, col, alpha);
+        if (d.text) drawTextLabel(ctx, d, x1 + size / 2 + 6, y1 + 4, col, alpha);
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "emoji") {
+        // A native unicode emoji character is just text — reuses
+        // drawTextLabel's exact font/background/border machinery via a
+        // bigger size scale (GLYPH_ICON_PX, not LABEL_FONT_PX) so it reads
+        // as an icon-sized glyph rather than a small text label. Falls back
+        // to a default glyph when the user declined the creation prompt, so
+        // a fresh Emoji drawing is never invisible.
+        const size = GLYPH_ICON_PX[(d.settings?.fontSize as string) ?? "normal"] ?? 28;
+        ctx.setLineDash([]);
+        ctx.font = `${size}px ui-sans-serif, system-ui, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji"`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = withAlpha(col, alpha);
+        ctx.fillText(d.text || "🙂", x1, y1);
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "pin" || d.tool === "comment" || d.tool === "signpost" || d.tool === "flag-mark") {
+        // Phase 3D-7: one shared glyph function, one shape per tool id —
+        // see drawAnnotationGlyph's own doc comment.
+        const shape: AnnotationGlyphShape = d.tool === "pin" ? "pin" : d.tool === "comment" ? "comment" : d.tool === "signpost" ? "signpost" : "flag";
+        drawAnnotationGlyph(ctx, shape, x1, y1, col, alpha);
+        if (d.text) drawTextLabel(ctx, d, x1 + 16, y1 - 4, col, alpha);
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "price-note" || d.tool === "price-label") {
+        // The displayed price is DERIVED from d.p1.price fresh every
+        // render — never a persisted formatted string — so it stays
+        // correct through pan/zoom/reload/anchor movement automatically.
+        // The optional user text is appended, still flowing through the
+        // exact same shared drawTextLabel every other annotation uses.
+        if (d.tool === "price-note") drawAnnotationGlyph(ctx, "note", x1, y1, col, alpha);
+        const priceStr = fmt(d.p1.price);
+        const combinedText = d.text ? `${priceStr} — ${d.text}` : priceStr;
+        drawTextLabel(ctx, { ...d, text: combinedText }, x1 + (d.tool === "price-note" ? 10 : 6), y1 - 4, col, alpha);
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "table") {
+        const rows = (d.settings?.tableRows as string[][] | undefined) ?? [
+          ["", ""],
+          ["", ""],
+        ];
+        const cellW = 60;
+        const cellH = 20;
+        ctx.setLineDash([]);
+        ctx.font = "11px ui-sans-serif, system-ui";
+        ctx.strokeStyle = withAlpha(col, alpha);
+        ctx.fillStyle = withAlpha(col, alpha);
+        ctx.lineWidth = 1;
+        for (let r = 0; r < rows.length; r++) {
+          for (let c = 0; c < rows[r].length; c++) {
+            const cx = x1 + c * cellW;
+            const cy = y1 + r * cellH;
+            ctx.strokeRect(cx, cy, cellW, cellH);
+            const val = rows[r][c] ?? "";
+            if (val) ctx.fillText(val, cx + 4, cy + cellH - 6);
+          }
+        }
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "callout") {
+        const cx2 = px(d.p2);
+        const cy2 = py(d.p2);
+        if (cx2 != null && cy2 != null) {
+          // The pointer line is recomputed from BOTH live anchors every
+          // render, so editing/moving either one keeps it correctly
+          // attached — never a persisted/cached line.
+          ctx.setLineDash([]);
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(cx2, cy2);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(x1, y1, 2.5, 0, Math.PI * 2);
+          ctx.fill();
+          drawTextLabel(ctx, d, cx2 + 4, cy2, col, alpha);
+        }
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "arrow-marker") {
+        // Reuses the exact "triangle glyph at one anchor" primitive
+        // Arrow Up/Down use just below, with a diagonal orientation
+        // (matching this tool's own toolbar icon) as the one parameter
+        // that varies — genuinely distinct from both Arrow Up/Down (which
+        // point straight up/down) and the 2-anchor Arrow (a line with an
+        // arrowhead, not a single glyph).
+        const size = 6 + lw * 2;
+        const glyph = directionalArrowGlyph(x1, y1, -Math.PI / 4, size);
+        ctx.setLineDash([]);
+        ctx.fillStyle = withAlpha(col, alpha);
         ctx.beginPath();
-        ctx.moveTo(0, y1);
+        ctx.moveTo(glyph.tip.x, glyph.tip.y);
+        ctx.lineTo(glyph.base1.x, glyph.base1.y);
+        ctx.lineTo(glyph.base2.x, glyph.base2.y);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "arrow-up" || d.tool === "arrow-down") {
+        // Single-anchor directional glyph — width doubles as the glyph's
+        // size (matching how Highlighter already overloads width as its own
+        // stroke thickness, rather than adding a second "size" field).
+        const size = 6 + lw * 2;
+        const dir = d.tool === "arrow-up" ? -1 : 1;
+        ctx.setLineDash([]);
+        ctx.fillStyle = withAlpha(col, alpha);
+        ctx.beginPath();
+        ctx.moveTo(x1, y1 - dir * size);
+        ctx.lineTo(x1 - size * 0.6, y1 + dir * size * 0.4);
+        ctx.lineTo(x1 + size * 0.6, y1 + dir * size * 0.4);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "vwap") {
+        const inst = stateRef.current.instrument;
+        void inst;
+        const series = anchoredVwap(stateRef.current.bars, d.p1.time);
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        let started = false;
+        for (const pt of series) {
+          const sx = geometryReady ? logicalToPixel(ts, toLogicalD(pt.time), host.clientWidth) : null;
+          const sy = y(pt.value);
+          if (sx == null || sy == null) continue;
+          if (!started) {
+            ctx.moveTo(sx, sy);
+            started = true;
+          } else ctx.lineTo(sx, sy);
+        }
+        if (started) ctx.stroke();
+        // Anchor marker + label are toggleable (settings capability
+        // `anchorLabel`) — default on, matching the always-on behavior this
+        // tool shipped with in Phase 1.
+        if (d.settings?.showAnchorLabel !== false) {
+          ctx.fillStyle = withAlpha(col, alpha);
+          ctx.beginPath();
+          ctx.arc(x1, y1, 4, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillText("VWAP anchor", x1 + 8, y1 - 6);
+        }
+        ctx.restore();
+        continue;
+      }
+
+      if (d.tool === "vp-fixed" || d.tool === "vp-anchored") {
+        // Fixed Range / Anchored Volume Profile (Phase 3B): a horizontal
+        // volume histogram + POC/VAH/VAL over the REAL loaded bars in the
+        // drawing's range — see src/lib/drawing/volumeProfile.ts, which
+        // reuses stdlib.ts's `volumeProfile()` bucket math and
+        // volumeProfileMath.ts's `computeValueArea`, the exact same engines
+        // the existing Volume Profile widget already uses. Memoized (see
+        // getVolumeProfileResult above) so this never re-bins on every one
+        // of drawOverlay's 60fps frames — only when the range/anchor, bars,
+        // rows, or Value Area % actually change.
+        const bars = stateRef.current.bars;
+        const result = getVolumeProfileResult(d, bars);
+        const lastBarTime = bars.length ? bars[bars.length - 1].time : d.p1.time;
+        const rightTime = d.tool === "vp-anchored" ? lastBarTime : d.p2.time;
+        const leftTime = d.p1.time;
+        const xa = geometryReady ? logicalToPixel(ts, toLogicalD(leftTime), host.clientWidth) : null;
+        const xb = geometryReady ? logicalToPixel(ts, toLogicalD(rightTime), host.clientWidth) : null;
+        ctx.setLineDash([]);
+
+        if (xa == null || xb == null || result.bins.length === 0) {
+          // Safe empty/loading state — NEVER fabricate a result. Either bars
+          // haven't loaded yet, or genuinely no bar falls inside the
+          // selected range/anchor (e.g. dragged past the loaded edge, or an
+          // anchor placed after the last loaded bar).
+          if (xa != null && xb != null) {
+            const top = Math.max(d.p1.price, d.p2.price);
+            const bottom = Math.min(d.p1.price, d.p2.price);
+            const yTop = y(top);
+            const yBottom = y(bottom);
+            if (yTop != null && yBottom != null) {
+              const boxLeft = Math.min(xa, xb);
+              const boxTop = Math.min(yTop, yBottom);
+              ctx.save();
+              ctx.strokeStyle = withAlpha(col, Math.min(alpha, 0.4));
+              ctx.setLineDash([4, 3]);
+              ctx.lineWidth = 1;
+              ctx.strokeRect(boxLeft, boxTop, Math.max(1, Math.abs(xb - xa)), Math.max(1, Math.abs(yBottom - yTop)));
+              ctx.setLineDash([]);
+              ctx.fillStyle = withAlpha(col, Math.min(alpha, 0.8));
+              ctx.font = "10px ui-sans-serif, system-ui";
+              ctx.fillText(bars.length === 0 ? "Loading bars…" : "No bars in range", boxLeft + 4, boxTop + 12);
+              ctx.restore();
+            }
+          }
+          ctx.restore();
+          continue;
+        }
+
+        const showHistogram = d.settings?.vpShowHistogram !== false;
+        const showPoc = d.settings?.vpShowPoc !== false;
+        const showVah = d.settings?.vpShowVah !== false;
+        const showVal = d.settings?.vpShowVal !== false;
+        const showLabels = d.settings?.vpShowLabels !== false;
+        const widthPct = Math.min(100, Math.max(5, Number(d.settings?.vpWidthPct) || 60)) / 100;
+        const placement = d.settings?.vpPlacement === "left" ? "left" : "right";
+        const levelDashed = d.settings?.vpLevelLineStyle !== "solid";
+        const pocColor = (d.settings?.vpPocColor as string | undefined) ?? "#e6b800";
+        const vahColor = (d.settings?.vpVahColor as string | undefined) ?? "#22c55e";
+        const valColor = (d.settings?.vpValColor as string | undefined) ?? "#ef4444";
+        // Histogram density — a plain 0.14 "background fill" default (every
+        // other `fill`-capable shape's default) would make the actual
+        // content of this tool nearly invisible, so the settings popover
+        // seeds a higher default (0.5) specifically for volume-profile
+        // tools; this fallback just mirrors that same default, in case a
+        // drawing somehow reaches here with no settings at all yet.
+        const fillOpacityVp = (d.settings?.fillOpacity as number | undefined) ?? 0.5;
+
+        const left = Math.min(xa, xb);
+        const right = Math.max(xa, xb);
+        // `rangeWidth` is the box's true pixel width for the drawing's actual
+        // selected market-time range — kept exactly as before for the outline
+        // rectangle and hit-test region below (never touched by the width fix
+        // that follows).
+        const rangeWidth = Math.max(1, right - left);
+        const maxVolume = result.bins.reduce((m, b) => Math.max(m, b.volume), 0);
+
+        // Histogram VISUAL width (Phase 3B follow-up): TradingView's
+        // convention draws the histogram at an independently-controlled
+        // width, not stretched across however wide the selected time range
+        // happens to be on screen. Scaling bar length against `rangeWidth`
+        // (as this used to do) meant Width % was really "% of the range box",
+        // so a wide time selection produced a wide-looking profile and a
+        // narrow one a barely-visible sliver, regardless of the Width %
+        // value. Bar LENGTH now scales against this chart pane's own pixel
+        // width instead — a fixed visual reference that doesn't grow/shrink
+        // just because the user dragged a wider or narrower time window —
+        // while the calculation range, anchors, outline box, and hit-test
+        // region above all continue to use the real market-time range
+        // unchanged. `host` is this chart instance's own container, so this
+        // reference is naturally per-chart-pane (never the window or another
+        // chart's pane) in multi-chart grid layouts.
+        //
+        // This is a deliberate middle ground, not full TradingView parity:
+        // true parity would need the histogram's rendered footprint to be
+        // pixel-exact regardless of pan/zoom, which would require converting
+        // anchors (or at least a width value) into persisted pixel space —
+        // breaking this drawing framework's "anchors are always market
+        // coordinates, never pixels" invariant (see geometry.ts's module
+        // doc) and this tool's own persistence contract (market-time range +
+        // settings only, never raw screen coordinates). Anchoring the
+        // reference to the chart pane's CSS width sidesteps that: it's
+        // recomputed fresh from the live DOM on every frame, exactly like
+        // `host.clientWidth` is already used elsewhere in this same function
+        // for time->pixel conversion, so nothing new is persisted and pan/
+        // zoom/resize all naturally recompute it.
+        const widthRefPx = host.clientWidth * 0.5;
+
+        if (showHistogram && maxVolume > 0) {
+          ctx.save();
+          ctx.setLineDash([]);
+          for (let i = 0; i < result.bins.length; i++) {
+            const bin = result.bins[i];
+            const yTopPx = y(bin.top);
+            const yBottomPx = y(bin.bottom);
+            if (yTopPx == null || yBottomPx == null) continue;
+            const barLen = Math.max(1, (bin.volume / maxVolume) * widthRefPx * widthPct);
+            const isPoc = i === result.valueArea.pocIndex;
+            const withinVA = bin.bottom >= result.valueArea.val - 1e-9 && bin.top <= result.valueArea.vah + 1e-9;
+            const barColor = isPoc ? pocColor : col;
+            const barAlpha = (isPoc ? Math.min(1, fillOpacityVp + 0.35) : withinVA ? fillOpacityVp : fillOpacityVp * 0.5) * alpha;
+            ctx.fillStyle = withAlpha(barColor, barAlpha);
+            const barX = placement === "right" ? right - barLen : left;
+            const barTop = Math.min(yTopPx, yBottomPx);
+            const barH = Math.max(1, Math.abs(yBottomPx - yTopPx));
+            ctx.fillRect(barX, barTop, barLen, barH);
+          }
+          ctx.restore();
+        }
+
+        // Faint outline of the profile's actual computed range (the real
+        // low..high of the included bars, not the user's raw click prices) —
+        // shows exactly which bars fed the calculation, and doubles as the
+        // whole-object drag/select hit region (see hitTest's `vp-fixed` /
+        // `vp-anchored` body block above, which computes the identical box).
+        const outlineTop = y(result.bins[result.bins.length - 1].top);
+        const outlineBottom = y(result.bins[0].bottom);
+        if (outlineTop != null && outlineBottom != null) {
+          ctx.save();
+          ctx.strokeStyle = withAlpha(col, Math.min(alpha, 0.35));
+          ctx.setLineDash([3, 3]);
+          ctx.lineWidth = 1;
+          ctx.strokeRect(left, Math.min(outlineTop, outlineBottom), rangeWidth, Math.max(1, Math.abs(outlineBottom - outlineTop)));
+          ctx.restore();
+        }
+
+        const drawLevelLine = (levelPrice: number, color: string, label: string) => {
+          const ly = y(levelPrice);
+          if (ly == null) return;
+          ctx.save();
+          ctx.strokeStyle = withAlpha(color, alpha);
+          ctx.setLineDash(levelDashed ? [5, 3] : []);
+          ctx.lineWidth = 1.25;
+          ctx.beginPath();
+          ctx.moveTo(left, ly);
+          ctx.lineTo(right, ly);
+          ctx.stroke();
+          if (showLabels) {
+            ctx.setLineDash([]);
+            ctx.fillStyle = withAlpha(color, alpha);
+            ctx.font = "10px ui-sans-serif, system-ui";
+            ctx.fillText(`${label} ${fmt(levelPrice)}`, right + 4, ly - 3);
+          }
+          ctx.restore();
+        };
+        if (showPoc && result.valueArea.pocIndex >= 0) drawLevelLine(result.valueArea.poc, pocColor, "POC");
+        if (showVah) drawLevelLine(result.valueArea.vah, vahColor, "VAH");
+        if (showVal) drawLevelLine(result.valueArea.val, valColor, "VAL");
+
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "brush" || d.tool === "highlighter") {
+        const pts = d.points && d.points.length > 0 ? d.points : [d.p1, d.p2];
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        let started = false;
+        for (const pt of pts) {
+          const sx = px(pt);
+          const sy = py(pt);
+          if (sx == null || sy == null) continue;
+          if (!started) {
+            ctx.moveTo(sx, sy);
+            started = true;
+          } else ctx.lineTo(sx, sy);
+        }
+        if (started) ctx.stroke();
+        ctx.restore();
+        continue;
+      }
+
+      if (d.tool === "polyline" || d.tool === "path") {
+        // Polyline/Path (Phase 3A): both store their full ordered vertex
+        // chain in `points` (see anchorsOf() above) and are rendered as one
+        // continuous line through every vertex — Path's ONE difference is
+        // closing the loop and filling it (driven by its `fill` capability
+        // flag in registry.ts, not a second render engine). Kept as its own
+        // early `continue` branch (mirroring Brush/Highlighter just above)
+        // rather than folded into the `x2 != null` shape chain below, since
+        // that chain only ever looks at p1/p2, never the full `points` array.
+        const pts = d.points && d.points.length > 0 ? d.points : [d.p1, d.p2];
+        ctx.beginPath();
+        let started = false;
+        for (const pt of pts) {
+          const sx = px(pt);
+          const sy = py(pt);
+          if (sx == null || sy == null) continue;
+          if (!started) {
+            ctx.moveTo(sx, sy);
+            started = true;
+          } else ctx.lineTo(sx, sy);
+        }
+        if (started) {
+          if (d.tool === "path") {
+            ctx.closePath();
+            ctx.fill();
+          }
+          ctx.stroke();
+        }
+        ctx.restore();
+        continue;
+      }
+
+      if (d.tool === "double-curve") {
+        // Intercepts BEFORE the generic MULTI_ANCHOR_PATTERN_TOOLS branch
+        // below — Double Curve shares that primitive's anchor storage/
+        // per-vertex editing, but needs its own cubic-Bezier render, not
+        // the generic zigzag paintLabeledPattern.
+        const anchors = d.points && d.points.length >= 4 ? d.points : null;
+        if (anchors) {
+          const p1x = px(anchors[0]);
+          const p1y = py(anchors[0]);
+          const c1x = px(anchors[1]);
+          const c1y = py(anchors[1]);
+          const c2x = px(anchors[2]);
+          const c2y = py(anchors[2]);
+          const p2x = px(anchors[3]);
+          const p2y = py(anchors[3]);
+          if (p1x != null && p1y != null && c1x != null && c1y != null && c2x != null && c2y != null && p2x != null && p2y != null) {
+            ctx.beginPath();
+            ctx.moveTo(p1x, p1y);
+            ctx.bezierCurveTo(c1x, c1y, c2x, c2y, p2x, p2y);
+            ctx.stroke();
+          }
+        }
+        ctx.restore();
+        continue;
+      }
+
+      if (MULTI_ANCHOR_PATTERN_TOOLS.has(d.tool)) {
+        // Phase 3D-1 chart-pattern tools: same "full ordered vertex array
+        // lives in `points`" convention as Polyline/Path just above, painted
+        // through the one shared paintLabeledPattern instead of a per-tool
+        // renderer (see its own doc comment for why the connecting segments
+        // aren't always a plain zigzag).
+        const anchors = d.points && d.points.length > 0 ? d.points : [d.p1, d.p2];
+        paintLabeledPattern(d.tool, anchors, d.settings?.showAnchorLabel !== false, col);
+        ctx.restore();
+        continue;
+      }
+
+      if (PITCHFORK_TOOLS.has(d.tool)) {
+        const p3 = d.points?.[0];
+        if (p3) paintPitchfork(d.p1, d.p2, p3, pitchforkVariantOf(d.tool));
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "regression-trend") {
+        paintRegressionTrend(d.p1, d.p2, (d.settings?.regressionDeviations as number | undefined) ?? 2);
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "forecast") {
+        const p3 = d.points?.[0];
+        if (p3) paintForecast(d.p1, d.p2, p3);
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "bars-pattern") {
+        const pattern = (d.settings?.pattern as number[] | undefined) ?? [];
+        const barInterval = (d.settings?.barInterval as number | undefined) ?? 0;
+        const destination = d.points?.[0] ?? d.p2;
+        paintBarsPattern(d.p1, d.p2, destination, pattern, barInterval);
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "ghost-feed") {
+        paintGhostFeed(d.p1, d.p2);
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "sector") {
+        const p3 = d.points?.[0];
+        if (p3) paintSector(d.p1, d.p2, p3);
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "arc") {
+        // Genuine quadratic-Bezier curve, not a straight line — the bulge
+        // is a fixed fraction of the chord, perpendicular to it, recomputed
+        // fresh every render from p1/p2 (never persisted): a 2-anchor tool
+        // has no third point to shape the bend with (unlike Curve below).
+        if (x1 != null && y1 != null && x2 != null && y2 != null) {
+          const mx = (x1 + x2) / 2;
+          const my = (y1 + y2) / 2;
+          const dx = x2 - x1;
+          const dy = y2 - y1;
+          const len = Math.hypot(dx, dy) || 1;
+          const nx = -dy / len;
+          const ny = dx / len;
+          const bulge = len * 0.15;
+          const cx = mx + nx * bulge;
+          const cy = my + ny * bulge;
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.quadraticCurveTo(cx, cy, x2, y2);
+          ctx.stroke();
+        }
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "curve") {
+        // Quadratic Bezier from p1 to p2 with points[0] as a genuinely
+        // user-editable control point — one real bend, independently
+        // draggable (via the existing generic "p3" anchor), unlike Arc's
+        // fixed bulge above.
+        const p3 = d.points?.[0];
+        if (x1 != null && y1 != null && x2 != null && y2 != null && p3) {
+          const cx = px(p3);
+          const cy = py(p3);
+          if (cx != null && cy != null) {
+            ctx.beginPath();
+            ctx.moveTo(x1, y1);
+            ctx.quadraticCurveTo(cx, cy, x2, y2);
+            ctx.stroke();
+          }
+        }
+        ctx.restore();
+        continue;
+      }
+
+      if (d.tool === "cyclic-lines" || d.tool === "time-cycles" || d.tool === "sine-line") {
+        // Phase 3D-3 Cycles: plain p1/p2 tools (no `points` array involved)
+        // rendered through their own shared repeating-interval / parametric
+        // helpers just above — kept as their own early `continue` branch
+        // since none of them fit the generic `x2 != null` two-point-line
+        // shape chain below (a set of independent vertical lines, or a
+        // multi-sample curve, not one straight segment).
+        if (d.tool === "cyclic-lines") paintCyclicLines(d.p1, d.p2);
+        else if (d.tool === "time-cycles") paintTimeCycles(d.p1, d.p2);
+        else paintSineLine(d.p1, d.p2);
+        ctx.restore();
+        continue;
+      }
+
+      if (d.tool === "gann-box" || d.tool === "gann-square" || d.tool === "gann-square-fixed") {
+        // Phase 3D-4 Gann grid tools: same "early continue, own renderer"
+        // shape as the Cycles branch above — a multi-line grid isn't the
+        // generic `x2 != null` single-segment shape chain below.
+        paintGannGrid(d.p1, d.p2);
+        ctx.restore();
+        continue;
+      }
+      if (d.tool === "gann-fan") {
+        const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? GANN_FAN_DEFAULT_LEVELS;
+        paintGannFan(d.p1, d.p2, levels, d.settings?.fibShowLabel !== false, col);
+        ctx.restore();
+        continue;
+      }
+
+      if (d.tool === "hline" || d.tool === "hray") {
+        const fromX = d.tool === "hray" ? x1 : 0;
+        ctx.beginPath();
+        ctx.moveTo(fromX, y1);
         ctx.lineTo(host.clientWidth, y1);
         ctx.stroke();
         ctx.fillStyle = withAlpha(col, alpha);
-
-        ctx.fillText(fmt(d.p1.price), 6, y1 - 4);
+        ctx.fillText(fmt(d.p1.price), Math.max(6, fromX + 4), y1 - 4);
       } else if (x2 != null && y2 != null) {
-        if (d.tool === "trend" || d.tool === "ray" || d.tool === "measure") {
+        if (d.tool === "trend" || d.tool === "ray" || d.tool === "extended" || d.tool === "info-line" || d.tool === "trend-angle" || d.tool === "measure" || d.tool === "price-range" || d.tool === "date-range" || d.tool === "ruler") {
+          let sx = x1;
+          let sy = y1;
           let ex = x2;
           let ey = y2;
           if (d.tool === "ray") {
-            const dx = x2 - x1;
-            const dy = y2 - y1;
-            const scale = dx === 0 ? 1 : (host.clientWidth - x1) / dx;
-            if (scale > 1) {
-              ex = x1 + dx * scale;
-              ey = y1 + dy * scale;
-            }
+            ({ x: ex, y: ey } = projectLineForward(x1, y1, x2, y2, host.clientWidth));
+          } else if (d.tool === "extended") {
+            // Extends BOTH directions (past p1 and past p2) — the one
+            // difference from Ray, which only ever extends forward. Reuses
+            // the same pure projection helpers Ray's own extension uses
+            // (src/lib/drawing/geometry.ts) instead of a second copy of the
+            // scale math.
+            ({ x: sx, y: sy } = projectLineBackward(x1, y1, x2, y2));
+            ({ x: ex, y: ey } = projectLineForward(x1, y1, x2, y2, host.clientWidth));
           }
           ctx.beginPath();
-          ctx.moveTo(x1, y1);
+          ctx.moveTo(sx, sy);
           ctx.lineTo(ex, ey);
           ctx.stroke();
-          if (d.tool === "measure") {
+          if (d.tool === "measure" || d.tool === "price-range" || d.tool === "date-range" || d.tool === "ruler") {
+            // Ruler (Phase 3D-13) is a genuine duplicate-by-design of
+            // Date + Price Range — same combined price+pct+bars+duration
+            // label (the final branch of the ternary below, since "ruler"
+            // matches neither "price-range" nor "date-range") — reusing
+            // this exact branch instead of a second copy is the whole
+            // point: no distinct geometry exists to justify one.
+            //
+            // Both measurements are the SAME shared pure calc.ts functions
+            // Date + Price Range also calls below — never a third inline
+            // copy of either calculation.
+            const inst = stateRef.current.instrument;
+            const tick = inst?.tickSize && inst.tickSize > 0 ? inst.tickSize : undefined;
+            const priceRange = computePriceRange(d.p1.price, d.p2.price, tick);
+            const dateRange = computeDateRange(stateRef.current.bars, d.p1.time, d.p2.time);
+            const barsText = dateRange.barCount != null ? `${dateRange.barCount} bars` : null;
+            const label =
+              d.tool === "price-range"
+                ? `${fmt(priceRange.startPrice)} → ${fmt(priceRange.endPrice)}  ${fmt(priceRange.diff)} (${priceRange.pct.toFixed(2)}%)${priceRange.ticks != null ? ` · ${priceRange.ticks} ticks` : ""}`
+                : d.tool === "date-range"
+                  ? `${barsText ?? ""}${barsText ? " · " : ""}${fmtDuration(dateRange.elapsedSeconds)}`
+                  : `${fmt(priceRange.diff)} (${priceRange.pct.toFixed(2)}%) · ${barsText ?? "? bars"} · ${fmtDuration(dateRange.elapsedSeconds)}`;
+            ctx.fillStyle = priceRange.diff >= 0 ? "#22c55e" : "#ef4444";
+            ctx.fillText(label, x2 + 6, y2 - 6);
+          }
+          if (d.tool === "info-line" || d.tool === "trend-angle") {
+            // Genuine angle/slope, computed from the CURRENT pixel scale
+            // (not a fixed market-coordinate constant) — the same line at
+            // a different zoom level has a different on-screen angle,
+            // which is the correct, expected behavior for this tool (it
+            // describes what the line looks like right now, not an
+            // invariant property of the two anchors).
+            const angleDeg = Math.atan2(y1 - y2, x2 - x1) * (180 / Math.PI);
             const diff = d.p2.price - d.p1.price;
-            const pct = (diff / d.p1.price) * 100;
-            const barsSpan = Math.round(d.p2.logical - d.p1.logical);
+            const pct = d.p1.price !== 0 ? (diff / d.p1.price) * 100 : 0;
+            const barsSpan = Math.round(toLogicalD(d.p2.time) - toLogicalD(d.p1.time));
+            const label =
+              d.tool === "trend-angle" ? `${angleDeg.toFixed(2)}°` : `${fmt(diff)} (${pct.toFixed(2)}%) · ${Math.abs(barsSpan)} bars · ${angleDeg.toFixed(1)}°`;
             ctx.fillStyle = diff >= 0 ? "#22c55e" : "#ef4444";
-            ctx.fillText(
-              `${fmt(diff)} (${pct.toFixed(2)}%) · ${barsSpan} bars`,
-              x2 + 6,
-              y2 - 6,
-            );
+            ctx.fillText(label, x2 + 6, y2 - 6);
           }
         } else if (d.tool === "rect") {
-          ctx.fillRect(
-            Math.min(x1, x2),
-            Math.min(y1, y2),
-            Math.abs(x2 - x1),
-            Math.abs(y2 - y1),
-          );
-          ctx.strokeRect(
-            Math.min(x1, x2),
-            Math.min(y1, y2),
-            Math.abs(x2 - x1),
-            Math.abs(y2 - y1),
-          );
-        } else if (d.tool === "fib") {
-          const range = d.p2.price - d.p1.price;
-          for (const lvl of FIB_LEVELS) {
-            const p = d.p1.price + range * lvl;
-            const py = y(p);
-            if (py == null) continue;
-            ctx.strokeStyle = "rgba(230,184,0,0.5)";
-            ctx.beginPath();
-            ctx.moveTo(Math.min(x1, x2), py);
-            ctx.lineTo(Math.max(x1, x2), py);
-            ctx.stroke();
-            ctx.fillStyle = "rgba(230,184,0,0.9)";
-            ctx.fillText(`${(lvl * 100).toFixed(1)}%  ${fmt(p)}`, Math.max(x1, x2) + 4, py - 2);
+          ctx.fillRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
+          ctx.strokeRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
+        } else if (d.tool === "image") {
+          // Phase 3D-14: the SAME bounding-box geometry as Rectangle just
+          // above (p1/p2 are its two opposite corners) — only the fill is
+          // different (a real image instead of a flat color), reusing
+          // Rectangle's own body/corner hit-test and resize/move behavior
+          // with zero new geometry (see the shared hit-test tuple below).
+          const boxX = Math.min(x1, x2);
+          const boxY = Math.min(y1, y2);
+          const boxW = Math.abs(x2 - x1);
+          const boxH = Math.abs(y2 - y1);
+          const imagePath = d.settings?.imagePath as string | undefined;
+          const entry = imagePath ? ensureChartImageLoaded(imagePath) : null;
+          ctx.setLineDash([]);
+          if (entry?.status === "loaded" && entry.img) {
+            ctx.drawImage(entry.img, boxX, boxY, boxW, boxH);
+            ctx.lineWidth = 1;
+            ctx.strokeStyle = withAlpha(col, alpha * 0.6);
+            ctx.strokeRect(boxX, boxY, boxW, boxH);
+          } else {
+            // Loading, errored, or (should never happen — only ever
+            // created with a real path) missing path: a visible but
+            // unobtrusive placeholder box rather than silently rendering
+            // nothing, per the phase brief.
+            const isError = !imagePath || entry?.status === "error";
+            ctx.strokeStyle = withAlpha(isError ? "#ef4444" : col, alpha);
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([4, 3]);
+            ctx.strokeRect(boxX, boxY, boxW, boxH);
+            ctx.setLineDash([]);
+            if (boxW > 44 && boxH > 16) {
+              ctx.fillStyle = withAlpha(isError ? "#ef4444" : col, alpha);
+              ctx.font = "11px ui-sans-serif, system-ui";
+              ctx.textAlign = "center";
+              ctx.textBaseline = "middle";
+              ctx.fillText(isError ? "Image unavailable" : "Loading…", boxX + boxW / 2, boxY + boxH / 2);
+            }
           }
+        } else if (d.tool === "circle" || d.tool === "ellipse") {
+          // Ellipse (Phase 3A) is a DISTINCT tool id from Circle but reuses
+          // this exact free-drag geometry 1:1, per registry.ts's comment —
+          // both anchors define a bounding box, rx/ry are that box's
+          // half-width/half-height. Nothing here needs to branch on which
+          // of the two it is.
+          const cx = (x1 + x2) / 2;
+          const cy = (y1 + y2) / 2;
+          const rx = Math.abs(x2 - x1) / 2;
+          const ry = Math.abs(y2 - y1) / 2;
+          ctx.beginPath();
+          ctx.ellipse(cx, cy, Math.max(1, rx), Math.max(1, ry), 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        } else if (d.tool === "triangle") {
+          const p3 = d.points?.[0];
+          const x3 = p3 ? px(p3) : null;
+          const y3 = p3 ? py(p3) : null;
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x2, y2);
+          if (x3 != null && y3 != null) ctx.lineTo(x3, y3);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+        } else if (d.tool === "channel") {
+          const p3 = d.points?.[0];
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x2, y2);
+          ctx.stroke();
+          if (p3) {
+            const x3 = px(p3);
+            const y3 = py(p3);
+            if (x3 != null && y3 != null) {
+              const rail2 = parallelChannelSecondRail(x1, y1, x2, y2, x3, y3);
+              ctx.beginPath();
+              ctx.moveTo(rail2.x1, rail2.y1);
+              ctx.lineTo(rail2.x2, rail2.y2);
+              ctx.stroke();
+              // subtle fill between the two rails
+              ctx.save();
+              ctx.globalAlpha = 0.08;
+              ctx.beginPath();
+              ctx.moveTo(x1, y1);
+              ctx.lineTo(x2, y2);
+              ctx.lineTo(rail2.x2, rail2.y2);
+              ctx.lineTo(rail2.x1, rail2.y1);
+              ctx.closePath();
+              ctx.fill();
+              ctx.restore();
+            }
+          }
+        } else if (d.tool === "flat-channel") {
+          paintFlatChannel(x1, y1, x2, y2, d.points?.[0]);
+        } else if (d.tool === "rotated-rect") {
+          // The SAME shared perpendicular-offset primitive Parallel
+          // Channel/Flat Top-Bottom use, but CLOSED into a 4-corner
+          // quadrilateral instead of two open rails — what gives this its
+          // genuine oriented/rotated geometry, distinct from the
+          // axis-aligned Rectangle.
+          const p3 = d.points?.[0];
+          if (p3) {
+            const x3 = px(p3);
+            const y3 = py(p3);
+            if (x3 != null && y3 != null) {
+              const rail2 = parallelChannelSecondRail(x1, y1, x2, y2, x3, y3);
+              ctx.beginPath();
+              ctx.moveTo(x1, y1);
+              ctx.lineTo(x2, y2);
+              ctx.lineTo(rail2.x2, rail2.y2);
+              ctx.lineTo(rail2.x1, rail2.y1);
+              ctx.closePath();
+              ctx.fill();
+              ctx.stroke();
+            }
+          }
+        } else if (d.tool === "fib") {
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? DEFAULT_FIB_LEVELS;
+          const computed = computeFibLevels(d.p1.price, d.p2.price, levels.filter((l) => l.enabled !== false));
+          const extendRight = Boolean(d.settings?.extendRight);
+          // Label/price text visibility — two independent toggles (settings
+          // capability `levels`), both default on to match Phase 1's always-
+          // shown text exactly.
+          const showLabel = d.settings?.fibShowLabel !== false;
+          const showPrice = d.settings?.fibShowPrice !== false;
+          const leftX = Math.min(x1, x2);
+          const rightX = extendRight ? host.clientWidth : Math.max(x1, x2);
+          for (const lvl of computed) {
+            const levelY = y(lvl.price);
+            if (levelY == null) continue;
+            ctx.strokeStyle = withAlpha(lvl.color ?? col, 0.5);
+            ctx.beginPath();
+            ctx.moveTo(leftX, levelY);
+            ctx.lineTo(rightX, levelY);
+            ctx.stroke();
+            if (showLabel || showPrice) {
+              const parts = [showLabel ? `${(lvl.value * 100).toFixed(1)}%` : null, showPrice ? fmt(lvl.price) : null].filter(Boolean);
+              ctx.fillStyle = withAlpha(lvl.color ?? col, 0.9);
+              ctx.fillText(parts.join("  "), rightX + 4, levelY - 2);
+            }
+          }
+        } else if (d.tool === "fib-ext") {
+          const p3 = d.points?.[0];
+          if (p3) {
+            const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+            paintFibExtension(
+              d.p1,
+              d.p2,
+              p3,
+              levels,
+              Boolean(d.settings?.extendRight),
+              d.settings?.fibShowLabel !== false,
+              d.settings?.fibShowPrice !== false,
+              col,
+            );
+          }
+        } else if (d.tool === "fib-channel") {
+          const p3 = d.points?.[0];
+          if (p3) {
+            const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+            paintFibChannel(
+              d.p1,
+              d.p2,
+              p3,
+              levels,
+              (d.settings?.fillOpacity as number | undefined) ?? 0.08,
+              d.settings?.fibShowLabel !== false,
+              d.settings?.fibShowPrice !== false,
+              col,
+            );
+          }
+        } else if (d.tool === "fib-wedge") {
+          const p3 = d.points?.[0];
+          if (p3) {
+            const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+            paintFibWedge(
+              d.p1,
+              d.p2,
+              p3,
+              levels,
+              (d.settings?.fillOpacity as number | undefined) ?? 0.08,
+              d.settings?.fibShowLabel !== false,
+              d.settings?.fibShowPrice !== false,
+              col,
+            );
+          }
+        } else if (d.tool === "fib-time") {
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+          paintFibTimeZone(d.p1.time, d.p2.time - d.p1.time, levels, d.settings?.fibShowLabel !== false, col);
+        } else if (d.tool === "fib-time-trend") {
+          const p3 = d.points?.[0];
+          if (p3) {
+            const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+            paintFibTimeZone(p3.time, d.p2.time - d.p1.time, levels, d.settings?.fibShowLabel !== false, col);
+          }
+        } else if (d.tool === "fib-speed-fan") {
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+          paintFibSpeedFan(d.p1, d.p2, levels, d.settings?.fibShowLabel !== false, d.settings?.fibShowPrice !== false, col);
+        } else if (d.tool === "pitchfan") {
+          const p3 = d.points?.[0];
+          if (p3) {
+            const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+            paintFibWedge(d.p1, d.p2, p3, levels, null, d.settings?.fibShowLabel !== false, d.settings?.fibShowPrice !== false, col);
+          }
+        } else if (d.tool === "fib-circles") {
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+          paintFibCircles(d.p1, d.p2, levels, d.settings?.fibShowLabel !== false, d.settings?.fibShowPrice !== false, col);
+        } else if (d.tool === "fib-speed-arcs") {
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+          paintFibSpeedArcs(d.p1, d.p2, levels, d.settings?.fibShowLabel !== false, d.settings?.fibShowPrice !== false, col);
+        } else if (d.tool === "fib-spiral") {
+          paintFibSpiral(d.p1, d.p2, col);
         } else if (d.tool === "long" || d.tool === "short") {
           const entry = d.p1.price;
           const target = d.p2.price;
@@ -1607,49 +3975,133 @@ export function StudioChart({
           const left = Math.min(x1, x2);
           const right = Math.max(x1, x2, left + 140);
           const w = right - left;
+          // Fill/line colors are individually overridable via settings
+          // (independent of the drawing's own stroke `color`) — default to
+          // exactly Phase 1's hardcoded values so an un-restyled position
+          // tool looks identical to before.
+          const targetColor = (d.settings?.targetColor as string | undefined) ?? "#22c55e";
+          const entryColor = (d.settings?.entryColor as string | undefined) ?? "#e6b800";
+          const stopColor = (d.settings?.stopColor as string | undefined) ?? "#ef4444";
+          const rewardFill = (d.settings?.rewardFillColor as string | undefined) ?? targetColor;
+          const riskFill = (d.settings?.riskFillColor as string | undefined) ?? stopColor;
+          const showLabels = d.settings?.showLabels !== false;
+          const showRR = d.settings?.showRR !== false;
           // reward zone
-          ctx.fillStyle = "rgba(34,197,94,0.13)";
+          ctx.fillStyle = withAlpha(rewardFill, 0.13);
           ctx.fillRect(left, Math.min(yEntry, yTarget), w, Math.abs(yTarget - yEntry));
           // risk zone
-          ctx.fillStyle = "rgba(239,68,68,0.13)";
+          ctx.fillStyle = withAlpha(riskFill, 0.13);
           ctx.fillRect(left, Math.min(yEntry, yStop), w, Math.abs(yStop - yEntry));
 
           const inst = stateRef.current.instrument;
           const tick = inst?.tickSize && inst.tickSize > 0 ? inst.tickSize : 0.01;
           const vpp = inst?.valuePerPoint ?? 1;
-          const riskPts = Math.abs(entry - stop);
-          const rewardPts = Math.abs(target - entry);
-          const rr = riskPts > 0 ? rewardPts / riskPts : 0;
+          const metrics = computePositionMetrics(entry, stop, target, tick, vpp);
 
-          const row = (py: number, color: string, text: string) => {
+          const row = (rowY: number, color: string, text: string) => {
             ctx.strokeStyle = color;
             ctx.setLineDash([]);
             ctx.beginPath();
-            ctx.moveTo(left, py);
-            ctx.lineTo(right, py);
+            ctx.moveTo(left, rowY);
+            ctx.lineTo(right, rowY);
             ctx.stroke();
+            if (!showLabels) return;
             ctx.fillStyle = color;
             ctx.font = "10px ui-sans-serif, system-ui";
-            ctx.fillText(text, left + 6, py - 4);
+            ctx.fillText(text, left + 6, rowY - 4);
           };
-          row(yTarget, "#22c55e", `TARGET ${fmt(target)} · +${Math.round(rewardPts / tick)} ticks · ${money(rewardPts * vpp)}`);
-          row(yEntry, "#e6b800", `${d.tool === "long" ? "LONG" : "SHORT"} ENTRY ${fmt(entry)}`);
-          row(yStop, "#ef4444", `STOP ${fmt(stop)} · ${Math.round(riskPts / tick)} ticks · ${money(riskPts * vpp)}`);
+          row(yTarget, targetColor, `TARGET ${fmt(target)} · +${metrics.rewardTicks} ticks · ${money(metrics.rewardValue)}`);
+          row(yEntry, entryColor, `${d.tool === "long" ? "LONG" : "SHORT"} ENTRY ${fmt(entry)}`);
+          row(yStop, stopColor, `STOP ${fmt(stop)} · ${metrics.riskTicks} ticks · ${money(metrics.riskValue)}`);
 
-          ctx.fillStyle = "rgba(232,234,240,0.9)";
-          ctx.font = "11px ui-sans-serif, system-ui";
-          ctx.fillText(`R:R ${rr.toFixed(2)}`, right + 8, yEntry - 4);
+          if (showRR) {
+            ctx.fillStyle = "rgba(232,234,240,0.9)";
+            ctx.font = "11px ui-sans-serif, system-ui";
+            ctx.fillText(`R:R ${metrics.riskRewardRatio.toFixed(2)}`, right + 8, yEntry - 4);
+          }
           planBoxes.push({ id: d.id, x: right + 8, y: yEntry + 6 });
+
+          if (d.id === selected) {
+            const midY = (Math.min(yEntry, yTarget, yStop) + Math.max(yEntry, yTarget, yStop)) / 2;
+            handles.push({ x: (left + right) / 2, y: yStop }); // stop
+            handles.push({ x: x1, y: yEntry }); // entry
+            handles.push({ x: x2, y: yTarget }); // target
+            handles.push({ x: left, y: midY }); // width: left edge
+            handles.push({ x: right, y: midY }); // width: right edge
+          }
         } else if (d.tool === "text") {
-          ctx.fillStyle = "#e6b800";
-          ctx.fillText(d.text ?? "", x1, y1);
+          drawTextLabel(ctx, d, x1, y1, col, alpha);
         }
 
       } else if (d.tool === "text") {
-        ctx.fillStyle = withAlpha(col, alpha);
-        ctx.fillText(d.text ?? "", x1, y1);
+        drawTextLabel(ctx, d, x1, y1, col, alpha);
       }
       ctx.restore();
+    }
+
+    // Live preview for a multi-click tool in progress (Triangle: 3 plain
+    // clicks; Parallel Channel: drag then one more click) — Escape cancels
+    // this without ever touching the committed `drawings` array.
+    if (pending && pending.anchors.length > 0) {
+      const committedPts = pending.anchors.map((p) => ({ x: px(p), y: py(p) })).filter((p): p is { x: number; y: number } => p.x != null && p.y != null);
+      // "A preview line follows the cursor while constructing" (Polyline's
+      // requirement) — extended to every multi-click tool that reaches this
+      // one shared preview renderer (Triangle/Channel get it for free too,
+      // rather than forking a second preview path) by appending the live
+      // cursor position (tracked in previewPointRef by onMove, see above) as
+      // one more line-only point. Only the ACTUALLY-committed anchors below
+      // get a solid handle dot — the cursor position never does.
+      let linePts = committedPts;
+      const cursorPt = previewPointRef.current;
+      if (cursorPt) {
+        const cx = px(cursorPt);
+        const cy = py(cursorPt);
+        if (cx != null && cy != null) linePts = [...committedPts, { x: cx, y: cy }];
+      }
+      if (linePts.length > 0) {
+        ctx.save();
+        ctx.strokeStyle = "rgba(230,184,0,0.7)";
+        ctx.setLineDash([4, 3]);
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(linePts[0].x, linePts[0].y);
+        for (const p of linePts.slice(1)) ctx.lineTo(p.x, p.y);
+        ctx.stroke();
+        for (const p of committedPts) {
+          ctx.fillStyle = "#e6b800";
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+
+      // Real live geometry (not just the dashed anchor skeleton above) once
+      // enough anchors exist to compute it — "live preview updates
+      // throughout" per the phase brief. For all three tools the geometry
+      // only becomes meaningful once the FIRST TWO anchors are committed and
+      // the cursor is standing in for the third (A-B-C's C, the trend-plus-
+      // width-anchor's width, or the pivot-plus-B's C) — before that, the
+      // dashed skeleton above is all there is to show. Reuses the EXACT same
+      // paint helpers a committed drawing renders through, so the preview
+      // can never drift from what actually gets committed on the next click.
+      if (pending.anchors.length === 2 && cursorPt) {
+        const [first, second] = pending.anchors;
+        const previewColor = getToolStyleDefaults(pending.tool)?.color ?? DEFAULT_DRAW_COLOR;
+        if (pending.tool === "fib-ext") {
+          paintFibExtension(first, second, cursorPt, defaultFibLevelsForTool("fib-ext"), false, true, true, previewColor);
+        } else if (pending.tool === "fib-channel") {
+          paintFibChannel(first, second, cursorPt, defaultFibLevelsForTool("fib-channel"), 0.08, true, true, previewColor);
+        } else if (pending.tool === "fib-wedge") {
+          paintFibWedge(first, second, cursorPt, defaultFibLevelsForTool("fib-wedge"), 0.08, true, true, previewColor);
+        } else if (pending.tool === "fib-time-trend") {
+          paintFibTimeZone(cursorPt.time, second.time - first.time, defaultFibLevelsForTool("fib-time-trend"), true, previewColor);
+        } else if (pending.tool === "pitchfan") {
+          paintFibWedge(first, second, cursorPt, defaultFibLevelsForTool("pitchfan"), null, true, true, previewColor);
+        } else if (PITCHFORK_TOOLS.has(pending.tool)) {
+          paintPitchfork(first, second, cursorPt, pitchforkVariantOf(pending.tool));
+        }
+      }
     }
 
     // Selection handles for the selected drawing.
@@ -1683,50 +4135,303 @@ export function StudioChart({
   drawOverlayRef.current = drawOverlay;
 
 
-  // ---- pointer interaction for drawing tools ------------------------------
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    if (tool === "cursor") return;
+  // Multi-click anchor tracking (Triangle: 3 plain clicks; Parallel Channel:
+  // a drag for the baseline followed by one more click for channel width).
+  // Read by drawOverlay() to render the in-progress preview.
+  const previewPointRef = useRef<MarketPoint | null>(null);
 
-    const toPoint = (e: PointerEvent) => {
-      const rect = canvas.getBoundingClientRect();
-      const chart = chartRef.current;
-      const price = priceSeriesRef.current;
-      if (!chart || !price) return null;
-      const logical = chart
-        .timeScale()
-        .coordinateToLogical(e.clientX - rect.left);
-      const p = price.coordinateToPrice(e.clientY - rect.top);
-      if (logical == null || p == null) return null;
-      return { logical, price: p };
-    };
+  const NO_ANCHOR_2_TOOLS = new Set<DrawTool>([
+    "hline",
+    "vline",
+    "hray",
+    "crossline",
+    "text",
+    "marker",
+    "vwap",
+    "vp-anchored",
+    "arrow-up",
+    "arrow-down",
+    "arrow-marker",
+    "pin",
+    "comment",
+    "signpost",
+    "flag-mark",
+    "price-note",
+    "price-label",
+    "table",
+    "content-icon",
+    "emoji",
+  ]);
 
-    // Closest drawing to a screen point (used by select + erase).
-    const hitTest = (mx: number, my: number) => {
-      const chart = chartRef.current;
-      const price = priceSeriesRef.current;
-      if (!chart || !price) return null;
-      let hit: { d: Drawing; anchor: "p1" | "p2" | "body" } | null = null;
-      let best = 14;
-      for (const d of stateRef.current.drawings) {
+  // Long/Short Position get dedicated entry/target/stop/left/right anchors
+  // (Phase 3D-15) instead of the generic p1/p2 corner-anchor path, so they're
+  // excluded from that generic path below the same way NO_ANCHOR_2_TOOLS
+  // excludes tools with no meaningful p2 anchor at all.
+  const POSITION_TOOLS = new Set<DrawTool>(["long", "short"]);
+
+  // Closest drawing to a screen point — used by Select/erase (inside the
+  // pointer-interaction effect below) AND by the double-click-for-settings
+  // effect further down, which needs to work no matter which tool is active
+  // (see that effect's doc comment) and therefore can't reuse a hitTest
+  // defined inside the pointer effect, which returns early whenever
+  // `tool === "cursor"`. Hoisted to component scope so both share ONE
+  // implementation instead of forking a second copy — it only reads from
+  // refs (chartRef/priceSeriesRef/stateRef), so it needs no dependency array
+  // and is cheap to redefine every render. Every tool shape gets a real hit
+  // region (an anchor handle, or a body/line/area test) so selecting never
+  // requires an exact pixel click.
+  const hitTest = (mx: number, my: number) => {
+    const chart = chartRef.current;
+    const price = priceSeriesRef.current;
+    if (!chart || !price) return null;
+    const bars = stateRef.current.bars;
+    const toPx = (p: MarketPoint) => chart.timeScale().logicalToCoordinate(timeToLogicalExtrapolated(bars, p.time));
+    const toPy = (p: MarketPoint) => price.priceToCoordinate(p.price);
+    let hit: { d: Drawing; anchor: AnchorKind } | null = null;
+    let best = 14;
+    for (const d of stateRef.current.drawings) {
         if (d.hidden) continue;
-        const x1 = chart.timeScale().logicalToCoordinate(d.p1.logical);
-        const y1 = price.priceToCoordinate(d.p1.price);
-        const x2 = chart.timeScale().logicalToCoordinate(d.p2.logical);
-        const y2 = price.priceToCoordinate(d.p2.price);
-        if (x1 != null && y1 != null) {
-          const dist = Math.hypot(x1 - mx, y1 - my);
+        const x1 = toPx(d.p1);
+        const y1 = toPy(d.p1);
+        const x2 = toPx(d.p2);
+        const y2 = toPy(d.p2);
+        const p3 = d.points?.[0];
+        const x3 = p3 ? toPx(p3) : null;
+        const y3 = p3 ? toPy(p3) : null;
+
+        // Polyline/Path are excluded from the generic p1/p2 anchor tests
+        // below — their p1/p2 are just a MIRROR of points[0]/points[last]
+        // (see anchorsOf()'s doc comment), and the generic p1/p2 drag path
+        // further down writes directly to `d.p1`/`d.p2` without touching
+        // `points`, which would desync the mirror from the authoritative
+        // vertex array. They get their own per-vertex hit test instead (see
+        // the `point:${i}` block below), which correctly writes back into
+        // `points` (and re-derives the p1/p2 mirror from it).
+        if (x1 != null && y1 != null && d.tool !== "polyline" && d.tool !== "path" && !MULTI_ANCHOR_PATTERN_TOOLS.has(d.tool) && !POSITION_TOOLS.has(d.tool)) {
+          const dist = pixelDist(x1, y1, mx, my);
           if (dist < best) {
             best = dist;
             hit = { d, anchor: "p1" };
           }
         }
-        if (x2 != null && y2 != null) {
-          const dist = Math.hypot(x2 - mx, y2 - my);
+        if (x2 != null && y2 != null && !NO_ANCHOR_2_TOOLS.has(d.tool) && d.tool !== "polyline" && d.tool !== "path" && !MULTI_ANCHOR_PATTERN_TOOLS.has(d.tool) && !POSITION_TOOLS.has(d.tool)) {
+          const dist = pixelDist(x2, y2, mx, my);
           if (dist < best) {
             best = dist;
             hit = { d, anchor: "p2" };
+          }
+        }
+        if (
+          x3 != null &&
+          y3 != null &&
+          (d.tool === "channel" ||
+            d.tool === "triangle" ||
+            d.tool === "fib-ext" ||
+            d.tool === "fib-channel" ||
+            d.tool === "fib-wedge" ||
+            d.tool === "fib-time-trend" ||
+            d.tool === "pitchfan" ||
+            d.tool === "flat-channel" ||
+            d.tool === "rotated-rect" ||
+            d.tool === "curve" ||
+            d.tool === "forecast" ||
+            d.tool === "sector" ||
+            d.tool === "bars-pattern" ||
+            PITCHFORK_TOOLS.has(d.tool))
+        ) {
+          const dist = pixelDist(x3, y3, mx, my);
+          if (dist < best) {
+            best = dist;
+            hit = { d, anchor: "p3" };
+          }
+        }
+        // Fibonacci Retracement's 0%/100% level lines sit exactly on p1/p2 (a
+        // level line's price IS one of the two anchors' own price at those
+        // ratios), and the three Phase 3C Fib tools have the same overlap
+        // with their own anchors (see the longer comment just above the
+        // fib-ext/fib-channel/fib-wedge body checks below) — so a BODY
+        // hit-test built from line/segment distance can report a smaller
+        // distance than the anchor's own point distance for a click already
+        // within the anchor's 14px handle radius. Computed once per drawing,
+        // right after every anchor check above has had its chance to match,
+        // so every body hit-test below (not just the Fib family) can defer
+        // to an anchor this same drawing already matched.
+        const anchorAlreadyHitOnThisDrawing = hit !== null && hit.d === d && hit.anchor !== "body";
+        if ((d.tool === "polyline" || d.tool === "path" || MULTI_ANCHOR_PATTERN_TOOLS.has(d.tool)) && d.points && d.points.length > 0) {
+          for (let i = 0; i < d.points.length; i++) {
+            const vx = toPx(d.points[i]);
+            const vy = toPy(d.points[i]);
+            if (vx == null || vy == null) continue;
+            const dist = pixelDist(vx, vy, mx, my);
+            if (dist < best) {
+              best = dist;
+              hit = { d, anchor: `point:${i}` as AnchorKind };
+            }
+          }
+        }
+        if (MULTI_ANCHOR_PATTERN_TOOLS.has(d.tool) && d.points && d.points.length > 1 && !anchorAlreadyHitOnThisDrawing) {
+          // Segment-distance body hit-test using this tool's actual
+          // connecting topology (patternSegments — a plain zigzag, or
+          // Triangle Pattern/Head and Shoulders' own layout), not a
+          // bounding box, matching Polyline/Brush's own convention below.
+          const pxPts = d.points.map((p) => [toPx(p), toPy(p)] as const);
+          const segs = patternSegments(d.tool, d.points.length);
+          for (const [a, b] of segs) {
+            const pa = pxPts[a];
+            const pb = pxPts[b];
+            if (!pa || !pb || pa[0] == null || pa[1] == null || pb[0] == null || pb[1] == null) continue;
+            const dist = distToSegment(mx, my, pa[0], pa[1], pb[0], pb[1]);
+            if (dist < best) {
+              best = dist;
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
+        if ((d.tool === "cyclic-lines" || d.tool === "time-cycles") && !anchorAlreadyHitOnThisDrawing) {
+          // Hit-tests every actual GENERATED line position (same
+          // cyclicLineTimes/timeCyclesTimes calc.ts reads for rendering),
+          // not just the two defining anchors — a click on the 4th repeated
+          // line correctly selects the drawing.
+          const interval = Math.abs(d.p2.time - d.p1.time);
+          let times: number[];
+          if (d.tool === "cyclic-lines") {
+            const width = canvasRef.current?.clientWidth ?? 0;
+            const startLogical = chart.timeScale().coordinateToLogical(0);
+            const endLogical = chart.timeScale().coordinateToLogical(width);
+            if (startLogical != null && endLogical != null) {
+              const a = logicalToTime(bars, startLogical);
+              const b = logicalToTime(bars, endLogical);
+              times = cyclicLineTimes(d.p1.time, interval, Math.min(a, b), Math.max(a, b));
+            } else {
+              times = [d.p1.time];
+            }
+          } else {
+            times = timeCyclesTimes(Math.min(d.p1.time, d.p2.time), interval);
+          }
+          for (const t of times) {
+            const x = toPx({ time: t, price: d.p1.price });
+            if (x == null) continue;
+            const dist = Math.abs(x - mx);
+            if (dist < best) {
+              best = dist;
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
+        if (d.tool === "sine-line" && !anchorAlreadyHitOnThisDrawing) {
+          // Segment-distance hit-test against the exact same sampled curve
+          // paintSineLine renders (calc.ts's sineLinePoints) — same
+          // convention as Fib Spiral/Polyline's own multi-segment hit-test.
+          const pts = sineLinePoints(d.p1, d.p2).map((p) => [toPx(p), toPy(p)] as const);
+          for (let i = 0; i < pts.length - 1; i++) {
+            const [ax, ay] = pts[i];
+            const [bx, by] = pts[i + 1];
+            if (ax == null || ay == null || bx == null || by == null) continue;
+            const dist = distToSegment(mx, my, ax, ay, bx, by);
+            if (dist < best) {
+              best = dist;
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
+        if (
+          (d.tool === "gann-box" || d.tool === "gann-square" || d.tool === "gann-square-fixed") &&
+          x1 != null && y1 != null && x2 != null && y2 != null && !anchorAlreadyHitOnThisDrawing
+        ) {
+          // Hit-tests the exact GRID lines paintGannGrid renders (bounded
+          // segments, not full-chart lines) plus the two diagonals — same
+          // shared gannGridFractions the renderer reads, so a click on any
+          // division line selects the drawing, not just its outer border.
+          const fracs = gannGridFractions(4);
+          for (const f of fracs) {
+            const vx = x1 + (x2 - x1) * f;
+            const distV = distToSegment(mx, my, vx, y1, vx, y2);
+            if (distV < best) {
+              best = distV;
+              hit = { d, anchor: "body" };
+            }
+            const hy = y1 + (y2 - y1) * f;
+            const distH = distToSegment(mx, my, x1, hy, x2, hy);
+            if (distH < best) {
+              best = distH;
+              hit = { d, anchor: "body" };
+            }
+          }
+          const distD1 = distToSegment(mx, my, x1, y1, x2, y2);
+          if (distD1 < best) {
+            best = distD1;
+            hit = { d, anchor: "body" };
+          }
+          const distD2 = distToSegment(mx, my, x1, y2, x2, y1);
+          if (distD2 < best) {
+            best = distD2;
+            hit = { d, anchor: "body" };
+          }
+        }
+        if (d.tool === "gann-fan" && x1 != null && y1 != null && !anchorAlreadyHitOnThisDrawing) {
+          // Hit-tests each drawn RAY (pivot -> extended Gann-angle point),
+          // same segment-distance convention as Fib Wedge/Pitchfan above.
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? GANN_FAN_DEFAULT_LEVELS;
+          const enabled = levels.filter((l) => l.enabled !== false);
+          const dt = d.p2.time - d.p1.time;
+          if (dt !== 0) {
+            const baseRate = (d.p2.price - d.p1.price) / dt;
+            const canvasWidth = canvasRef.current?.clientWidth ?? 2000;
+            for (const lvl of enabled) {
+              const slope = gannFanSlope(baseRate, lvl.value);
+              const ref = { time: d.p1.time + dt, price: d.p1.price + slope * dt };
+              const tx = toPx(ref);
+              const ty = toPy(ref);
+              if (tx == null || ty == null) continue;
+              const { x: ex, y: ey } = projectLineForward(x1, y1, tx, ty, canvasWidth);
+              const dist = distToSegment(mx, my, x1, y1, ex, ey);
+              if (dist < best) {
+                best = dist;
+                hit = { d, anchor: "body" };
+              }
+            }
+          }
+        }
+        if (POSITION_TOOLS.has(d.tool) && x1 != null && y1 != null && x2 != null && y2 != null) {
+          // Dedicated Long/Short Position anchors (Phase 3D-15) — replaces
+          // the generic p1/p2 corner-anchor path (excluded above via
+          // POSITION_TOOLS) so entry/target price edits can never also drag
+          // the box's time extent, and width can resize without touching
+          // any price level. "entry"/"target" sit at the exact screen
+          // position the old p1/p2 corner anchors used to (x1,y1 / x2,y2) —
+          // only the onMove semantics differ.
+          const entryDist = pixelDist(x1, y1, mx, my);
+          if (entryDist < best) {
+            best = entryDist;
+            hit = { d, anchor: "entry" };
+          }
+          const targetDist = pixelDist(x2, y2, mx, my);
+          if (targetDist < best) {
+            best = targetDist;
+            hit = { d, anchor: "target" };
+          }
+          const left = Math.min(x1, x2);
+          const right = Math.max(x1, x2, left + 140);
+          const stopY = d.stop != null ? price.priceToCoordinate(d.stop) : null;
+          if (stopY != null) {
+            const stopDist = pixelDist((left + right) / 2, stopY, mx, my);
+            if (stopDist < best) {
+              best = stopDist;
+              hit = { d, anchor: "stop" };
+            }
+            // Width-resize handles, vertically centered on the box so they
+            // sit clearly apart from the entry/target/stop rows.
+            const midY = (Math.min(y1, y2, stopY) + Math.max(y1, y2, stopY)) / 2;
+            const leftDist = pixelDist(left, midY, mx, my);
+            if (leftDist < best) {
+              best = leftDist;
+              hit = { d, anchor: "left" };
+            }
+            const rightDist = pixelDist(right, midY, mx, my);
+            if (rightDist < best) {
+              best = rightDist;
+              hit = { d, anchor: "right" };
+            }
           }
         }
         if (d.tool === "hline" && y1 != null && Math.abs(y1 - my) < best) {
@@ -1737,30 +4442,764 @@ export function StudioChart({
           best = Math.abs(x1 - mx);
           hit = { d, anchor: "body" };
         }
+        if (d.tool === "hray" && x1 != null && y1 != null && mx >= x1 - 4 && Math.abs(y1 - my) < best) {
+          best = Math.abs(y1 - my);
+          hit = { d, anchor: "body" };
+        }
         if (
-          (d.tool === "rect" || d.tool === "long" || d.tool === "short") &&
-          x1 != null &&
-          x2 != null &&
-          y1 != null &&
-          y2 != null &&
-          mx >= Math.min(x1, x2) &&
-          mx <= Math.max(x1, x2) &&
-          my >= Math.min(y1, y2) &&
-          my <= Math.max(y1, y2) &&
+          (d.tool === "trend" || d.tool === "ray" || d.tool === "arrow" || d.tool === "info-line" || d.tool === "trend-angle" || d.tool === "measure" || d.tool === "price-range" || d.tool === "date-range" || d.tool === "ruler") &&
+          x1 != null && y1 != null && x2 != null && y2 != null
+        ) {
+          const dist = distToSegment(mx, my, x1, y1, x2, y2);
+          if (dist < best) {
+            best = dist;
+            hit = { d, anchor: "body" };
+          }
+        }
+        if (d.tool === "extended" && x1 != null && y1 != null && x2 != null && y2 != null) {
+          // Hit-tests the full VISIBLE extended segment (both directions),
+          // matching what's actually drawn — not just the original two
+          // anchors, which would leave most of the rendered line unclickable.
+          const canvasWidth = canvasRef.current?.clientWidth ?? 2000;
+          const { x: sx, y: sy } = projectLineBackward(x1, y1, x2, y2);
+          const { x: ex, y: ey } = projectLineForward(x1, y1, x2, y2, canvasWidth);
+          const dist = distToSegment(mx, my, sx, sy, ex, ey);
+          if (dist < best) {
+            best = dist;
+            hit = { d, anchor: "body" };
+          }
+        }
+        if ((d.tool === "channel" || d.tool === "flat-channel") && x1 != null && y1 != null && x2 != null && y2 != null) {
+          // Hit-tests BOTH rendered rails — the sloped baseline (p1->p2)
+          // AND the offset second rail — computed identically to how each
+          // tool actually DRAWS that second rail (perpendicular-parallel
+          // offset for Parallel Channel, a horizontal line at p3's price
+          // for Flat Top/Bottom), so clicking either visible line selects
+          // the drawing. `best`/`hit` are shared across every check in
+          // this loop, so whichever rail is genuinely closer to the
+          // cursor naturally wins — no separate priority logic needed.
+          const dist1 = distToSegment(mx, my, x1, y1, x2, y2);
+          if (dist1 < best) {
+            best = dist1;
+            hit = { d, anchor: "body" };
+          }
+          const p3 = d.points?.[0];
+          if (p3) {
+            if (d.tool === "channel") {
+              const x3 = toPx(p3);
+              const y3 = toPy(p3);
+              if (x3 != null && y3 != null) {
+                const rail2 = parallelChannelSecondRail(x1, y1, x2, y2, x3, y3);
+                const dist2 = distToSegment(mx, my, rail2.x1, rail2.y1, rail2.x2, rail2.y2);
+                if (dist2 < best) {
+                  best = dist2;
+                  hit = { d, anchor: "body" };
+                }
+              }
+            } else {
+              const y3 = toPy(p3);
+              if (y3 != null) {
+                const dist2 = distToSegment(mx, my, x1, y3, x2, y3);
+                if (dist2 < best) {
+                  best = dist2;
+                  hit = { d, anchor: "body" };
+                }
+              }
+            }
+          }
+        }
+        if (d.tool === "rotated-rect" && x1 != null && y1 != null && x2 != null && y2 != null && x3 != null && y3 != null && p3 && !anchorAlreadyHitOnThisDrawing) {
+          // Real interior test on the actual 4-corner quadrilateral (same
+          // shared perpendicular-offset primitive the renderer uses), not
+          // an axis-aligned bounding box — a rotated rectangle's corners
+          // sit outside any such box.
+          const rail2 = parallelChannelSecondRail(x1, y1, x2, y2, x3, y3);
+          const poly = [
+            { x: x1, y: y1 },
+            { x: x2, y: y2 },
+            { x: rail2.x2, y: rail2.y2 },
+            { x: rail2.x1, y: rail2.y1 },
+          ];
+          if (!hit && pointInPolygon(mx, my, poly)) {
+            hit = { d, anchor: "body" };
+          }
+        }
+        if ((d.tool === "arc" || d.tool === "curve") && x1 != null && y1 != null && x2 != null && y2 != null && !anchorAlreadyHitOnThisDrawing) {
+          // Hit-tests the ACTUAL sampled curve (geometry.ts's
+          // quadraticBezierPoints), not the straight p1->p2 chord — Arc's
+          // control point is its own fixed-bulge formula (mirroring the
+          // renderer exactly); Curve's is the real, user-editable p3.
+          let cx: number;
+          let cy: number;
+          if (d.tool === "arc") {
+            const mxp = (x1 + x2) / 2;
+            const myp = (y1 + y2) / 2;
+            const dx = x2 - x1;
+            const dy = y2 - y1;
+            const len = Math.hypot(dx, dy) || 1;
+            const nx = -dy / len;
+            const ny = dx / len;
+            const bulge = len * 0.15;
+            cx = mxp + nx * bulge;
+            cy = myp + ny * bulge;
+          } else {
+            const p3 = d.points?.[0];
+            const tx = p3 ? toPx(p3) : null;
+            const ty = p3 ? toPy(p3) : null;
+            if (tx == null || ty == null) {
+              cx = (x1 + x2) / 2;
+              cy = (y1 + y2) / 2;
+            } else {
+              cx = tx;
+              cy = ty;
+            }
+          }
+          const pts = quadraticBezierPoints(x1, y1, cx, cy, x2, y2);
+          for (let i = 0; i < pts.length - 1; i++) {
+            const dist = distToSegment(mx, my, pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y);
+            if (dist < best) {
+              best = dist;
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
+        if (d.tool === "double-curve" && d.points && d.points.length >= 4) {
+          // Hit-tests the ACTUAL sampled cubic curve (geometry.ts's
+          // cubicBezierPoints) instead of falling through to
+          // MULTI_ANCHOR_PATTERN_TOOLS' generic straight-zigzag body test
+          // further below, which would test invisible chords between the
+          // control points rather than the rendered curve.
+          const a = d.points;
+          const p1x = toPx(a[0]);
+          const p1y = toPy(a[0]);
+          const c1x = toPx(a[1]);
+          const c1y = toPy(a[1]);
+          const c2x = toPx(a[2]);
+          const c2y = toPy(a[2]);
+          const p2x = toPx(a[3]);
+          const p2y = toPy(a[3]);
+          if (p1x != null && p1y != null && c1x != null && c1y != null && c2x != null && c2y != null && p2x != null && p2y != null) {
+            const pts = cubicBezierPoints(p1x, p1y, c1x, c1y, c2x, c2y, p2x, p2y);
+            for (let i = 0; i < pts.length - 1; i++) {
+              const dist = distToSegment(mx, my, pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y);
+              if (dist < best) {
+                best = dist;
+                hit = { d, anchor: "body" };
+              }
+            }
+          }
+        }
+        if (d.tool === "forecast" && x1 != null && y1 != null && x2 != null && y2 != null && x3 != null && y3 != null && !anchorAlreadyHitOnThisDrawing) {
+          // Hit-tests the ACTUAL rendered zigzag (p1->p2->p3), matching
+          // paintForecast exactly.
+          const dist1 = distToSegment(mx, my, x1, y1, x2, y2);
+          if (dist1 < best) {
+            best = dist1;
+            hit = { d, anchor: "body" };
+          }
+          const dist2 = distToSegment(mx, my, x2, y2, x3, y3);
+          if (dist2 < best) {
+            best = dist2;
+            hit = { d, anchor: "body" };
+          }
+        }
+        if (d.tool === "bars-pattern" && x1 != null && y1 != null && x2 != null && y2 != null && !hit) {
+          // Hit-tests the drawn SOURCE-range box (the one bounded, always-
+          // on-screen part of this tool) — the projected pattern beyond it
+          // can extend arbitrarily far and isn't a reliable click target.
+          if (mx >= Math.min(x1, x2) && mx <= Math.max(x1, x2) && my >= Math.min(y1, y2) && my <= Math.max(y1, y2)) {
+            hit = { d, anchor: "body" };
+          }
+        }
+        if (d.tool === "ghost-feed" && x1 != null && y1 != null && x2 != null && y2 != null && !anchorAlreadyHitOnThisDrawing) {
+          // Hit-tests the full VISIBLE extended projection, same convention
+          // as Extended Line/Ray above.
+          const canvasWidth = canvasRef.current?.clientWidth ?? 2000;
+          const { x: ex, y: ey } = projectLineForward(x1, y1, x2, y2, canvasWidth);
+          const dist = distToSegment(mx, my, x1, y1, ex, ey);
+          if (dist < best) {
+            best = dist;
+            hit = { d, anchor: "body" };
+          }
+        }
+        if (d.tool === "sector" && x1 != null && y1 != null && x2 != null && y2 != null && x3 != null && y3 != null && !anchorAlreadyHitOnThisDrawing && !hit) {
+          // Real sector-interior test (geometry.ts's pointInSector) — the
+          // ACTUAL rendered pie-slice, not a bounding box.
+          const r1 = pixelDist(x1, y1, x2, y2);
+          const r2 = pixelDist(x1, y1, x3, y3);
+          const radius = (r1 + r2) / 2;
+          const rawA1 = Math.atan2(y2 - y1, x2 - x1);
+          const rawA2 = Math.atan2(y3 - y1, x3 - x1);
+          const { startAngle, endAngle } = normalizeSectorSweep(rawA1, rawA2);
+          if (pointInSector(mx, my, x1, y1, radius, startAngle, endAngle)) {
+            hit = { d, anchor: "body" };
+          }
+        }
+        if (PITCHFORK_TOOLS.has(d.tool) && x1 != null && y1 != null && x3 != null && p3 && !anchorAlreadyHitOnThisDrawing) {
+          // Hit-tests the median + both teeth (the ACTUAL rendered rays),
+          // same segment-distance convention as every other ray-fan tool.
+          const variant = pitchforkVariantOf(d.tool);
+          const handle = pitchforkHandle(d.p1, d.p2, p3, variant);
+          const target = pitchforkTarget(d.p1, d.p2, p3, variant);
+          const [tooth1, tooth2] = pitchforkTeethAnchors(d.p1, d.p2, p3, variant);
+          const canvasWidth = canvasRef.current?.clientWidth ?? 2000;
+          const hx = toPx(handle);
+          const hy = toPy(handle);
+          if (hx != null && hy != null) {
+            const tx = toPx(target);
+            const ty = toPy(target);
+            if (tx != null && ty != null) {
+              const { x: ex, y: ey } = projectLineForward(hx, hy, tx, ty, canvasWidth);
+              const dist = distToSegment(mx, my, hx, hy, ex, ey);
+              if (dist < best) {
+                best = dist;
+                hit = { d, anchor: "body" };
+              }
+            }
+            const dt = target.time - handle.time;
+            const dp = target.price - handle.price;
+            for (const tooth of [tooth1, tooth2]) {
+              const ref = { time: tooth.time + dt, price: tooth.price + dp };
+              const tx1 = toPx(tooth);
+              const ty1 = toPy(tooth);
+              const tx2 = toPx(ref);
+              const ty2 = toPy(ref);
+              if (tx1 == null || ty1 == null || tx2 == null || ty2 == null) continue;
+              const { x: ex, y: ey } = projectLineForward(tx1, ty1, tx2, ty2, canvasWidth);
+              const dist = distToSegment(mx, my, tx1, ty1, ex, ey);
+              if (dist < best) {
+                best = dist;
+                hit = { d, anchor: "body" };
+              }
+            }
+          }
+        }
+        if (d.tool === "crossline" && x1 != null && y1 != null) {
+          // Distance to whichever of the two crossing lines is closer —
+          // same convention as Horizontal/Vertical Line's own hit-tests.
+          const dist = Math.min(Math.abs(y1 - my), Math.abs(x1 - mx));
+          if (dist < best) {
+            best = dist;
+            hit = { d, anchor: "body" };
+          }
+        }
+        if (d.tool === "regression-trend" && !anchorAlreadyHitOnThisDrawing) {
+          // Hit-tests the ACTUAL fitted regression line (recomputed fresh,
+          // same as the renderer), not the raw p1->p2 drag diagonal.
+          const bars = stateRef.current.bars;
+          const lo = Math.min(d.p1.time, d.p2.time);
+          const hi = Math.max(d.p1.time, d.p2.time);
+          const inRange = bars.filter((b) => b.time >= lo && b.time <= hi).map((b) => ({ time: b.time, value: b.close }));
+          if (inRange.length >= 2) {
+            const { slope, intercept } = computeLinearRegression(inRange);
+            const yAt = (t: number) => slope * t + intercept;
+            const rx1 = toPx({ time: lo, price: 0 });
+            const rx2 = toPx({ time: hi, price: 0 });
+            const ry1 = toPy({ time: lo, price: yAt(lo) });
+            const ry2 = toPy({ time: hi, price: yAt(hi) });
+            if (rx1 != null && rx2 != null && ry1 != null && ry2 != null) {
+              const dist = distToSegment(mx, my, rx1, ry1, rx2, ry2);
+              if (dist < best) {
+                best = dist;
+                hit = { d, anchor: "body" };
+              }
+            }
+          }
+        }
+        if (d.tool === "fib" && x1 != null && x2 != null && !anchorAlreadyHitOnThisDrawing) {
+          // Hit-tests each rendered LEVEL line, not just the (usually
+          // invisible-in-practice) diagonal between the two anchors — a Fib
+          // Retracement is visually its horizontal levels, so that's what a
+          // user actually clicks on to select it.
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? DEFAULT_FIB_LEVELS;
+          const computed = computeFibLevels(d.p1.price, d.p2.price, levels.filter((l) => l.enabled !== false));
+          const extendRight = Boolean(d.settings?.extendRight);
+          const leftX = Math.min(x1, x2);
+          const rightX = extendRight ? (canvasRef.current?.clientWidth ?? 2000) : Math.max(x1, x2);
+          for (const lvl of computed) {
+            const ly = price.priceToCoordinate(lvl.price);
+            if (ly == null) continue;
+            if (mx >= leftX - 4 && mx <= rightX + 4 && Math.abs(ly - my) < best) {
+              best = Math.abs(ly - my);
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
+        // A Trend-Based Fib Extension's 0% level line sits exactly on C, a
+        // Fib Channel's ratio-0/ratio-1 rails sit exactly on p1/p2/the width
+        // anchor, and a Fib Wedge's rays all originate at the pivot — same
+        // "body hit-test can out-score the anchor's own point distance"
+        // overlap as Fib Retracement above, guarded by the same
+        // `anchorAlreadyHitOnThisDrawing` flag computed right after the
+        // anchor checks further up.
+        if (d.tool === "fib-ext" && x3 != null && p3 && !anchorAlreadyHitOnThisDrawing) {
+          // Same "hit-test the rendered level lines, not a diagonal" pattern
+          // as Retracement above, projected from C instead of between the
+          // two anchors — matches paintFibExtension's own geometry exactly.
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+          const computed = computeFibExtensionLevels(d.p1.price, d.p2.price, p3.price, levels.filter((l) => l.enabled !== false));
+          const extendRight = Boolean(d.settings?.extendRight);
+          const legWidth = x1 != null && x2 != null ? Math.abs(x2 - x1) : 80;
+          const rightX = extendRight ? (canvasRef.current?.clientWidth ?? 2000) : x3 + Math.max(60, legWidth);
+          for (const lvl of computed) {
+            const ly = price.priceToCoordinate(lvl.price);
+            if (ly == null) continue;
+            if (mx >= x3 - 4 && mx <= rightX + 4 && Math.abs(ly - my) < best) {
+              best = Math.abs(ly - my);
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
+        if (d.tool === "fib-channel" && x1 != null && y1 != null && x2 != null && y2 != null && x3 != null && y3 != null && p3 && !anchorAlreadyHitOnThisDrawing) {
+          // Hit-tests the extended trend line AND every parallel rail —
+          // exactly the segments paintFibChannel actually draws.
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+          const enabled = levels.filter((l) => l.enabled !== false);
+          const canvasWidth = canvasRef.current?.clientWidth ?? 2000;
+          const { x: sx, y: sy } = projectLineBackward(x1, y1, x2, y2);
+          const { x: ex, y: ey } = projectLineForward(x1, y1, x2, y2, canvasWidth);
+          const ratiosToTest = enabled.length > 0 ? enabled.map((l) => l.value) : [0];
+          for (const ratio of ratiosToTest) {
+            const { dx, dy } = fibChannelLevelOffset(x1, y1, x2, y2, x3, y3, ratio);
+            const dist = distToSegment(mx, my, sx + dx, sy + dy, ex + dx, ey + dy);
+            if (dist < best) {
+              best = dist;
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
+        if (d.tool === "fib-wedge" && x1 != null && y1 != null && x3 != null && p3 && !anchorAlreadyHitOnThisDrawing) {
+          // Hit-tests each drawn RAY (pivot -> extended Fibonacci point),
+          // never a bounding box — same segment-distance convention as every
+          // other line-based tool's hit-test.
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+          const enabled = levels.filter((l) => l.enabled !== false);
+          const canvasWidth = canvasRef.current?.clientWidth ?? 2000;
+          for (const lvl of enabled) {
+            const target = lerpMarketPoint(d.p2, p3, lvl.value);
+            const tx = toPx(target);
+            const ty = toPy(target);
+            if (tx == null || ty == null) continue;
+            const { x: ex, y: ey } = projectLineForward(x1, y1, tx, ty, canvasWidth);
+            const dist = distToSegment(mx, my, x1, y1, ex, ey);
+            if (dist < best) {
+              best = dist;
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
+        if (d.tool === "fib-time" && x1 != null && !anchorAlreadyHitOnThisDrawing) {
+          // Hit-tests each rendered VERTICAL level line (matches
+          // paintFibTimeZone exactly), not a diagonal between the two
+          // anchors — a Fib Time Zone is visually its vertical lines, same
+          // "click what's actually drawn" convention as Retracement's
+          // horizontal levels above. No y-bound check, matching `vline`'s
+          // own hit-test just above (both render full chart height).
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+          const computed = computeFibTimeZoneLevels(d.p1.time, d.p2.time - d.p1.time, levels.filter((l) => l.enabled !== false));
+          for (const lvl of computed) {
+            const lx = toPx({ time: lvl.time, price: d.p1.price });
+            if (lx == null) continue;
+            if (Math.abs(lx - mx) < best) {
+              best = Math.abs(lx - mx);
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
+        if (d.tool === "fib-speed-fan" && x1 != null && y1 != null && !anchorAlreadyHitOnThisDrawing) {
+          // Hit-tests each drawn RAY (origin -> extended fan target), matching
+          // paintFibSpeedFan's own geometry — same segment-distance
+          // convention Fib Wedge's ray fan already uses above.
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+          const enabled = levels.filter((l) => l.enabled !== false);
+          const canvasWidth = canvasRef.current?.clientWidth ?? 2000;
+          const targets = computeFibSpeedFanTargets(d.p1, d.p2, enabled);
+          for (const target of targets) {
+            const tx = toPx(target);
+            const ty = toPy(target);
+            if (tx == null || ty == null) continue;
+            const { x: ex, y: ey } = projectLineForward(x1, y1, tx, ty, canvasWidth);
+            const dist = distToSegment(mx, my, x1, y1, ex, ey);
+            if (dist < best) {
+              best = dist;
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
+        if (d.tool === "fib-time-trend" && p3 && !anchorAlreadyHitOnThisDrawing) {
+          // Same "hit-test the rendered vertical lines" convention as Fib
+          // Time Zone above, projected from C (the third anchor) instead of
+          // p1 — matches paintFibTimeZone's own geometry exactly (see the
+          // `fib-time-trend` render branch: startTime=p3.time,
+          // interval=p2.time-p1.time).
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+          const computed = computeFibTimeZoneLevels(p3.time, d.p2.time - d.p1.time, levels.filter((l) => l.enabled !== false));
+          for (const lvl of computed) {
+            const lx = toPx({ time: lvl.time, price: p3.price });
+            if (lx == null) continue;
+            if (Math.abs(lx - mx) < best) {
+              best = Math.abs(lx - mx);
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
+        if ((d.tool === "fib-circles" || d.tool === "fib-speed-arcs") && x1 != null && y1 != null && x2 != null && y2 != null && !anchorAlreadyHitOnThisDrawing) {
+          // Ring-edge hit-test (see geometry.ts's distToEllipseRing) —
+          // clicking well INSIDE the smallest ring must miss, unlike a
+          // filled-shape interior test.
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+          const enabled = levels.filter((l) => l.enabled !== false && l.value > 0);
+          const rx0 = Math.abs(x2 - x1);
+          const ry0 = Math.abs(y2 - y1);
+          const upperHalf = y2 <= y1;
+          for (const lvl of enabled) {
+            const rx = rx0 * lvl.value;
+            const ry = ry0 * lvl.value;
+            if (rx <= 0 && ry <= 0) continue;
+            if (d.tool === "fib-speed-arcs") {
+              // Only the rendered half-arc is clickable, matching
+              // paintFibSpeedArcs's own geometry exactly.
+              const onUpperSide = my <= y1;
+              if (onUpperSide !== upperHalf) continue;
+            }
+            const dist = distToEllipseRing(mx, my, x1, y1, rx, ry);
+            if (dist < best) {
+              best = dist;
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
+        if (d.tool === "fib-spiral" && x1 != null && y1 != null && x2 != null && y2 != null && !anchorAlreadyHitOnThisDrawing) {
+          // Segment-distance hit-test against the exact same sampled point
+          // sequence paintFibSpiral renders — same convention as
+          // Polyline/Brush's own multi-segment hit-testing.
+          const r0 = pixelDist(x1, y1, x2, y2);
+          if (r0 >= 1) {
+            const angle0 = Math.atan2(y2 - y1, x2 - x1);
+            const pts = fibSpiralPoints(x1, y1, r0, angle0);
+            for (let i = 0; i < pts.length - 1; i++) {
+              const dist = distToSegment(mx, my, pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y);
+              if (dist < best) {
+                best = dist;
+                hit = { d, anchor: "body" };
+              }
+            }
+          }
+        }
+        if (d.tool === "pitchfan" && x1 != null && y1 != null && x3 != null && p3 && !anchorAlreadyHitOnThisDrawing) {
+          // Identical ray hit-testing to Fib Wedge above — same pivot-ray-fan
+          // geometry (see paintFibWedge, shared verbatim via a null
+          // fillOpacity for this tool).
+          const levels = (d.settings?.fibLevels as FibLevel[] | undefined) ?? defaultFibLevelsForTool(d.tool);
+          const enabled = levels.filter((l) => l.enabled !== false);
+          const canvasWidth = canvasRef.current?.clientWidth ?? 2000;
+          for (const lvl of enabled) {
+            const target = lerpMarketPoint(d.p2, p3, lvl.value);
+            const tx = toPx(target);
+            const ty = toPy(target);
+            if (tx == null || ty == null) continue;
+            const { x: ex, y: ey } = projectLineForward(x1, y1, tx, ty, canvasWidth);
+            const dist = distToSegment(mx, my, x1, y1, ex, ey);
+            if (dist < best) {
+              best = dist;
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
+        if ((d.tool === "brush" || d.tool === "highlighter") && d.points && d.points.length > 1) {
+          const pxPts = d.points.map((p) => [toPx(p), toPy(p)] as const);
+          for (let i = 0; i < pxPts.length - 1; i++) {
+            const [ax, ay] = pxPts[i];
+            const [bx, by] = pxPts[i + 1];
+            if (ax == null || ay == null || bx == null || by == null) continue;
+            const dist = distToSegment(mx, my, ax, ay, bx, by);
+            if (dist < best) {
+              best = dist;
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
+        if ((d.tool === "polyline" || d.tool === "path") && d.points && d.points.length > 1) {
+          // Hit-tests the ACTUAL line segments between consecutive vertices
+          // (never a bounding box) — same convention as Brush/Highlighter
+          // just above. Path additionally gets a real filled-interior test
+          // (`pointInPolygon`), so clicking anywhere inside a closed/filled
+          // Path selects it too, not just within a few pixels of its outline.
+          const pxPts = d.points.map((p) => [toPx(p), toPy(p)] as const);
+          for (let i = 0; i < pxPts.length - 1; i++) {
+            const [ax, ay] = pxPts[i];
+            const [bx, by] = pxPts[i + 1];
+            if (ax == null || ay == null || bx == null || by == null) continue;
+            const dist = distToSegment(mx, my, ax, ay, bx, by);
+            if (dist < best) {
+              best = dist;
+              hit = { d, anchor: "body" };
+            }
+          }
+          if (d.tool === "path" && !hit) {
+            const poly = pxPts
+              .filter((p): p is readonly [number, number] => p[0] != null && p[1] != null)
+              .map(([x, y]) => ({ x, y }));
+            if (poly.length > 2 && pointInPolygon(mx, my, poly)) {
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
+        if (d.tool === "vwap") {
+          const series = anchoredVwap(bars, d.p1.time);
+          for (let i = 0; i < series.length - 1; i += 3) {
+            const ax = chart.timeScale().logicalToCoordinate(timeToLogicalExtrapolated(bars, series[i].time));
+            const ay = price.priceToCoordinate(series[i].value);
+            const j = Math.min(i + 3, series.length - 1);
+            const bx = chart.timeScale().logicalToCoordinate(timeToLogicalExtrapolated(bars, series[j].time));
+            const by = price.priceToCoordinate(series[j].value);
+            if (ax == null || ay == null || bx == null || by == null) continue;
+            const dist = distToSegment(mx, my, ax, ay, bx, by);
+            if (dist < best) {
+              best = dist;
+              hit = { d, anchor: "body" };
+            }
+          }
+        }
+        if (
+          (d.tool === "rect" || d.tool === "circle" || d.tool === "image") &&
+          x1 != null && x2 != null && y1 != null && y2 != null &&
+          mx >= Math.min(x1, x2) && mx <= Math.max(x1, x2) &&
+          my >= Math.min(y1, y2) && my <= Math.max(y1, y2) &&
           !hit
         ) {
           hit = { d, anchor: "body" };
+        }
+        if (POSITION_TOOLS.has(d.tool) && x1 != null && x2 != null && y1 != null && y2 != null && !hit) {
+          // Long/Short's own body bbox (Phase 3D-15 fix) — the render's
+          // 140px minimum-width floor and the stop row can both extend past
+          // the raw p1/p2 box the shared rect/circle/image test above uses,
+          // so part of the visually-rendered position could previously fall
+          // outside its own clickable body region. Matches
+          // paintDrawing()'s `left`/`right` computation exactly.
+          const left = Math.min(x1, x2);
+          const right = Math.max(x1, x2, left + 140);
+          const stopY = d.stop != null ? price.priceToCoordinate(d.stop) : null;
+          const top = Math.min(y1, y2, stopY ?? y1);
+          const bottom = Math.max(y1, y2, stopY ?? y1);
+          if (mx >= left && mx <= right && my >= top && my <= bottom) {
+            hit = { d, anchor: "body" };
+          }
+        }
+        if (d.tool === "table" && x1 != null && y1 != null && !hit) {
+          const rows = (d.settings?.tableRows as string[][] | undefined) ?? [
+            ["", ""],
+            ["", ""],
+          ];
+          const cellW = 60;
+          const cellH = 20;
+          const w = (rows[0]?.length ?? 1) * cellW;
+          const h = rows.length * cellH;
+          if (mx >= x1 && mx <= x1 + w && my >= y1 && my <= y1 + h) {
+            hit = { d, anchor: "body" };
+          }
+        }
+        if (d.tool === "callout" && x1 != null && y1 != null && x2 != null && y2 != null && !anchorAlreadyHitOnThisDrawing) {
+          const dist = distToSegment(mx, my, x1, y1, x2, y2);
+          if (dist < best) {
+            best = dist;
+            hit = { d, anchor: "body" };
+          }
+        }
+        if (
+          d.tool === "ellipse" && x1 != null && x2 != null && y1 != null && y2 != null && !hit
+        ) {
+          // Real ellipse-interior test, deliberately NOT the rectangular
+          // bounding-box shortcut Circle/Rect share just above — an
+          // ellipse's corners are empty space, and the phase brief
+          // specifically calls out avoiding an oversized hit region there.
+          const cx = (x1 + x2) / 2;
+          const cy = (y1 + y2) / 2;
+          const rx = Math.abs(x2 - x1) / 2;
+          const ry = Math.abs(y2 - y1) / 2;
+          if (pointInEllipse(mx, my, cx, cy, rx, ry)) {
+            hit = { d, anchor: "body" };
+          }
+        }
+        if (
+          d.tool === "triangle" && x1 != null && y1 != null && x2 != null && y2 != null && x3 != null && y3 != null &&
+          pointInTriangle(mx, my, x1, y1, x2, y2, x3, y3) && !hit
+        ) {
+          hit = { d, anchor: "body" };
+        }
+        if ((d.tool === "vp-fixed" || d.tool === "vp-anchored") && !hit) {
+          // Whole-profile move region: the box spanning the profile's actual
+          // TIME range (start->end for Fixed Range, anchor->most-recent bar
+          // for Anchored — never d.p2 directly for Anchored, since p2 is
+          // just p1's mirror) and its actual computed PRICE range (the real
+          // low..high of the included bars, matching what's rendered — not
+          // just wherever the user happened to click vertically). Clicking
+          // anywhere inside selects/moves the whole drawing, same "body"
+          // anchor kind (and same generic shift-both-anchors drag code) every
+          // other filled shape already uses.
+          const result = getVolumeProfileResult(d, bars);
+          const rightTime = d.tool === "vp-anchored" ? (bars.length ? bars[bars.length - 1].time : d.p1.time) : d.p2.time;
+          const xa = toPx({ time: d.p1.time, price: 0 });
+          const xb = toPx({ time: rightTime, price: 0 });
+          const top = result.bins.length > 0 ? result.bins[result.bins.length - 1].top : Math.max(d.p1.price, d.p2.price);
+          const bottom = result.bins.length > 0 ? result.bins[0].bottom : Math.min(d.p1.price, d.p2.price);
+          const ya = toPy({ time: 0, price: top });
+          const yb = toPy({ time: 0, price: bottom });
+          if (
+            xa != null && xb != null && ya != null && yb != null &&
+            mx >= Math.min(xa, xb) && mx <= Math.max(xa, xb) &&
+            my >= Math.min(ya, yb) && my <= Math.max(ya, yb)
+          ) {
+            hit = { d, anchor: "body" };
+          }
         }
       }
       return hit;
     };
 
+  // ---- pointer interaction for drawing tools ------------------------------
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    if (tool === "cursor") return;
+    // Switching tools mid-flight abandons any unfinished multi-click drawing
+    // — same as Escape (see the keyboard effect below).
+    pendingRef.current = null;
+    previewPointRef.current = null;
+
+    const rawPoint = (e: PointerEvent): MarketPoint | null => {
+      const rect = canvas.getBoundingClientRect();
+      const chart = chartRef.current;
+      const price = priceSeriesRef.current;
+      if (!chart || !price) return null;
+      const logical = chart.timeScale().coordinateToLogical(e.clientX - rect.left);
+      const p = price.coordinateToPrice(e.clientY - rect.top);
+      if (logical == null || p == null) return null;
+      return { time: logicalToTime(stateRef.current.bars, logical), price: p };
+    };
+    const toPoint = (e: PointerEvent): MarketPoint | null => {
+      const raw = rawPoint(e);
+      if (!raw) return null;
+      return snapPoint(stateRef.current.bars, raw, stateRef.current.magnet);
+    };
+
+    // ---- canonical Select tool: hover-driven pass-through (Phase 3D-15) ----
+    // Select must both hit-test drawings (click/drag to select, move, resize)
+    // AND let click-drag on truly empty space reach the native chart's own
+    // pan/zoom — but once a pointerdown lands on this overlay canvas, the
+    // gesture can't be handed off to the native canvas underneath mid-flight
+    // (that canvas never saw the initial pointerdown, so its own internal
+    // drag tracking never starts). Instead this toggles `pointerEvents` on
+    // the overlay BEFORE the down event even happens, driven by a continuous
+    // hover hit-test: "auto" while hovering something selectable, "none"
+    // over empty space so the eventual down event is delivered straight to
+    // the native chart canvas and its native pan/zoom/wheel handling runs
+    // completely untouched — zero reimplementation of chart panning here.
+    //
+    // ---- native crosshair stays active for every armed tool (Phase 3D-15
+    // follow-up) -------------------------------------------------------
+    // Every OTHER tool keeps this overlay's pointerEvents "auto" at all
+    // times (it has to, to catch a pointerdown anywhere — including empty
+    // space — and start a drawing), so the native chart canvas underneath
+    // never sees a real mousemove and its own crosshair never updates.
+    // Lightweight Charts exposes exactly this "externally driven crosshair"
+    // case via `chart.setCrosshairPosition`/`clearCrosshairPosition` (its
+    // own doc: "if you want to synchronise the crosshairs of two separate
+    // charts") — driving it from here is purely visual (reads no drawing
+    // state, writes nothing to `Drawing`), can't intercept a pointer event,
+    // and isn't a second overlay — it just feeds the chart's own existing
+    // crosshair renderer a position when our overlay is the one receiving
+    // the real mouse events. A single `setCrosshairPosition` call per
+    // pointermove is NOT enough on this chart, though — its own periodic
+    // internal crosshair recompute (tied to the live-data repaint cycle,
+    // not to genuine hover state) silently overwrites a one-off external
+    // call within a frame or two. So this only records the latest pointer
+    // position (`crosshairPosRef`); the actual `setCrosshairPosition` call
+    // happens every frame from the chart-creation effect's existing RAF
+    // loop, which reliably wins that race the same way continuous real
+    // mouse movement would.
+    //
+    // Both live on ONE `hostRef` listener (the shared container both
+    // canvases sit in via lib.createChart(hostRef.current, ...)), not on
+    // this overlay canvas, since an element with pointerEvents:"none" stops
+    // receiving the very events that would tell it to turn back on.
+    let cleanupHover: (() => void) | undefined;
+    {
+      const host = hostRef.current;
+      if (host) {
+        const updateHover = (clientX: number, clientY: number) => {
+          // An active drag already routes via pointer capture regardless of
+          // pointerEvents/hit-testing — leave the style alone mid-gesture.
+          if (editRef.current || draftRef.current || pendingRef.current) return;
+          const rect = canvas.getBoundingClientRect();
+          const hit = hitTest(clientX - rect.left, clientY - rect.top);
+          canvas.style.pointerEvents = hit ? "auto" : "none";
+          if (!hit) {
+            canvas.style.cursor = "crosshair";
+          } else if (hit.d.locked) {
+            canvas.style.cursor = "default";
+          } else if (hit.anchor === "body") {
+            canvas.style.cursor = "move";
+          } else if (hit.anchor === "stop" || hit.anchor === "entry" || hit.anchor === "target") {
+            canvas.style.cursor = "ns-resize";
+          } else if (hit.anchor === "left" || hit.anchor === "right") {
+            canvas.style.cursor = "ew-resize";
+          } else {
+            canvas.style.cursor = "nwse-resize";
+          }
+        };
+        const onHostMove = (e: PointerEvent) => {
+          // Only records where the pointer is — the RAF loop (in the
+          // chart-creation effect) is what actually calls
+          // `setCrosshairPosition` every frame; see `crosshairPosRef`'s
+          // doc comment for why a single per-event call isn't sufficient.
+          crosshairPosRef.current = rawPoint(e);
+          if (tool === "select") updateHover(e.clientX, e.clientY);
+        };
+        const onHostLeave = () => {
+          crosshairPosRef.current = null;
+          chartRef.current?.clearCrosshairPosition();
+          if (tool === "select") {
+            canvas.style.pointerEvents = "auto";
+            canvas.style.cursor = "crosshair";
+          }
+        };
+        host.addEventListener("pointermove", onHostMove);
+        host.addEventListener("pointerleave", onHostLeave);
+        if (tool === "select") {
+          canvas.style.pointerEvents = "auto";
+          canvas.style.cursor = "crosshair";
+        }
+        cleanupHover = () => {
+          host.removeEventListener("pointermove", onHostMove);
+          host.removeEventListener("pointerleave", onHostLeave);
+          crosshairPosRef.current = null;
+          chartRef.current?.clearCrosshairPosition();
+          if (tool === "select") {
+            canvas.style.pointerEvents = "";
+            canvas.style.cursor = "";
+          }
+        };
+      }
+    }
+
+    // newId/stampNew now live at component scope (Phase 3D-14) — see their
+    // doc comment there for why.
+
     const onDown = (e: PointerEvent) => {
-      const pt = toPoint(e);
-      if (!pt) return;
+      // Left button only (Phase 3D-15 follow-up) — a right-click's own
+      // "pointerdown" fires BEFORE its "contextmenu" event, so without
+      // this guard it would already be treated as a normal placement
+      // click (finishing a pending multi-click drawing, starting a drag,
+      // hit-testing a selection, ...) before the contextmenu-cancel
+      // handler further below ever got a chance to run.
+      if (e.button !== 0) return;
+      const raw = rawPoint(e);
+      if (!raw) return;
       const rect = canvas.getBoundingClientRect();
       const mx = e.clientX - rect.left;
       const my = e.clientY - rect.top;
+      const pt = snapPoint(stateRef.current.bars, raw, stateRef.current.magnet);
 
       if (tool === "erase") {
         const hit = hitTest(mx, my);
@@ -1777,51 +5216,376 @@ export function StudioChart({
         return;
       }
 
-      canvas.setPointerCapture(e.pointerId);
-      const id = `d${Date.now()}${Math.round(Math.random() * 1e4)}`;
-      if (tool === "hline" || tool === "vline") {
-        onAddDrawing({ id, tool, p1: pt, p2: pt });
+      if (tool === "triangle") {
+        const pend = pendingRef.current;
+        if (!pend || pend.tool !== "triangle") {
+          pendingRef.current = { tool: "triangle", anchors: [pt] };
+        } else {
+          const anchors = [...pend.anchors, pt];
+          if (anchors.length >= 3) {
+            onAddDrawing(stampNew({ tool: "triangle", p1: anchors[0], p2: anchors[1], points: [anchors[2]] }));
+            pendingRef.current = null;
+            previewPointRef.current = null;
+            onSelectDrawing?.(null);
+          } else {
+            pendingRef.current = { tool: "triangle", anchors };
+          }
+        }
         return;
       }
-      if (tool === "text" || tool === "marker") {
-        const text = window.prompt(
-          tool === "text" ? "Label text" : "Marker note (optional)",
-        );
+
+      if (tool === "cyclic-lines") {
+        // Two plain clicks (registry's own `multi-click`/anchorCount 2, NOT
+        // a drag like Time Cycles/Sine Line below): click 1 places the
+        // first cycle line, click 2 places the second — their time
+        // difference IS the base interval calc.ts's cyclicLineTimes then
+        // repeats indefinitely across the visible chart (see
+        // paintCyclicLines above). Commits in the same ONE onAddDrawing
+        // call as every other multi-click tool here, so it's exactly one
+        // history transaction regardless of the two clicks it took.
+        const pend = pendingRef.current;
+        if (!pend || pend.tool !== "cyclic-lines") {
+          pendingRef.current = { tool: "cyclic-lines", anchors: [pt] };
+        } else {
+          onAddDrawing(stampNew({ tool: "cyclic-lines", p1: pend.anchors[0], p2: pt }));
+          pendingRef.current = null;
+          previewPointRef.current = null;
+          onSelectDrawing?.(null);
+        }
+        return;
+      }
+
+      if (tool === "channel" || tool === "flat-channel" || tool === "rotated-rect") {
+        // Flat Top/Bottom (Phase 3D-5) and Rotated Rectangle (Phase 3D-6)
+        // both reuse this EXACT drag-then-click gesture — the only
+        // difference is which render/hit-test branch its own tool id
+        // resolves to afterward.
+        const pend = pendingRef.current;
+        if (pend && pend.tool === tool && pend.anchors.length === 2) {
+          onAddDrawing(stampNew({ tool, p1: pend.anchors[0], p2: pend.anchors[1], points: [pt] }));
+          pendingRef.current = null;
+          previewPointRef.current = null;
+          return;
+        }
+        canvas.setPointerCapture(e.pointerId);
+        draftRef.current = { id: "__draft__", tool, p1: pt, p2: pt };
+        return;
+      }
+
+      if (tool === "bars-pattern") {
+        // Same drag-then-click gesture as Parallel Channel/Rotated
+        // Rectangle above, but the FINAL click's commit is different: it
+        // captures the real relative price pattern from the actual loaded
+        // bars within the drawn source range (p1->p2) ONCE, right now, and
+        // stores `pt` as its own independent destination anchor
+        // (points[0]) — never regenerated from live data afterward (see
+        // calc.ts's captureRelativePattern / paintBarsPattern's own doc
+        // comment). One click sequence, one onAddDrawing call, one
+        // creation-history transaction.
+        const pend = pendingRef.current;
+        if (pend && pend.tool === "bars-pattern" && pend.anchors.length === 2) {
+          const { deltas, barInterval } = captureRelativePattern(stateRef.current.bars, pend.anchors[0].time, pend.anchors[1].time);
+          onAddDrawing(
+            stampNew({
+              tool: "bars-pattern",
+              p1: pend.anchors[0],
+              p2: pend.anchors[1],
+              points: [pt],
+              settings: { pattern: deltas, barInterval },
+            }),
+          );
+          pendingRef.current = null;
+          previewPointRef.current = null;
+          onSelectDrawing?.(null);
+          return;
+        }
+        canvas.setPointerCapture(e.pointerId);
+        draftRef.current = { id: "__draft__", tool: "bars-pattern", p1: pt, p2: pt };
+        return;
+      }
+
+      if (tool === "fib-ext" || tool === "fib-wedge" || tool === "fib-time-trend" || tool === "pitchfan" || tool === "curve" || tool === "forecast" || tool === "sector" || PITCHFORK_TOOLS.has(tool)) {
+        // Trend-Based Fib Extension (A->B->C), Fib Wedge (pivot->B->C),
+        // Trend-Based Fib Time (A->B->C, Phase 3C-3), and Pitchfan
+        // (pivot->B->C, Phase 3C-3) all use Triangle's exact 3-plain-click
+        // pattern (unlike Fib Channel just below, which drags its first two
+        // anchors): the third click's live cursor position is what a user is
+        // actually watching update in real time (the extension's projected
+        // levels / the wedge's ray fan / the time projection / the pitchfan's
+        // own ray fan — see the pending-preview block further down), which
+        // reads far more naturally as three discrete placements than a
+        // drag-then-click.
+        const pend = pendingRef.current;
+        if (!pend || pend.tool !== tool) {
+          pendingRef.current = { tool, anchors: [pt] };
+        } else {
+          const anchors = [...pend.anchors, pt];
+          if (anchors.length >= 3) {
+            onAddDrawing(stampNew({ tool, p1: anchors[0], p2: anchors[1], points: [anchors[2]] }));
+            pendingRef.current = null;
+            previewPointRef.current = null;
+            onSelectDrawing?.(null);
+          } else {
+            pendingRef.current = { tool, anchors };
+          }
+        }
+        return;
+      }
+
+      if (tool === "fib-channel") {
+        // Same drag-the-trend-baseline-then-click-for-width pattern as the
+        // pre-existing Parallel Channel tool above — Fib Channel IS that
+        // same geometry, just with Fibonacci-ratio-spaced rails instead of
+        // one single offset (see paintFibChannel).
+        const pend = pendingRef.current;
+        if (pend && pend.tool === "fib-channel" && pend.anchors.length === 2) {
+          onAddDrawing(stampNew({ tool: "fib-channel", p1: pend.anchors[0], p2: pend.anchors[1], points: [pt] }));
+          pendingRef.current = null;
+          previewPointRef.current = null;
+          return;
+        }
+        canvas.setPointerCapture(e.pointerId);
+        draftRef.current = { id: "__draft__", tool: "fib-channel", p1: pt, p2: pt };
+        return;
+      }
+
+      if (MULTI_ANCHOR_PATTERN_TOOLS.has(tool)) {
+        // Generic fixed-N-anchor multi-click primitive (Phase 3D-1): the
+        // SAME accumulate-then-commit gesture as Triangle's fixed-3-click
+        // pattern above, generalized to whatever anchor count this tool's
+        // label set declares (PATTERN_ANCHOR_LABELS' array length — one
+        // source of truth for anchor count, not a second hardcoded number).
+        // Every completed anchor set commits in ONE onAddDrawing call, so
+        // exactly one history transaction is created regardless of how many
+        // clicks it took; Escape mid-construction already clears
+        // `pendingRef` generically (see the keyboard effect below), leaving
+        // no phantom history entry.
+        const need = PATTERN_ANCHOR_LABELS[tool]?.length ?? 2;
+        const pend = pendingRef.current;
+        if (!pend || pend.tool !== tool) {
+          pendingRef.current = { tool, anchors: [pt] };
+        } else {
+          const anchors = [...pend.anchors, pt];
+          if (anchors.length >= need) {
+            onAddDrawing(stampNew({ tool, p1: anchors[0], p2: anchors[anchors.length - 1], points: anchors }));
+            pendingRef.current = null;
+            previewPointRef.current = null;
+            onSelectDrawing?.(null);
+          } else {
+            pendingRef.current = { tool, anchors };
+          }
+        }
+        return;
+      }
+
+      if (tool === "polyline" || tool === "path") {
+        // Unlimited multi-click chain: first click starts it, every
+        // subsequent click appends one more vertex (unlike Triangle's fixed
+        // 3-click commit). Escape (see the keyboard effect below) already
+        // clears `pendingRef` generically, so cancel-mid-construction needs
+        // no tool-specific code. Finished by a double-click — see the
+        // `onFinishMultiPoint` dblclick handler registered below.
+        const pend = pendingRef.current;
+        if (!pend || pend.tool !== tool) {
+          pendingRef.current = { tool, anchors: [pt] };
+        } else {
+          pendingRef.current = { tool, anchors: [...pend.anchors, pt] };
+        }
+        return;
+      }
+
+      if (tool === "hline" || tool === "vline" || tool === "hray" || tool === "crossline") {
+        onAddDrawing(stampNew({ tool, p1: pt, p2: pt }));
+        return;
+      }
+      if (
+        tool === "text" ||
+        tool === "marker" ||
+        tool === "pin" ||
+        tool === "comment" ||
+        tool === "signpost" ||
+        tool === "flag-mark" ||
+        tool === "price-note" ||
+        tool === "price-label" ||
+        tool === "emoji"
+      ) {
+        // Every one of these single-anchor annotation tools (Phase 3D-7's
+        // Pin/Comment/Signpost/Flag Mark/Price Note/Price Label reusing
+        // Note's exact prompt-then-place gesture; Phase 3D-13's Emoji joins
+        // them unchanged) has OPTIONAL text — only plain Text itself
+        // requires non-empty content, matching its existing behavior
+        // exactly. Emoji's render branch falls back to a default glyph
+        // when `text` is empty, so declining the prompt still places a
+        // visible drawing instead of an invisible one.
+        const text = window.prompt(tool === "text" ? "Label text" : tool === "emoji" ? "Emoji (optional — paste or type one)" : "Note text (optional)");
         if (tool === "text" && !text) return;
-        onAddDrawing({ id, tool, p1: pt, p2: pt, ...(text ? { text } : {}) });
+        onAddDrawing(stampNew({ tool, p1: pt, p2: pt, ...(text ? { text } : {}) }));
         return;
       }
-      draftRef.current = { id, tool, p1: pt, p2: pt };
+      if (tool === "table") {
+        // No prompt — Table's content is edited via its own grid UI in the
+        // settings popover (double-click after creation), not a single
+        // text prompt.
+        onAddDrawing(
+          stampNew({
+            tool,
+            p1: pt,
+            p2: pt,
+            settings: {
+              tableRows: [
+                ["", ""],
+                ["", ""],
+              ],
+            },
+          }),
+        );
+        return;
+      }
+      if (tool === "content-icon") {
+        // No prompt — like Table above, Content Icon's one real setting
+        // (which curated icon to show) is picked via the settings popover's
+        // icon-picker row (double-click after creation), not a text prompt.
+        onAddDrawing(stampNew({ tool, p1: pt, p2: pt, settings: { icon: "star" } }));
+        return;
+      }
+      if (tool === "vwap") {
+        onAddDrawing(stampNew({ tool: "vwap", p1: pt, p2: pt }));
+        return;
+      }
+      if (tool === "vp-anchored") {
+        // Single click, exactly like Anchored VWAP just above: p1 is the
+        // real anchor (a market TIME, never a pixel/index), p2 mirrors it
+        // purely so generic tool-agnostic code that only knows p1/p2 still
+        // resolves a sane position. The actual profile range (anchor -> most
+        // recent loaded bar) is recomputed fresh every render, never stored.
+        onAddDrawing(stampNew({ tool: "vp-anchored", p1: pt, p2: pt }));
+        return;
+      }
+      if (tool === "gann-square-fixed") {
+        // Single click (registry's own `point`/anchorCount 1) — unlike Gann
+        // Square below, there's no drag to define a size, so one is
+        // computed here from the CURRENT pixel-per-bar/price-per-pixel
+        // scale (so the box reads as roughly square in screen space at the
+        // moment of creation), converted to market time/price extents, and
+        // handed to calc.ts's gannSquareFixedCorner. From here on it's
+        // stored as an ordinary fixed p1/p2 pair — independently editable
+        // exactly like Gann Square afterward.
+        const bars = stateRef.current.bars;
+        const barInterval = bars.length >= 2 ? bars[1].time - bars[0].time : 900;
+        const sizePx = 160;
+        let timeExtent = barInterval * 20;
+        let priceExtent = (Math.abs(pt.price) || 1) * 0.05;
+        const chart = chartRef.current;
+        const price = priceSeriesRef.current;
+        if (chart && price) {
+          const baseLogical = timeToLogicalExtrapolated(bars, pt.time);
+          const x0 = chart.timeScale().logicalToCoordinate(baseLogical);
+          const x1c = chart.timeScale().logicalToCoordinate(baseLogical + 1);
+          const y0 = price.priceToCoordinate(pt.price);
+          if (x0 != null && x1c != null && y0 != null) {
+            const pixelsPerBar = Math.abs(x1c - x0) || 10;
+            timeExtent = (sizePx / pixelsPerBar) * barInterval;
+            const priceAtOffset = price.coordinateToPrice(y0 + sizePx);
+            if (priceAtOffset != null) priceExtent = priceAtOffset - pt.price;
+          }
+        }
+        const p2 = gannSquareFixedCorner(pt, timeExtent, priceExtent);
+        onAddDrawing(stampNew({ tool: "gann-square-fixed", p1: pt, p2 }));
+        return;
+      }
+      if (tool === "arrow-up" || tool === "arrow-down" || tool === "arrow-marker") {
+        onAddDrawing(stampNew({ tool, p1: pt, p2: pt }));
+        return;
+      }
+
+      canvas.setPointerCapture(e.pointerId);
+      if (tool === "brush" || tool === "highlighter") {
+        draftRef.current = { id: "__draft__", tool, p1: pt, p2: pt, points: [pt] };
+        return;
+      }
+      draftRef.current = { id: "__draft__", tool, p1: pt, p2: pt };
     };
 
     const onMove = (e: PointerEvent) => {
       const edit = editRef.current;
       if (edit && onUpdateDrawing) {
-        const pt = toPoint(e);
-        if (!pt) return;
+        const raw = rawPoint(e);
+        if (!raw) return;
+        const pt = snapPoint(stateRef.current.bars, raw, stateRef.current.magnet);
         if (edit.anchor === "body") {
-          const dl = pt.logical - edit.start.logical;
+          const dt = pt.time - edit.start.time;
           const dp = pt.price - edit.start.price;
+          // movePositionBody's p1/p2/stop arithmetic is identical to this
+          // branch's original inline formula for every tool (not just
+          // Long/Short) — delegated here so it's covered by the same pure,
+          // unit-tested helper StudioChart actually runs.
+          const moved = movePositionBody(edit.drawing.p1, edit.drawing.p2, edit.drawing.stop, dt, dp);
           onUpdateDrawing({
             ...edit.drawing,
-            p1: {
-              logical: edit.drawing.p1.logical + dl,
-              price: edit.drawing.p1.price + dp,
-            },
-            p2: {
-              logical: edit.drawing.p2.logical + dl,
-              price: edit.drawing.p2.price + dp,
-            },
-            ...(edit.drawing.stop != null ? { stop: edit.drawing.stop + dp } : {}),
+            p1: moved.p1,
+            p2: moved.p2,
+            points: edit.drawing.points?.map((p) => ({ time: p.time + dt, price: p.price + dp })),
+            ...(moved.stop != null ? { stop: moved.stop } : {}),
+            updatedAt: Date.now(),
           });
+        } else if (edit.anchor === "stop") {
+          onUpdateDrawing({ ...edit.drawing, stop: movePositionStop(edit.drawing.stop, pt.price), updatedAt: Date.now() });
+        } else if (edit.anchor === "entry") {
+          // Vertical-only, like "stop" — price changes, `p1.time` (and thus
+          // the box's time extent on that side) never does.
+          onUpdateDrawing({ ...edit.drawing, p1: movePositionEntry(edit.drawing.p1, pt.price), updatedAt: Date.now() });
+        } else if (edit.anchor === "target") {
+          onUpdateDrawing({ ...edit.drawing, p2: movePositionTarget(edit.drawing.p2, pt.price), updatedAt: Date.now() });
+        } else if (edit.anchor === "left" || edit.anchor === "right") {
+          // Horizontal-only: moves whichever of p1/p2 sits on that side's
+          // time extent, never touching either anchor's price. "Which side"
+          // is resolved once against `edit.drawing` (the fixed pre-drag
+          // snapshot every anchor kind here reads from), not re-derived per
+          // frame, so a resize that crosses over the opposite edge mid-drag
+          // still keeps moving the SAME anchor's time.
+          const resized = resizePositionWidth(edit.drawing.p1, edit.drawing.p2, edit.anchor, pt.time);
+          onUpdateDrawing({ ...edit.drawing, p1: resized.p1, p2: resized.p2, updatedAt: Date.now() });
+        } else if (edit.anchor === "p3") {
+          onUpdateDrawing({ ...edit.drawing, points: [pt], updatedAt: Date.now() });
+        } else if (edit.anchor.startsWith("point:")) {
+          // Polyline/Path per-vertex drag: updates ONLY that index in
+          // `points`, then re-derives the p1/p2 mirror from the (possibly
+          // now-different) first/last vertex — never touches p1/p2 directly,
+          // which is exactly the desync this anchor kind exists to avoid
+          // (see the `AnchorKind` type's doc comment above).
+          const idx = Number(edit.anchor.slice("point:".length));
+          const pts = edit.drawing.points ? [...edit.drawing.points] : [];
+          if (idx >= 0 && idx < pts.length) {
+            pts[idx] = pt;
+            onUpdateDrawing({
+              ...edit.drawing,
+              points: pts,
+              p1: pts[0],
+              p2: pts[pts.length - 1],
+              updatedAt: Date.now(),
+            });
+          }
         } else {
-          onUpdateDrawing({ ...edit.drawing, [edit.anchor]: pt } as Drawing);
+          onUpdateDrawing({ ...edit.drawing, [edit.anchor]: pt, updatedAt: Date.now() } as Drawing);
         }
         return;
       }
+
+      if (pendingRef.current) {
+        const raw = rawPoint(e);
+        if (raw) previewPointRef.current = snapPoint(stateRef.current.bars, raw, stateRef.current.magnet);
+        return;
+      }
+
       if (!draftRef.current) return;
-      const pt = toPoint(e);
-      if (!pt) return;
+      const raw = rawPoint(e);
+      if (!raw) return;
+      const pt = snapPoint(stateRef.current.bars, raw, stateRef.current.magnet);
+      if (draftRef.current.tool === "brush" || draftRef.current.tool === "highlighter") {
+        const pts = draftRef.current.points ?? [];
+        draftRef.current = { ...draftRef.current, p2: pt, points: [...pts, pt].slice(-4000) };
+        return;
+      }
       draftRef.current = { ...draftRef.current, p2: pt };
     };
 
@@ -1830,30 +5594,177 @@ export function StudioChart({
       const draft = draftRef.current;
       draftRef.current = null;
       if (!draft) return;
-      if (
-        Math.abs(draft.p2.logical - draft.p1.logical) < 0.5 &&
-        draft.p1.price === draft.p2.price
-      )
+
+      const bars = stateRef.current.bars;
+      const dl = Math.abs(timeToLogicalExtrapolated(bars, draft.p2.time) - timeToLogicalExtrapolated(bars, draft.p1.time));
+      const negligible = dl < 0.5 && draft.p1.price === draft.p2.price;
+
+      if (draft.tool === "channel" || draft.tool === "fib-channel" || draft.tool === "flat-channel" || draft.tool === "rotated-rect" || draft.tool === "bars-pattern") {
+        if (negligible) return;
+        pendingRef.current = { tool: draft.tool, anchors: [draft.p1, draft.p2] };
         return;
+      }
+      if (draft.tool === "brush" || draft.tool === "highlighter") {
+        if (!draft.points || draft.points.length < 2) return;
+        onAddDrawing(stampNew(draft));
+        return;
+      }
+      if (negligible) return;
       if (draft.tool === "long" || draft.tool === "short") {
         // Default plan: 2R — stop at half the drawn reward distance.
         const entry = draft.p1.price;
         const target = draft.p2.price;
-        onAddDrawing({ ...draft, stop: entry - (target - entry) * 0.5 });
+        onAddDrawing(stampNew({ ...draft, stop: entry - (target - entry) * 0.5 }));
         return;
       }
-      onAddDrawing(draft);
+      if (draft.tool === "image") {
+        // Phase 3D-14: unlike every other drag tool, Image can't finalize
+        // synchronously here — placing it needs a file pick + an async
+        // upload first. Stash the drawn box (this draft is about to be
+        // discarded — draftRef is cleared right after this listener
+        // returns) and hand off to the hidden file input; the ACTUAL
+        // onAddDrawing call happens in handleImageFileChange below, only
+        // once the upload genuinely succeeds. If the user cancels the
+        // picker or the upload fails, nothing is ever added — no broken/
+        // empty drawing left behind.
+        pendingImagePlacementRef.current = { p1: draft.p1, p2: draft.p2 };
+        imageFileInputRef.current?.click();
+        return;
+      }
+      onAddDrawing(stampNew(draft));
     };
+
+    // Finishes a Polyline/Path multi-click chain — the "established
+    // multi-click finish gesture" for THIS tool family, distinct from
+    // Triangle (auto-commits at a fixed 3 anchors) and Channel (drag + one
+    // more click). A double-click's second click already ran through
+    // `onDown` just before this fires (browser event order: pointerdown ->
+    // pointerup -> click -> pointerdown -> pointerup -> click -> dblclick),
+    // appending one more anchor essentially on top of the one before it —
+    // dropped here so the shape doesn't end with a zero-length final
+    // segment. This listener is a no-op for every other tool (it bails
+    // immediately unless a polyline/path chain is actually pending), so it
+    // can't collide with the OTHER dblclick effect further down (which only
+    // ever runs in Cursor/Select).
+    const onFinishMultiPoint = (e: MouseEvent) => {
+      const pend = pendingRef.current;
+      if (!pend || (pend.tool !== "polyline" && pend.tool !== "path")) return;
+      e.preventDefault();
+      let anchors = pend.anchors;
+      if (anchors.length >= 2) {
+        const bars = stateRef.current.bars;
+        const a = anchors[anchors.length - 1];
+        const b = anchors[anchors.length - 2];
+        const dl = Math.abs(timeToLogicalExtrapolated(bars, a.time) - timeToLogicalExtrapolated(bars, b.time));
+        if (dl < 0.5 && a.price === b.price) anchors = anchors.slice(0, -1);
+      }
+      pendingRef.current = null;
+      previewPointRef.current = null;
+      if (anchors.length < 2) return;
+      onAddDrawing(stampNew({ tool: pend.tool, p1: anchors[0], p2: anchors[anchors.length - 1], points: anchors }));
+      onSelectDrawing?.(null);
+    };
+
+    // ---- right-click cancels an armed drawing tool (Phase 3D-15 follow-up) --
+    // Only when a placement tool other than Select is armed — Select itself
+    // is a no-op here so the pre-existing right-click "price under cursor"
+    // order menu (see the separate contextmenu effect further down) keeps
+    // working exactly as before. Registered on `hostRef` in the CAPTURE
+    // phase specifically so it runs, and can stopPropagation, before that
+    // other effect's bubble-phase listener on the same host element — the
+    // two are independent effects with no defined mount order otherwise.
+    const host = hostRef.current;
+    const onContextCancel = (e: MouseEvent) => {
+      if (tool === "select") return;
+      e.preventDefault();
+      e.stopPropagation();
+      pendingRef.current = null;
+      draftRef.current = null;
+      previewPointRef.current = null;
+      editRef.current = null;
+      pendingImagePlacementRef.current = null;
+      onCancelTool?.();
+    };
+    host?.addEventListener("contextmenu", onContextCancel, true);
 
     canvas.addEventListener("pointerdown", onDown);
     canvas.addEventListener("pointermove", onMove);
     canvas.addEventListener("pointerup", onUp);
+    canvas.addEventListener("dblclick", onFinishMultiPoint);
     return () => {
       canvas.removeEventListener("pointerdown", onDown);
       canvas.removeEventListener("pointermove", onMove);
       canvas.removeEventListener("pointerup", onUp);
+      canvas.removeEventListener("dblclick", onFinishMultiPoint);
+      host?.removeEventListener("contextmenu", onContextCancel, true);
+      cleanupHover?.();
     };
-  }, [tool, onAddDrawing, onRemoveDrawing, onUpdateDrawing, onSelectDrawing]);
+  }, [tool, onAddDrawing, onRemoveDrawing, onUpdateDrawing, onSelectDrawing, onCancelTool]);
+
+  // ---- double-click a completed drawing -> open its settings ---------------
+  // Deliberately its OWN effect, not folded into the pointer-interaction one
+  // above: that effect returns early whenever `tool === "cursor"` (no
+  // drawing interaction at all in that mode), but double-click-to-settings
+  // must work in Cursor too — a user revisiting an old drawing is normally
+  // back in Cursor/idle, not still holding whatever tool created it. Scoped
+  // to Cursor/Select only (not an active creation tool like Rectangle),
+  // so double-clicking an existing object while a DIFFERENT drawing tool is
+  // selected finishes that tool's own multi-click placement instead of being
+  // hijacked into opening settings for the shape underneath it.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const onDblClick = (e: MouseEvent) => {
+      const current = stateRef.current.tool;
+      if (current !== "cursor" && current !== "select") return;
+      const rect = canvas.getBoundingClientRect();
+      const hit = hitTest(e.clientX - rect.left, e.clientY - rect.top);
+      if (!hit) return;
+      e.preventDefault();
+      onSelectDrawing?.(hit.d.id);
+      onOpenDrawingSettings?.(hit.d.id, { x: e.clientX, y: e.clientY });
+    };
+    canvas.addEventListener("dblclick", onDblClick);
+    return () => canvas.removeEventListener("dblclick", onDblClick);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onSelectDrawing, onOpenDrawingSettings]);
+
+  // ---- keyboard: Escape cancels an unfinished drawing / clears selection,
+  // Delete/Backspace removes the selected drawing (unless locked). Not
+  // gated by `tool` — a selection persists across tool switches, and Escape
+  // must be able to cancel a channel/triangle in progress no matter which
+  // element currently has focus, as long as it isn't a text input. ---------
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const typing =
+        target &&
+        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+      if (typing) return;
+
+      if (e.key === "Escape") {
+        if (pendingRef.current || draftRef.current) {
+          pendingRef.current = null;
+          draftRef.current = null;
+          previewPointRef.current = null;
+          e.preventDefault();
+        } else if (selectedIdRef.current) {
+          onSelectDrawing?.(null);
+        }
+        return;
+      }
+      if (e.key === "Delete" || e.key === "Backspace") {
+        const id = selectedIdRef.current;
+        if (!id) return;
+        const d = stateRef.current.drawings.find((x) => x.id === id);
+        if (!d || d.locked) return;
+        e.preventDefault();
+        onRemoveDrawing(id);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onRemoveDrawing, onSelectDrawing]);
 
 
   // ---- right-click anywhere on the chart -> price under the cursor ---------
@@ -1917,7 +5828,26 @@ export function StudioChart({
       <canvas
         ref={canvasRef}
         className="absolute inset-0 z-10"
-        style={{ pointerEvents: tool === "cursor" ? "none" : "auto", cursor: tool === "erase" ? "not-allowed" : tool === "cursor" ? "default" : tool === "select" ? "pointer" : "crosshair" }}
+        style={{
+          pointerEvents: tool === "cursor" ? "none" : "auto",
+          // "select"'s cursor is dynamic (see the hover-driven pass-through
+          // block in the pointer-interaction effect above) — this is just
+          // its baseline before the first hover move lands.
+          cursor: tool === "erase" ? "not-allowed" : tool === "cursor" ? "default" : "crosshair",
+        }}
+      />
+
+      {/* Phase 3D-14: the Image tool's file picker. Hidden and
+          programmatically clicked (see the pointer-interaction effect's
+          "image" onUp branch and DrawingSettingsPopover's "Replace Image"
+          action) rather than a visible <input> — the actual UI is the
+          drag-a-box gesture on the canvas above. */}
+      <input
+        ref={imageFileInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/gif"
+        className="hidden"
+        onChange={handleImageFileChange}
       />
 
       {/* Draggable trade levels. Only the thin row captures the pointer, so

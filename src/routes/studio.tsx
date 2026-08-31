@@ -55,10 +55,11 @@ import {
   Link2,
   BarChart3,
   Gauge,
+  Code2,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useSubscription } from "@/hooks/useSubscription";
-import { checkStudioAccess, isStudioGateTestBypassed } from "@/lib/subscription-status";
+import { checkStudioAccess, isStudioGateTestBypassed, isStudioGateLocalPaidBypassed } from "@/lib/subscription-status";
 import { getOnboardingStatus } from "@/lib/profile.functions";
 import { OnboardingFlow } from "@/components/OnboardingFlow";
 import { fetchBars, TIMEFRAMES, timeframeLabel } from "@/lib/marketdata";
@@ -86,8 +87,14 @@ import {
   type ChartTrade,
   type PositionPlan,
   type RenderStats,
+  type MagnetMode,
   DEFAULT_CHART_SETTINGS,
 } from "@/components/studio/StudioChart";
+import { DrawToolbar } from "@/components/studio/DrawToolbar";
+import { DrawingSettingsPopover } from "@/components/studio/DrawingSettingsPopover";
+import { loadDrawingsFor, saveDrawingsFor } from "@/lib/workspace/drawings";
+import { TOOL_BY_ID } from "@/lib/drawing/registry";
+import { recordDrawingChange, undoDrawings, redoDrawings, clearDrawingHistory } from "@/lib/drawing/history";
 import { BrokerConnections } from "@/components/studio/BrokerConnections";
 import { SymbolSearch } from "@/components/studio/SymbolSearch";
 import { WatchlistPanel } from "@/components/studio/WatchlistPanel";
@@ -99,18 +106,21 @@ import {
   createIndicator,
   deleteIndicator,
   duplicateIndicator,
+  getIndicator,
   listIndicators,
   listVersions,
   restoreVersion,
   updateIndicator,
 } from "@/lib/indicators.functions";
 import { repairSgScript, translateToSgScript } from "@/lib/sgscript.functions";
-import { loadDrawings, saveDrawings, takeStudioHandoff } from "@/lib/studio-handoff";
+import { takeStudioHandoff } from "@/lib/studio-handoff";
 import {
   TradingPanel,
   type OrderDraft,
   type TicketPrefill,
+  type StrategyExecutionProps,
 } from "@/components/studio/TradingPanel";
+import { useStrategyExecution } from "@/components/studio/useStrategyExecution";
 import { AccountBar, EnvBadge } from "@/components/studio/AccountBar";
 import { FeedbackButton } from "@/components/FeedbackButton";
 import { AppNavRail } from "@/components/AppNavRail";
@@ -190,6 +200,7 @@ import {
   flattenAllPositions,
   getTradingSnapshot,
   listTradingAccounts,
+  listMyPaperAccountsBasic,
   createPaperTradingAccount,
   renameTradingAccount,
   reverseTradePosition,
@@ -198,8 +209,8 @@ import {
   modifyTradeOrder,
   setPositionBrackets,
   resetPaperAccount,
-  submitTradeOrder,
 } from "@/lib/trading.functions";
+import { submitPaperOrder } from "@/lib/trading/paperExecutionClient";
 
 
 export const Route = createFileRoute("/studio")({
@@ -230,10 +241,26 @@ export const Route = createFileRoute("/studio")({
     if (access === "unauthenticated") throw redirect({ to: "/auth" });
     if (access === "unpaid") throw redirect({ to: "/pricing" });
   },
+  // Phase 5A-6A — the Builder → Studio Add to Chart / Backtest handoff
+  // contract: an `indicatorId` ONLY (never source/spec/settings in the URL —
+  // see the load effect below, which fetches the real row through the same
+  // RLS-scoped `getIndicator` Chart Studio's own Saved widget already uses).
+  // `openTester` additionally focuses the Strategy Tester dock tab once
+  // loaded (Phase 5A-6C's Backtest action). Mirrors the exact
+  // typeof-string-check `validateSearch` convention already established by
+  // src/routes/checkout.return.tsx / trades.tsx / journal.tsx — not a new
+  // search-param pattern.
+  validateSearch: (search: Record<string, unknown>): { indicatorId?: string; openTester?: boolean } => ({
+    indicatorId: typeof search.indicatorId === "string" ? search.indicatorId : undefined,
+    // Accepts either a raw URL string ("true", from a typed/shared link) or
+    // an already-boolean value (a same-app `navigate({ search: { openTester:
+    // true } })` call, per the router's own typed search-param codec).
+    openTester: search.openTester === "true" || search.openTester === true,
+  }),
   pendingComponent: StudioLoadingScreen,
   head: () => ({
     meta: [
-      { title: "Chart Studio — run your indicators on live charts" },
+      { title: "Chart Studio — Signal Goat AI" },
       {
         name: "description",
         content:
@@ -289,10 +316,17 @@ function StudioLoadingScreen() {
 function Studio() {
   const navigate = useNavigate();
   const testBypassed = isStudioGateTestBypassed();
+  // Local-dev-only, doubly-guarded (see isStudioGateLocalPaidBypassed's
+  // docstring): unlike `testBypassed` above, this NEVER substitutes for a
+  // real signed-in user below — it only ever widens what counts as "paid"
+  // for a user who already passed the `!!user` check, so a signed-out
+  // visitor is still redirected to /auth exactly as in production.
+  const localPaidBypassed = isStudioGateLocalPaidBypassed();
   const { user, loading: authLoading } = useAuth();
   const { isActive: isPaid, loading: subLoading } = useSubscription();
   const ready = !authLoading && !subLoading;
-  const authorized = testBypassed || (ready && !!user && isPaid);
+  const effectivelyPaid = isPaid || localPaidBypassed;
+  const authorized = testBypassed || (ready && !!user && effectivelyPaid);
 
   useEffect(() => {
     if (testBypassed || !ready) return;
@@ -300,10 +334,10 @@ function Studio() {
       navigate({ to: "/auth", replace: true });
       return;
     }
-    if (!isPaid) {
+    if (!effectivelyPaid) {
       navigate({ to: "/pricing", replace: true });
     }
-  }, [testBypassed, ready, user, isPaid, navigate]);
+  }, [testBypassed, ready, user, effectivelyPaid, navigate]);
 
   // UI-8 task 3: first-run onboarding. Checked once access is confirmed —
   // `null` = still checking, so the loading shell (not the real product,
@@ -335,25 +369,10 @@ function Studio() {
   return <StudioWorkspace />;
 }
 
-/** `group` only drives a subtle divider between clusters in the toolbar — it
- * has no effect on tool behaviour. */
-const TOOLS: { id: DrawTool; icon: typeof MousePointer2; label: string; group: string }[] = [
-  { id: "cursor", icon: MousePointer2, label: "Cursor", group: "select" },
-  { id: "select", icon: MousePointer2, label: "Select / move drawings", group: "select" },
-  { id: "trend", icon: TrendingUp, label: "Trend line", group: "shapes" },
-  { id: "ray", icon: Crosshair, label: "Ray", group: "shapes" },
-  { id: "hline", icon: Minus, label: "Horizontal line", group: "shapes" },
-  { id: "vline", icon: Minus, label: "Vertical line", group: "shapes" },
-  { id: "rect", icon: Square, label: "Rectangle", group: "shapes" },
-  { id: "fib", icon: Ruler, label: "Fib retracement", group: "annotate" },
-  { id: "text", icon: TypeIcon, label: "Text", group: "annotate" },
-  { id: "arrow", icon: ArrowUpRight, label: "Arrow", group: "annotate" },
-  { id: "marker", icon: MapPin, label: "Marker", group: "annotate" },
-  { id: "measure", icon: Pencil, label: "Measure", group: "annotate" },
-  { id: "long", icon: TrendingUp, label: "Long position", group: "position" },
-  { id: "short", icon: TrendingDown, label: "Short position", group: "position" },
-  { id: "erase", icon: Trash2, label: "Erase", group: "erase" },
-];
+// The old flat TOOLS array (cursor/select/trend/.../erase, one flavor-text
+// "group" per divider) was replaced by the grouped-flyout toolbar
+// (`DrawToolbar.tsx`), which reads its tool list from the shared
+// `src/lib/drawing/registry.ts` instead.
 
 const CHART_TYPES: { id: ChartType; label: string }[] = [
   { id: "candles", label: "Candles" },
@@ -657,6 +676,10 @@ function StudioWorkspace() {
   const { user } = useAuth();
   const qc = useQueryClient();
   const signedIn = !!user;
+  // Phase 5A-6A/C — Builder → Studio handoff search params (see the Route's
+  // own validateSearch doc comment above for the contract). Read once here,
+  // consumed by the load effect further down (after `runCode` is defined).
+  const { indicatorId: handoffIndicatorId, openTester: handoffOpenTester } = Route.useSearch();
 
   // UI-4g-2: chart runtime state is now genuinely per-instance, keyed by the
   // same workspace-tree instanceId UI-4g-1 already derived (was a
@@ -709,6 +732,22 @@ function StudioWorkspace() {
   const [chartStatesMap, setChartStatesMap] = useState<Record<string, ChartRuntimeState>>({
     "chart-1": DEFAULT_CHART_RUNTIME_STATE,
   });
+  // Mirrors `chartStatesMap` for synchronous reads from plain event-handler
+  // functions (drawing create/edit/delete/undo/redo below) that must NOT
+  // read state via a `setState` functional updater — see the long comment
+  // above `addDrawing` for why. Kept in sync two ways: unconditionally every
+  // render (covers the common case), AND eagerly inside `setChartField`
+  // itself right when a new value is computed (covers back-to-back mutator
+  // calls within the same synchronous tick, before React has re-rendered).
+  // The eager write is safe to happen more than once for one call — like any
+  // functional `setState` updater, React may invoke this one more than once
+  // for a single commit (e.g. its eager-bailout check on an idle fiber), but
+  // both invocations start from the same `prev` and so compute the same
+  // `nextState`; assigning the same value to a ref twice is harmless. That
+  // is the key distinction from the bug this file fixes: assignment is
+  // idempotent, pushing a history entry is not.
+  const chartStatesMapRef = useRef(chartStatesMap);
+  chartStatesMapRef.current = chartStatesMap;
   const [activeChartInstanceId, setActiveChartInstanceId] = useState("chart-1");
   // Read inside the market-data effect's async .then() to confirm the fetch
   // is still for whichever chart is active NOW before touching the
@@ -728,7 +767,9 @@ function StudioWorkspace() {
         const cur = prev[instanceId] ?? DEFAULT_CHART_RUNTIME_STATE;
         const nextVal = typeof value === "function" ? (value as (p: ChartRuntimeState[K]) => ChartRuntimeState[K])(cur[field]) : value;
         if (nextVal === cur[field]) return prev;
-        return { ...prev, [instanceId]: { ...cur, [field]: nextVal } };
+        const nextState = { ...prev, [instanceId]: { ...cur, [field]: nextVal } };
+        chartStatesMapRef.current = nextState;
+        return nextState;
       });
     },
     [],
@@ -854,18 +895,39 @@ function StudioWorkspace() {
   // AI Builder's conversation at that SAME project instead of leaking a
   // different one's history into it.
   const [aiIndicatorId, setAiIndicatorId] = useState<string | null>(null);
-  const [tool, setTool] = useState<DrawTool>("cursor");
+  // "select" is the sole canonical Select/Cursor toolbar tool (Phase
+  // 3D-15) — "cursor" itself still exists as a DrawTool value but is only
+  // ever used internally now, for read-only chart panes (see the
+  // hardcoded tool="cursor" further down).
+  const [tool, setTool] = useState<DrawTool>("select");
+  // Stable reference (Phase 3D-15 follow-up) — passed to StudioChart's
+  // right-click-cancel handler, which lives inside an effect keyed in part
+  // on this callback's identity. An inline arrow here would be a fresh
+  // function every render, and this component re-renders very often (the
+  // live price feed alone), which was tearing down and re-arming that
+  // effect (and, with it, the Select-tool hover/pointerEvents state and
+  // the crosshair position) far more often than any real tool change.
+  // `setTool` itself is already stable (a useState setter), so an empty
+  // dependency array is correct here, not a lint workaround.
+  const handleCancelTool = useCallback(() => setTool("select"), []);
   // Backtest overlay: entry/exit markers from the last run of the current project.
   const [backtestTrades, setBacktestTrades] = useState<BacktestTrade[] | null>(null);
   // Prompt handed to the AI panel when the tester asks for missing rules.
   const [aiSeed, setAiSeed] = useState<string | null>(null);
   const drawings = activeChartState.drawings;
-  const setDrawings = useCallback(
-    (v: Drawing[] | ((p: Drawing[]) => Drawing[])) => setChartField(activeChartInstanceId, "drawings", v),
-    [activeChartInstanceId, setChartField],
-  );
   const [selectedDrawing, setSelectedDrawing] = useState<string | null>(null);
   const [objectsOpen, setObjectsOpen] = useState(false);
+  // Drawing-anchor snap strength (distinct from chartSettings.crosshairMagnet,
+  // which only affects the crosshair display, not where a new anchor lands).
+  // One studio-wide value, not per-chart — same rationale as `tool` itself.
+  const [magnet, setMagnet] = useState<MagnetMode>("off");
+  // Which drawing (by id) has its DrawingSettingsPopover open, if any, and
+  // where (VIEWPORT coordinates) it should anchor near — set precisely from
+  // the double-click position when opened that way (StudioChart's
+  // onOpenDrawingSettings), or a sensible fixed near-the-chart default when
+  // opened from the Objects panel's gear icon instead.
+  const [drawingSettingsFor, setDrawingSettingsFor] = useState<string | null>(null);
+  const [drawingSettingsAnchor, setDrawingSettingsAnchor] = useState<{ x: number; y: number }>({ x: 320, y: 110 });
 
   // UI-4c: live, mutable workspace layout tree — source of truth for which
   // widgets are open in the sidebar/dock and in what order.
@@ -922,15 +984,29 @@ function StudioWorkspace() {
         for (const tab of node.tabs) {
           if (tab.widgetTypeId !== "chart") continue;
           const cfg = tab.chartConfig;
+          const symbol = cfg?.symbol ?? DEFAULT_CHART_RUNTIME_STATE.symbol;
+          const interval = cfg?.interval ?? DEFAULT_CHART_RUNTIME_STATE.interval;
           found[tab.instanceId] = {
             ...DEFAULT_CHART_RUNTIME_STATE,
-            symbol: cfg?.symbol ?? DEFAULT_CHART_RUNTIME_STATE.symbol,
-            interval: cfg?.interval ?? DEFAULT_CHART_RUNTIME_STATE.interval,
+            symbol,
+            interval,
             chartType: (cfg?.chartType as ChartType | undefined) ?? DEFAULT_CHART_RUNTIME_STATE.chartType,
             chartSettings: cfg?.settings
               ? ({ ...DEFAULT_CHART_SETTINGS, ...(cfg.settings as Partial<ChartSettings>) } as ChartSettings)
               : DEFAULT_CHART_RUNTIME_STATE.chartSettings,
             linkMode: cfg?.linkMode ?? DEFAULT_CHART_RUNTIME_STATE.linkMode,
+            // This call REPLACES chartStatesMap wholesale (a plain
+            // setChartStatesMap(found) below, not a merge) — every site that
+            // triggers it (initial load, preset switch, named-layout
+            // switch, cloud sync) would otherwise silently discard each
+            // chart's drawings back to `[]`, since a fresh runtime-state
+            // object built from DEFAULT_CHART_RUNTIME_STATE has no way to
+            // know what was saved. Hydrating from the SAME persisted store
+            // `StudioChart`'s own drawings-persistence effect reads keeps
+            // this one atomic instead of racing that effect's async
+            // setChartField (see the "justHydratedRef" comment further
+            // down for the mount-order race this sidesteps entirely).
+            drawings: loadDrawingsFor(tab.instanceId, symbol, interval) as Drawing[],
           };
         }
         return;
@@ -1399,6 +1475,7 @@ function StudioWorkspace() {
           const { [instanceId]: _removed, ...rest } = prevStates;
           return rest;
         });
+        clearDrawingHistory(instanceId);
         if (activeChartInstanceId === instanceId) {
           const stillThere = findLeafIdHoldingInstance(next.root, instanceId);
           if (!stillThere) {
@@ -1648,6 +1725,7 @@ function StudioWorkspace() {
   );
 
   const listIndicatorsFn = useServerFn(listIndicators);
+  const getIndicatorFn = useServerFn(getIndicator);
   const createIndicatorFn = useServerFn(createIndicator);
   const updateIndicatorFn = useServerFn(updateIndicator);
   const deleteIndicatorFn = useServerFn(deleteIndicator);
@@ -1718,7 +1796,6 @@ function StudioWorkspace() {
   const [accountId, setAccountId] = useState<string | null>(null);
   const [brokersOpen, setBrokersOpen] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
-  const submitOrderFn = useServerFn(submitTradeOrder);
   const cancelOrderFn = useServerFn(cancelTradeOrder);
   const closePositionFn = useServerFn(closeTradePosition);
   const flattenFn = useServerFn(flattenAllPositions);
@@ -1743,13 +1820,32 @@ function StudioWorkspace() {
   });
   const accounts = useMemo(() => accountsQuery.data ?? [], [accountsQuery.data]);
 
-  // Never guess: the panel trades whichever account is selected here.
+  // Phase 5B-Final — RLS-only account discovery. `accountsQuery` above goes
+  // through oms.server.ts/supabaseAdmin (also auto-provisions a first
+  // account); this reads `trading_accounts` directly under the caller's own
+  // session and needs no service-role credential. Used as a fallback so
+  // account selection (and therefore Strategy Execution's paper-only gate)
+  // still resolves when the privileged path is unavailable.
+  const listMyPaperAccountsBasicFn = useServerFn(listMyPaperAccountsBasic);
+  const basicAccountsQuery = useQuery<
+    Array<{ id: string; label: string; environment: string; account_number: string; currency: string; status: string }>
+  >({
+    queryKey: ["trading-accounts-basic"],
+    queryFn: () => listMyPaperAccountsBasicFn() as Promise<
+      Array<{ id: string; label: string; environment: string; account_number: string; currency: string; status: string }>
+    >,
+    enabled: !!user,
+  });
+  const basicAccounts = useMemo(() => basicAccountsQuery.data ?? [], [basicAccountsQuery.data]);
+
+  // Never guess: the panel trades whichever account is selected here. Falls
+  // back to the RLS-only list so a selection still happens even when the
+  // privileged account list can't load.
   useEffect(() => {
-    if (!accounts.length) return;
-    setAccountId((cur) =>
-      cur && accounts.some((a) => a.id === cur) ? cur : accounts[0].id,
-    );
-  }, [accounts]);
+    const list = accounts.length ? accounts : basicAccounts;
+    if (!list.length) return;
+    setAccountId((cur) => (cur && list.some((a) => a.id === cur) ? cur : list[0].id));
+  }, [accounts, basicAccounts]);
 
   const tradingQuery = useQuery<AccountSnapshot>({
     queryKey: ["trading-snapshot", accountId],
@@ -1806,21 +1902,29 @@ function StudioWorkspace() {
         | { kind: "reset" },
     ): Promise<AccountSnapshot> => {
       if (action.kind === "submit") {
-        const res = (await submitOrderFn({
-          data: {
-            ...(accountId ? { accountId } : {}),
-            symbol,
-            timeframe: interval,
-            side: action.draft.side,
-            type: action.draft.type,
-            qty: action.draft.qty,
-            ...(action.draft.limitPrice ? { limitPrice: action.draft.limitPrice } : {}),
-            ...(action.draft.stopPrice ? { stopPrice: action.draft.stopPrice } : {}),
-            ...(action.draft.stopLoss ? { stopLoss: action.draft.stopLoss } : {}),
-            ...(action.draft.takeProfit ? { takeProfit: action.draft.takeProfit } : {}),
-          },
-        })) as { rejected: string | null; snapshot: AccountSnapshot };
+        if (!accountId) throw new Error("Select a trading account first.");
+        // Phase 5B-Final — manual paper orders go through the SAME trusted
+        // execution boundary as Strategy Execution (submitPaperOrder ->
+        // supabase/functions/paper-submit-order -> the existing OMS). This
+        // is a converge-on-one-system requirement, not an accident: the
+        // old submitTradeOrder server function required supabaseAdmin on
+        // the Node server, which is not reliably provisioned in every
+        // hosting tier; the Edge Function always receives it from the
+        // platform instead.
+        const res = await submitPaperOrder({
+          accountId,
+          symbol,
+          timeframe: interval,
+          side: action.draft.side,
+          type: action.draft.type,
+          qty: action.draft.qty,
+          ...(action.draft.limitPrice ? { limitPrice: action.draft.limitPrice } : {}),
+          ...(action.draft.stopPrice ? { stopPrice: action.draft.stopPrice } : {}),
+          ...(action.draft.stopLoss ? { stopLoss: action.draft.stopLoss } : {}),
+          ...(action.draft.takeProfit ? { takeProfit: action.draft.takeProfit } : {}),
+        });
         if (res.rejected) throw new Error(res.rejected);
+        if (!res.snapshot) throw new Error("Order accepted but no snapshot returned.");
         track("paper_trade_created", {
           side: action.draft.side,
           type: action.draft.type,
@@ -2110,37 +2214,219 @@ function StudioWorkspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chartConfigPersistSignature]);
 
-  // ---- drawings persistence ----------------------------------------------
+  // ---- drawings persistence ------------------------------------------------
+  // Generalized across EVERY open chart instance (not just the active one) —
+  // see src/lib/workspace/drawings.ts's doc comment for why the old
+  // active-chart-only, symbol:interval-only version of this could silently
+  // collide or lose non-active charts' drawings. Loading is keyed on each
+  // instance's OWN (instanceId, symbol, interval) triple, tracked in a ref so
+  // it only fires on a genuine symbol/timeframe change for that instance —
+  // never re-fires (and never clobbers in-progress edits) on every
+  // chartStatesMap update, e.g. a live price tick.
+  //
+  // `justHydratedRef` closes a real mount-time data-loss race: on first
+  // mount (and again any time a chart instance is newly added), the LOAD
+  // effect below correctly calls `setChartField(id, "drawings", ...)` with
+  // whatever was in storage — but that's an async state update, so the SAVE
+  // effect, which runs in the SAME commit right after, still sees this
+  // render's STALE `chartStatesMap` (the instance's brand-new, still-empty
+  // `drawings: []`) and would otherwise immediately overwrite the very data
+  // LOAD just fetched with an empty array, a heartbeat before the loaded
+  // value ever reaches a render. Reproduced directly: draw something, reload
+  // — without this guard the drawing survives the in-memory reload (LOAD's
+  // state update does land) but is gone again on the NEXT reload, because
+  // SAVE's stale-empty write already clobbered localStorage right after the
+  // first one. Marking an instance "just hydrated" and skipping exactly its
+  // next SAVE pass (the SAVE effect fires again, with the now-current data,
+  // as soon as LOAD's state update lands on the following render) fixes it
+  // without needing the two effects to somehow run in the same tick.
+  const drawingsLoadTrackRef = useRef<Record<string, string>>({});
+  const justHydratedRef = useRef<Set<string>>(new Set());
+  const chartSymbolIntervalSig = useMemo(
+    () => Object.entries(chartStatesMap).map(([id, s]) => `${id}:${s.symbol}:${s.interval}`).join("|"),
+    [chartStatesMap],
+  );
   useEffect(() => {
-    setDrawings(loadDrawings(symbol, interval) as Drawing[]);
-  }, [symbol, interval]);
-  useEffect(() => {
-    saveDrawings(symbol, interval, drawings);
-  }, [symbol, interval, drawings]);
+    for (const [id, inst] of Object.entries(chartStatesMap)) {
+      const combo = `${inst.symbol}:${inst.interval}`;
+      if (drawingsLoadTrackRef.current[id] === combo) continue;
+      drawingsLoadTrackRef.current[id] = combo;
+      justHydratedRef.current.add(id);
+      setChartField(id, "drawings", loadDrawingsFor(id, inst.symbol, inst.interval) as Drawing[]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chartSymbolIntervalSig]);
 
-  // These four are memoized once ([] deps, same hazard as runCode/recompute
+  const drawingsSaveSig = useMemo(
+    () => JSON.stringify(Object.entries(chartStatesMap).map(([id, s]) => [id, s.symbol, s.interval, s.drawings])),
+    [chartStatesMap],
+  );
+  useEffect(() => {
+    for (const [id, inst] of Object.entries(chartStatesMap)) {
+      if (justHydratedRef.current.has(id)) {
+        // Skip exactly the one pass immediately following this instance's
+        // load — see the doc comment above. The next pass (triggered by
+        // LOAD's own state update changing `drawingsSaveSig`) saves for
+        // real, with the now-current, actually-loaded data.
+        justHydratedRef.current.delete(id);
+        continue;
+      }
+      saveDrawingsFor(id, inst.symbol, inst.interval, inst.drawings);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drawingsSaveSig]);
+
+  // ---- drawing mutators + undo/redo history --------------------------------
+  // These are memoized once ([] deps, same hazard as runCode/recompute
   // above) so they can't close over a fresh per-active-chart `setDrawings`.
   // Route through the stable `setChartField` + `activeChartInstanceIdRef`
   // instead, so a drawing action always lands on whichever chart is
   // actually active at the moment it fires.
+  //
+  // History (src/lib/drawing/history.ts) is a full before/after array
+  // snapshot per committed change. IMPORTANT: `recordDrawingChange` (and
+  // `undoDrawings`/`redoDrawings`, which pop/push those same stacks) are
+  // side-effecting — each call mutates history.ts's module-level stacks by
+  // one entry. They must therefore never be called from INSIDE a functional
+  // `setState` updater passed to `setChartField`/`setChartStatesMap`: React
+  // does not guarantee an updater runs exactly once per commit (e.g. its
+  // eager-bailout optimization calls it once synchronously to check whether
+  // the new state actually differs, then again for the real commit) — fine
+  // for a pure computation like `[...prev, d]` since both calls produce the
+  // same output, but for a side effect like "push a history entry" the
+  // second call is a real, extra mutation, and one Undo would then need two
+  // presses to fully undo one drawing (or leave a stray future entry). This
+  // was confirmed to reproduce on plain Trend Line too, i.e. it's this
+  // shared mechanism, not any one tool.
+  //
+  // The fix: read the pre-change value synchronously from `chartStatesMapRef`
+  // (kept fresh outside of React's render/commit cycle — see its own
+  // comment), compute `after` and call the history side effect exactly once
+  // in this plain function body, then commit with a PLAIN value (not a
+  // function) via `setChartField` — so there is no updater function left for
+  // React to invoke more than once.
+  //
+  // `updateDrawing` also backs StudioChart's per-pointermove drag callback,
+  // which would otherwise record one history entry per animation frame —
+  // `dragCoalesceRef` collapses any burst of updates to the SAME drawing
+  // within 400ms into the single history entry for "the whole drag/edit",
+  // exactly like create/delete/setting-change each already are.
+  const dragCoalesceRef = useRef<{ id: string; lastTs: number } | null>(null);
+  // `chartId` defaults to whichever chart is active, so every existing call
+  // site below that omits it (the active chart's own onAddDrawing/
+  // onRemoveDrawing/onUpdateDrawing wiring) keeps behaving exactly as
+  // before. `renderInactiveChartLeaf` passes its own pane's instanceId
+  // explicitly instead, so a drawing mutation on a non-active pane records
+  // history scoped to THAT pane, not whichever chart happens to be active —
+  // see the doc comment on `renderInactiveChartLeaf` for why that pane's
+  // callbacks must never bypass these shared, history-recording mutators.
   const addDrawing = useCallback(
-    (d: Drawing) => setChartField(activeChartInstanceIdRef.current, "drawings", (prev) => [...prev, d]),
+    (d: Drawing, chartId: string = activeChartInstanceIdRef.current) => {
+      const prev = chartStatesMapRef.current[chartId]?.drawings ?? DEFAULT_CHART_RUNTIME_STATE.drawings;
+      const after = [...prev, d];
+      recordDrawingChange(chartId, prev, after);
+      setChartField(chartId, "drawings", after);
+    },
     [setChartField],
   );
-  const removeDrawing = useCallback((id: string) => {
-    setChartField(activeChartInstanceIdRef.current, "drawings", (prev) => prev.filter((d) => d.id !== id));
+  // Phase 3D-14: deliberately does NOT call deleteChartImage() for a removed
+  // Image drawing's `settings.imagePath`, even though src/lib/storage/
+  // chartImages.ts exposes exactly that function. A `Duplicate`d Image
+  // drawing shares the exact same path as its source, so deleting one
+  // would silently break every other drawing (on this chart OR another)
+  // still pointing at that object. Real cleanup needs reference counting
+  // across every drawing on every chart instance — deliberately out of
+  // scope for this phase; the storage object is simply left behind.
+  const removeDrawing = useCallback((id: string, chartId: string = activeChartInstanceIdRef.current) => {
+    const prev = chartStatesMapRef.current[chartId]?.drawings ?? DEFAULT_CHART_RUNTIME_STATE.drawings;
+    const after = prev.filter((d) => d.id !== id);
+    if (after.length !== prev.length) {
+      recordDrawingChange(chartId, prev, after);
+      setChartField(chartId, "drawings", after);
+    }
     setSelectedDrawing((cur) => (cur === id ? null : cur));
+    setDrawingSettingsFor((cur) => (cur === id ? null : cur));
   }, [setChartField]);
   const updateDrawing = useCallback(
-    (next: Drawing) =>
-      setChartField(activeChartInstanceIdRef.current, "drawings", (prev) => prev.map((d) => (d.id === next.id ? next : d))),
+    (next: Drawing, chartId: string = activeChartInstanceIdRef.current) => {
+      const prev = chartStatesMapRef.current[chartId]?.drawings ?? DEFAULT_CHART_RUNTIME_STATE.drawings;
+      const after = prev.map((d) => (d.id === next.id ? next : d));
+      const now = Date.now();
+      const active = dragCoalesceRef.current;
+      if (!active || active.id !== next.id || now - active.lastTs > 400) {
+        recordDrawingChange(chartId, prev, after);
+      }
+      dragCoalesceRef.current = { id: next.id, lastTs: now };
+      setChartField(chartId, "drawings", after);
+    },
     [setChartField],
   );
   const duplicateDrawing = useCallback((d: Drawing) => {
-    const copy = { ...d, id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}` };
-    setChartField(activeChartInstanceIdRef.current, "drawings", (prev) => [...prev, copy]);
+    const now = Date.now();
+    const copy: Drawing = { ...d, id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, createdAt: now, updatedAt: now };
+    const chartId = activeChartInstanceIdRef.current;
+    const prev = chartStatesMapRef.current[chartId]?.drawings ?? DEFAULT_CHART_RUNTIME_STATE.drawings;
+    const after = [...prev, copy];
+    recordDrawingChange(chartId, prev, after);
+    setChartField(chartId, "drawings", after);
     setSelectedDrawing(copy.id);
   }, [setChartField]);
+
+  // Global drawing controls (lock/hide/delete all, delete selected) — always
+  // scoped to `activeChartInstanceIdRef.current` alone, never touching
+  // indicators, chart data, or another chart instance's drawings.
+  const setAllDrawingsField = useCallback(
+    (field: "locked" | "hidden", value: boolean) => {
+      const chartId = activeChartInstanceIdRef.current;
+      const prev = chartStatesMapRef.current[chartId]?.drawings ?? DEFAULT_CHART_RUNTIME_STATE.drawings;
+      const after = prev.map((d) => ({ ...d, [field]: value, updatedAt: Date.now() }));
+      recordDrawingChange(chartId, prev, after);
+      setChartField(chartId, "drawings", after);
+    },
+    [setChartField],
+  );
+  const deleteAllDrawings = useCallback(() => {
+    const chartId = activeChartInstanceIdRef.current;
+    const prev = chartStatesMapRef.current[chartId]?.drawings ?? DEFAULT_CHART_RUNTIME_STATE.drawings;
+    if (prev.length > 0) {
+      recordDrawingChange(chartId, prev, []);
+      setChartField(chartId, "drawings", []);
+    }
+    setSelectedDrawing(null);
+    setDrawingSettingsFor(null);
+  }, [setChartField]);
+  const undoDrawingsForActive = useCallback(() => {
+    const id = activeChartInstanceIdRef.current;
+    const current = chartStatesMapRef.current[id]?.drawings ?? DEFAULT_CHART_RUNTIME_STATE.drawings;
+    const prevSnapshot = undoDrawings(id, current);
+    if (prevSnapshot !== null) setChartField(id, "drawings", prevSnapshot);
+  }, [setChartField]);
+  const redoDrawingsForActive = useCallback(() => {
+    const id = activeChartInstanceIdRef.current;
+    const current = chartStatesMapRef.current[id]?.drawings ?? DEFAULT_CHART_RUNTIME_STATE.drawings;
+    const nextSnapshot = redoDrawings(id, current);
+    if (nextSnapshot !== null) setChartField(id, "drawings", nextSnapshot);
+  }, [setChartField]);
+
+  // Ctrl/Cmd+Z / Ctrl/Cmd+Shift+Z: undo/redo the ACTIVE chart's drawings
+  // only. Guarded against firing while typing anywhere else in Studio (the
+  // code editor, a text input, a contenteditable) so it never fights those
+  // surfaces' own undo/redo.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const typing =
+        target &&
+        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+      if (typing) return;
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "z") return;
+      e.preventDefault();
+      if (e.shiftKey) redoDrawingsForActive();
+      else undoDrawingsForActive();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undoDrawingsForActive, redoDrawingsForActive]);
 
   // ---- run / add to chart -------------------------------------------------
   const barsLiveRef = useRef<Bar[]>(bars);
@@ -2688,6 +2974,69 @@ function StudioWorkspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /**
+   * Phase 5A-6A — Builder → Studio Add to Chart / Backtest handoff. Reuses
+   * the EXACT same RLS-scoped `getIndicator` read, the EXACT same
+   * spec/code/settings → editor-state assignment the "Edit code" button
+   * already performs (`setCode`/`setSettings`/`setValidation`/
+   * `checkedSourceRef`/`setProjectSpec`/`setAiIndicatorId`/`setDock`), and
+   * the EXACT same `runCode(row.code, {settings, key: `saved-${id}`,
+   * savedId: id})` the "Add to chart" button already performs — this effect
+   * is genuinely just "do both of those, driven by the URL instead of a
+   * click," never a second load/render pipeline. `runCode` already calls
+   * `setEditingKey(key)` internally, which is also what makes the loaded
+   * indicator the Strategy Tester's target (`testerProject`'s own priority
+   * order below falls back to `editingKey`) — Phase 5A-6C's `openTester`
+   * needs no separate "select this indicator for the tester" mechanism.
+   *
+   * The `saved-${id}` key matches the Saved-list "Add to chart" button's own
+   * convention exactly, so if the user later reopens the Saved panel and
+   * clicks that same row's Add to chart, it upserts into the SAME chart slot
+   * instead of creating a second visual copy.
+   *
+   * Relies ONLY on the dependency array (never re-fetches on an unrelated
+   * re-render, only when `handoffIndicatorId`/`handoffOpenTester` actually
+   * change) plus the standard `cancelled`-flag pattern for a stale response
+   * — deliberately NOT an additional persistent ref-based "already handled"
+   * guard: an earlier version of this effect used one, and it actively
+   * broke the load under React 18 StrictMode's dev-only double-invoke
+   * (mount → cleanup → mount again for the SAME deps) — the ref, being
+   * shared across that synthetic remount, made the SECOND (surviving)
+   * invocation see "already handled" and skip starting its own fetch,
+   * while the FIRST invocation's fetch completed with the right data but
+   * discarded it because its OWN `cancelled` flag had already flipped true.
+   * The plain `cancelled`-flag-only pattern is exactly what React's own
+   * docs prescribe for this and is correct under both StrictMode and a
+   * real remount.
+   */
+  useEffect(() => {
+    if (!handoffIndicatorId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const row = await getIndicatorFn({ data: { id: handoffIndicatorId } });
+        if (cancelled) return;
+        const rowSettings = (row.settings ?? {}) as Record<string, number | boolean | string>;
+        setCode(row.code);
+        setSettings(rowSettings);
+        setValidation({ status: "idle", error: null });
+        checkedSourceRef.current = null;
+        setProjectSpec(coerceSpec(row.spec));
+        setAiIndicatorId(row.id);
+        setDock("code");
+        await runCode(row.code, { settings: rowSettings, key: `saved-${row.id}`, savedId: row.id });
+        if (cancelled) return;
+        if (handoffOpenTester) focusWidgetTab("strategy-tester");
+      } catch (e) {
+        if (!cancelled) setNotice(`Could not load that indicator: ${e instanceof Error ? e.message : "unknown error"}`);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [handoffIndicatorId, handoffOpenTester]);
+
   // ---- saved indicators ---------------------------------------------------
   const saveMut = useMutation({
     mutationFn: async () => {
@@ -2816,8 +3165,66 @@ function StudioWorkspace() {
       built ??
       indicators.find((i) => i.key === editingKey) ??
       indicators[indicators.length - 1];
-    return { name: active.result.meta.name, strategy: active.result.strategy, code: active.code };
+    // Phase 5B-1: `savedId` (set whenever this chart entry came from a
+    // persisted indicator — Saved-list "Add to chart", Builder's own Add to
+    // Chart/Backtest handoff, or "Edit code") doubles as the strategy
+    // execution adapter's originating indicatorId. `null` for an unsaved
+    // AI-build-in-progress or pasted script — those simply can't be armed
+    // yet (see canArmStrategy in useStrategyExecution's caller).
+    return { name: active.result.meta.name, strategy: active.result.strategy, code: active.code, indicatorId: active.savedId ?? null };
   }, [indicators, editingKey]);
+
+  // Phase 5B-1/5B-2/5B-4 — Strategy Execution (Arm/Start/Stop paper
+  // trading). Reads the SAME `testerProject`/`snapshot`/`accountId` state
+  // Backtest and the manual ticket already use — no second "which project
+  // is active" concept, no second account/position read. Phase 5B-Final:
+  // `submitPaperOrder` (supabase/functions/paper-submit-order) is now the
+  // ONE canonical OMS submission path for BOTH the manual ticket above and
+  // Strategy Execution below — this hook never defines or wraps a second
+  // one. `basicAccounts` is the RLS-only fallback so `activeAccount`'s
+  // paper-only check still resolves even when the privileged
+  // `accounts`/`snapshot` reads are unavailable (see basicAccountsQuery).
+  const activeAccount = useMemo(
+    () =>
+      accounts.find((a) => a.id === accountId) ??
+      snapshot?.account ??
+      (basicAccounts.find((a) => a.id === accountId) as TradingAccount | undefined) ??
+      null,
+    [accounts, accountId, snapshot, basicAccounts],
+  );
+  const openPositionForSymbol = useMemo(() => {
+    const p = snapshot?.positions.find((row) => row.symbol === symbol.toUpperCase() && row.status === "open");
+    return p ? { side: p.side, qty: p.qty } : null;
+  }, [snapshot, symbol]);
+  const [paperQty, setPaperQty] = useState(1);
+  const strategyExecution = useStrategyExecution({
+    strategy: testerProject?.strategy ?? null,
+    bars,
+    symbol,
+    timeframe: interval,
+    account: activeAccount,
+    openPositionForSymbol,
+    indicatorId: testerProject?.indicatorId ?? null,
+    indicatorVersion: null,
+    indicatorName: testerProject?.name ?? "",
+    defaultQty: paperQty,
+    submitOrderFn: (input) => submitPaperOrder(input),
+  });
+  const strategyExecutionProps: StrategyExecutionProps | null = testerProject
+    ? {
+        projectName: testerProject.name,
+        hasStrategy: testerProject.strategy.declared,
+        mode: strategyExecution.mode,
+        isPaperAccount: activeAccount?.environment === "paper",
+        isSubmitting: strategyExecution.isSubmitting,
+        startError: strategyExecution.startError,
+        lastSignalError: strategyExecution.lastSignalError,
+        onStart: strategyExecution.start,
+        onStop: strategyExecution.stop,
+        paperQty,
+        onPaperQtyChange: setPaperQty,
+      }
+    : null;
 
   // Backtest fills drawn on the chart so the rules can be verified visually.
   const backtestMarkers = useMemo(() => {
@@ -2888,6 +3295,7 @@ function StudioWorkspace() {
           onFlatten={() => tradeMutation.mutate({ kind: "flatten" })}
           onReset={() => tradeMutation.mutate({ kind: "reset" })}
           prefill={prefill}
+          strategyExecution={strategyExecutionProps}
         />
       );
     }
@@ -3365,12 +3773,18 @@ function StudioWorkspace() {
             bars={activeChartInstance.bars}
             indicators={activeChartInstance.indicators}
             tool={tool}
+            onCancelTool={handleCancelTool}
             drawings={activeChartInstance.drawings}
             onAddDrawing={addDrawing}
             onRemoveDrawing={removeDrawing}
             onUpdateDrawing={updateDrawing}
+            userId={user?.id ?? null}
             selectedId={selectedDrawing}
             onSelectDrawing={setSelectedDrawing}
+            onOpenDrawingSettings={(id, screen) => {
+              setDrawingSettingsFor(id);
+              setDrawingSettingsAnchor(screen);
+            }}
             hasOscPane={hasOscPane}
             extraMarkers={backtestMarkers}
             tradeLines={tradeLines}
@@ -3400,6 +3814,8 @@ function StudioWorkspace() {
             onCrosshair={setCrosshair}
             onReady={onChartReady}
             onRenderStats={handleRenderStats}
+            chartInstanceId={chartInstanceId}
+            magnet={magnet}
           />
         </ChartInstance>
       )}
@@ -3412,7 +3828,29 @@ function StudioWorkspace() {
           onUpdate={updateDrawing}
           onRemove={removeDrawing}
           onDuplicate={duplicateDrawing}
+          onOpenSettings={(d) => {
+            setDrawingSettingsFor(d.id);
+            setDrawingSettingsAnchor({ x: 320, y: 110 });
+          }}
           onClose={() => setObjectsOpen(false)}
+        />
+      )}
+
+      {drawingSettingsFor && activeChartInstance.drawings.find((d) => d.id === drawingSettingsFor) && (
+        <DrawingSettingsPopover
+          drawing={activeChartInstance.drawings.find((d) => d.id === drawingSettingsFor)!}
+          label={TOOL_BY_ID[activeChartInstance.drawings.find((d) => d.id === drawingSettingsFor)!.tool]?.name ?? "Drawing"}
+          anchor={drawingSettingsAnchor}
+          onChange={updateDrawing}
+          onDuplicate={() => {
+            const d = activeChartInstance.drawings.find((x) => x.id === drawingSettingsFor);
+            if (d) duplicateDrawing(d);
+          }}
+          onRemove={() => {
+            if (drawingSettingsFor) removeDrawing(drawingSettingsFor);
+          }}
+          onClose={() => setDrawingSettingsFor(null)}
+          userId={user?.id ?? null}
         />
       )}
 
@@ -3548,15 +3986,21 @@ function StudioWorkspace() {
               indicators={inst.indicators}
               tool="cursor"
               drawings={inst.drawings}
-              onAddDrawing={(d) => setChartField(instanceId, "drawings", (prev) => [...prev, d])}
-              onRemoveDrawing={(id) =>
-                setChartField(instanceId, "drawings", (prev) => prev.filter((d) => d.id !== id))
-              }
-              onUpdateDrawing={(updated) =>
-                setChartField(instanceId, "drawings", (prev) =>
-                  prev.map((d) => (d.id === updated.id ? updated : d)),
-                )
-              }
+              // Routed through the SAME history-recording mutators the active
+              // chart uses (see their doc comment above), explicitly scoped to
+              // THIS pane's own instanceId — never bypassed via a raw
+              // setChartField call, which would silently skip
+              // recordDrawingChange and leave this pane with no undo/redo for
+              // the mutation. In practice `tool="cursor"`/`selectedId={null}`/
+              // `onSelectDrawing={() => {}}` just below mean StudioChart never
+              // actually invokes these on an inactive pane today (creation,
+              // drag, and delete-key removal all require a non-cursor tool or
+              // a selection, neither of which this leaf ever has) — but wiring
+              // them correctly here removes the footgun for whenever that
+              // changes, and matches every other mutation path's contract.
+              onAddDrawing={(d) => addDrawing(d, instanceId)}
+              onRemoveDrawing={(id) => removeDrawing(id, instanceId)}
+              onUpdateDrawing={(updated) => updateDrawing(updated, instanceId)}
               selectedId={null}
               onSelectDrawing={() => {}}
               hasOscPane={inst.indicators.some((i) => i.result.plots.some((p) => p.pane === "osc"))}
@@ -3567,6 +4011,8 @@ function StudioWorkspace() {
               chartType={inst.chartType}
               settings={inst.chartSettings}
               onCrosshair={() => {}}
+              chartInstanceId={instanceId}
+              magnet={magnet}
             />
           </ChartInstance>
         )}
@@ -3999,6 +4445,14 @@ function StudioWorkspace() {
                 >
                   <TypeIcon className="h-3.5 w-3.5" />
                 </button>
+                <Link
+                  title="Edit in Builder"
+                  to="/builder/$id"
+                  params={{ id: row.id }}
+                  className="rounded p-1 text-muted-foreground hover:text-foreground"
+                >
+                  <Code2 className="h-3.5 w-3.5" />
+                </Link>
                 <button
                   title="Duplicate"
                   onClick={() => duplicateMut.mutate(row.id)}
@@ -4245,6 +4699,7 @@ function StudioWorkspace() {
           onFlatten={() => tradeMutation.mutate({ kind: "flatten" })}
           onReset={() => tradeMutation.mutate({ kind: "reset" })}
           prefill={prefill}
+          strategyExecution={strategyExecutionProps}
         />
       </div>
     )}
@@ -4586,6 +5041,7 @@ function StudioWorkspace() {
               onFlatten={() => tradeMutation.mutate({ kind: "flatten" })}
               onReset={() => tradeMutation.mutate({ kind: "reset" })}
               prefill={prefill}
+              strategyExecution={strategyExecutionProps}
             />
 
           ) : rightTab === "watchlist" && watchlistTab ? (
@@ -4758,7 +5214,7 @@ function StudioWorkspace() {
         onOpenHistory={handleOpenAiHistory}
         onOpenAlerts={handleOpenAlerts}
       />
-      <div ref={rootRef} className="flex h-full min-w-0 flex-1 flex-col bg-background text-foreground">
+      <div ref={rootRef} className="studio-scrollbars flex h-full min-w-0 flex-1 flex-col bg-background text-foreground">
       {/* top bar */}
       <header className="flex h-10 shrink-0 items-center gap-1.5 border-b border-border bg-sidebar px-2">
         <span className="hidden shrink-0 text-[13px] font-medium tracking-tight text-muted-foreground md:inline">
@@ -5128,47 +5584,24 @@ function StudioWorkspace() {
 
       <div className="flex min-h-0 flex-1">
         {/* drawing rail */}
-        <nav className="flex w-[42px] shrink-0 flex-col items-center gap-0.5 border-r border-border bg-sidebar py-1.5">
-          {TOOLS.map((t, i) => (
-            <Fragment key={t.id}>
-              {i > 0 && t.group !== TOOLS[i - 1].group && (
-                <div className="my-1 h-px w-5 bg-border" />
-              )}
-              <button
-                title={t.label}
-                onClick={() => setTool(t.id)}
-                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[6px] ${
-                  tool === t.id
-                    ? "bg-brand text-brand-foreground"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground"
-                }`}
-              >
-                <t.icon className="h-[18px] w-[18px]" />
-              </button>
-            </Fragment>
-          ))}
-          <div className="my-1 h-px w-5 bg-border" />
-          <button
-            title="Objects & styles"
-            onClick={() => setObjectsOpen((v) => !v)}
-            className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[6px] ${
-              objectsOpen
-                ? "bg-accent text-foreground"
-                : "text-muted-foreground hover:bg-accent hover:text-foreground"
-            }`}
-          >
-            <Layers className="h-[18px] w-[18px]" />
-          </button>
-          {drawings.length > 0 && (
-            <button
-              title="Clear all drawings"
-              onClick={() => setDrawings([])}
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground"
-            >
-              <span className="text-[10px]">clr</span>
-            </button>
-          )}
-        </nav>
+        <DrawToolbar
+          tool={tool}
+          onSelectTool={setTool}
+          magnet={magnet}
+          onSetMagnet={setMagnet}
+          objectsOpen={objectsOpen}
+          onToggleObjects={() => setObjectsOpen((v) => !v)}
+          hasDrawings={drawings.length > 0}
+          hasSelection={Boolean(selectedDrawing)}
+          allLocked={drawings.length > 0 && drawings.every((d) => d.locked)}
+          allHidden={drawings.length > 0 && drawings.every((d) => d.hidden)}
+          onLockAll={() => setAllDrawingsField("locked", true)}
+          onUnlockAll={() => setAllDrawingsField("locked", false)}
+          onHideAll={() => setAllDrawingsField("hidden", true)}
+          onShowAll={() => setAllDrawingsField("hidden", false)}
+          onDeleteSelected={() => selectedDrawing && removeDrawing(selectedDrawing)}
+          onDeleteAll={deleteAllDrawings}
+        />
 
         {/* chart + sidebar, generically rendered from the workspace tree
             (UI-4f-1) -- structure is tree-driven, leaf content/resize

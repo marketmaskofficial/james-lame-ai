@@ -13,10 +13,15 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AccountRouteImport } from './routes/account'
 import { Route as AppRouteImport } from './routes/app'
 import { Route as AuthRouteImport } from './routes/auth'
+import { Route as BuilderRouteImport } from './routes/builder'
+import { Route as DashboardRouteImport } from './routes/dashboard'
+import { Route as JournalRouteImport } from './routes/journal'
 import { Route as PricingRouteImport } from './routes/pricing'
 import { Route as StudioRouteImport } from './routes/studio'
+import { Route as TradesRouteImport } from './routes/trades'
 import { Route as ApiGenerateRouteImport } from './routes/api/generate'
 import { Route as ApiKlinesRouteImport } from './routes/api/klines'
+import { Route as BuilderIdRouteImport } from './routes/builder_.$id'
 import { Route as CheckoutReturnRouteImport } from './routes/checkout.return'
 import { Route as SIdRouteImport } from './routes/s.$id'
 import { Route as ApiPublicHooksCheckAlertsRouteImport } from './routes/api/public/hooks/check-alerts'
@@ -42,6 +47,21 @@ const AuthRoute = AuthRouteImport.update({
   path: '/auth',
   getParentRoute: () => rootRouteImport,
 } as any)
+const BuilderRoute = BuilderRouteImport.update({
+  id: '/builder',
+  path: '/builder',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DashboardRoute = DashboardRouteImport.update({
+  id: '/dashboard',
+  path: '/dashboard',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const JournalRoute = JournalRouteImport.update({
+  id: '/journal',
+  path: '/journal',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const PricingRoute = PricingRouteImport.update({
   id: '/pricing',
   path: '/pricing',
@@ -52,6 +72,11 @@ const StudioRoute = StudioRouteImport.update({
   path: '/studio',
   getParentRoute: () => rootRouteImport,
 } as any)
+const TradesRoute = TradesRouteImport.update({
+  id: '/trades',
+  path: '/trades',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiGenerateRoute = ApiGenerateRouteImport.update({
   id: '/api/generate',
   path: '/api/generate',
@@ -60,6 +85,11 @@ const ApiGenerateRoute = ApiGenerateRouteImport.update({
 const ApiKlinesRoute = ApiKlinesRouteImport.update({
   id: '/api/klines',
   path: '/api/klines',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const BuilderIdRoute = BuilderIdRouteImport.update({
+  id: '/builder_/$id',
+  path: '/builder/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CheckoutReturnRoute = CheckoutReturnRouteImport.update({
@@ -90,10 +120,15 @@ export interface FileRoutesByFullPath {
   '/account': typeof AccountRoute
   '/app': typeof AppRoute
   '/auth': typeof AuthRoute
+  '/builder': typeof BuilderRoute
+  '/dashboard': typeof DashboardRoute
+  '/journal': typeof JournalRoute
   '/pricing': typeof PricingRoute
   '/studio': typeof StudioRoute
+  '/trades': typeof TradesRoute
   '/api/generate': typeof ApiGenerateRoute
   '/api/klines': typeof ApiKlinesRoute
+  '/builder/$id': typeof BuilderIdRoute
   '/checkout/return': typeof CheckoutReturnRoute
   '/s/$id': typeof SIdRoute
   '/api/public/hooks/check-alerts': typeof ApiPublicHooksCheckAlertsRoute
@@ -104,10 +139,15 @@ export interface FileRoutesByTo {
   '/account': typeof AccountRoute
   '/app': typeof AppRoute
   '/auth': typeof AuthRoute
+  '/builder': typeof BuilderRoute
+  '/dashboard': typeof DashboardRoute
+  '/journal': typeof JournalRoute
   '/pricing': typeof PricingRoute
   '/studio': typeof StudioRoute
+  '/trades': typeof TradesRoute
   '/api/generate': typeof ApiGenerateRoute
   '/api/klines': typeof ApiKlinesRoute
+  '/builder/$id': typeof BuilderIdRoute
   '/checkout/return': typeof CheckoutReturnRoute
   '/s/$id': typeof SIdRoute
   '/api/public/hooks/check-alerts': typeof ApiPublicHooksCheckAlertsRoute
@@ -119,10 +159,15 @@ export interface FileRoutesById {
   '/account': typeof AccountRoute
   '/app': typeof AppRoute
   '/auth': typeof AuthRoute
+  '/builder': typeof BuilderRoute
+  '/dashboard': typeof DashboardRoute
+  '/journal': typeof JournalRoute
   '/pricing': typeof PricingRoute
   '/studio': typeof StudioRoute
+  '/trades': typeof TradesRoute
   '/api/generate': typeof ApiGenerateRoute
   '/api/klines': typeof ApiKlinesRoute
+  '/builder_/$id': typeof BuilderIdRoute
   '/checkout/return': typeof CheckoutReturnRoute
   '/s/$id': typeof SIdRoute
   '/api/public/hooks/check-alerts': typeof ApiPublicHooksCheckAlertsRoute
@@ -135,10 +180,15 @@ export interface FileRouteTypes {
     | '/account'
     | '/app'
     | '/auth'
+    | '/builder'
+    | '/dashboard'
+    | '/journal'
     | '/pricing'
     | '/studio'
+    | '/trades'
     | '/api/generate'
     | '/api/klines'
+    | '/builder/$id'
     | '/checkout/return'
     | '/s/$id'
     | '/api/public/hooks/check-alerts'
@@ -149,10 +199,15 @@ export interface FileRouteTypes {
     | '/account'
     | '/app'
     | '/auth'
+    | '/builder'
+    | '/dashboard'
+    | '/journal'
     | '/pricing'
     | '/studio'
+    | '/trades'
     | '/api/generate'
     | '/api/klines'
+    | '/builder/$id'
     | '/checkout/return'
     | '/s/$id'
     | '/api/public/hooks/check-alerts'
@@ -163,10 +218,15 @@ export interface FileRouteTypes {
     | '/account'
     | '/app'
     | '/auth'
+    | '/builder'
+    | '/dashboard'
+    | '/journal'
     | '/pricing'
     | '/studio'
+    | '/trades'
     | '/api/generate'
     | '/api/klines'
+    | '/builder_/$id'
     | '/checkout/return'
     | '/s/$id'
     | '/api/public/hooks/check-alerts'
@@ -178,10 +238,15 @@ export interface RootRouteChildren {
   AccountRoute: typeof AccountRoute
   AppRoute: typeof AppRoute
   AuthRoute: typeof AuthRoute
+  BuilderRoute: typeof BuilderRoute
+  DashboardRoute: typeof DashboardRoute
+  JournalRoute: typeof JournalRoute
   PricingRoute: typeof PricingRoute
   StudioRoute: typeof StudioRoute
+  TradesRoute: typeof TradesRoute
   ApiGenerateRoute: typeof ApiGenerateRoute
   ApiKlinesRoute: typeof ApiKlinesRoute
+  BuilderIdRoute: typeof BuilderIdRoute
   CheckoutReturnRoute: typeof CheckoutReturnRoute
   SIdRoute: typeof SIdRoute
   ApiPublicHooksCheckAlertsRoute: typeof ApiPublicHooksCheckAlertsRoute
@@ -218,6 +283,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/builder': {
+      id: '/builder'
+      path: '/builder'
+      fullPath: '/builder'
+      preLoaderRoute: typeof BuilderRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/dashboard': {
+      id: '/dashboard'
+      path: '/dashboard'
+      fullPath: '/dashboard'
+      preLoaderRoute: typeof DashboardRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/journal': {
+      id: '/journal'
+      path: '/journal'
+      fullPath: '/journal'
+      preLoaderRoute: typeof JournalRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/pricing': {
       id: '/pricing'
       path: '/pricing'
@@ -232,6 +318,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof StudioRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/trades': {
+      id: '/trades'
+      path: '/trades'
+      fullPath: '/trades'
+      preLoaderRoute: typeof TradesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/generate': {
       id: '/api/generate'
       path: '/api/generate'
@@ -244,6 +337,13 @@ declare module '@tanstack/react-router' {
       path: '/api/klines'
       fullPath: '/api/klines'
       preLoaderRoute: typeof ApiKlinesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/builder_/$id': {
+      id: '/builder_/$id'
+      path: '/builder/$id'
+      fullPath: '/builder/$id'
+      preLoaderRoute: typeof BuilderIdRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/checkout/return': {
@@ -282,10 +382,15 @@ const rootRouteChildren: RootRouteChildren = {
   AccountRoute: AccountRoute,
   AppRoute: AppRoute,
   AuthRoute: AuthRoute,
+  BuilderRoute: BuilderRoute,
+  DashboardRoute: DashboardRoute,
+  JournalRoute: JournalRoute,
   PricingRoute: PricingRoute,
   StudioRoute: StudioRoute,
+  TradesRoute: TradesRoute,
   ApiGenerateRoute: ApiGenerateRoute,
   ApiKlinesRoute: ApiKlinesRoute,
+  BuilderIdRoute: BuilderIdRoute,
   CheckoutReturnRoute: CheckoutReturnRoute,
   SIdRoute: SIdRoute,
   ApiPublicHooksCheckAlertsRoute: ApiPublicHooksCheckAlertsRoute,
