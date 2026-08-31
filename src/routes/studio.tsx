@@ -200,6 +200,7 @@ import {
   flattenAllPositions,
   getTradingSnapshot,
   listTradingAccounts,
+  listMyPaperAccountsBasic,
   createPaperTradingAccount,
   renameTradingAccount,
   reverseTradePosition,
@@ -208,8 +209,8 @@ import {
   modifyTradeOrder,
   setPositionBrackets,
   resetPaperAccount,
-  submitTradeOrder,
 } from "@/lib/trading.functions";
+import { submitPaperOrder } from "@/lib/trading/paperExecutionClient";
 
 
 export const Route = createFileRoute("/studio")({
@@ -1795,7 +1796,6 @@ function StudioWorkspace() {
   const [accountId, setAccountId] = useState<string | null>(null);
   const [brokersOpen, setBrokersOpen] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
-  const submitOrderFn = useServerFn(submitTradeOrder);
   const cancelOrderFn = useServerFn(cancelTradeOrder);
   const closePositionFn = useServerFn(closeTradePosition);
   const flattenFn = useServerFn(flattenAllPositions);
@@ -1820,13 +1820,32 @@ function StudioWorkspace() {
   });
   const accounts = useMemo(() => accountsQuery.data ?? [], [accountsQuery.data]);
 
-  // Never guess: the panel trades whichever account is selected here.
+  // Phase 5B-Final — RLS-only account discovery. `accountsQuery` above goes
+  // through oms.server.ts/supabaseAdmin (also auto-provisions a first
+  // account); this reads `trading_accounts` directly under the caller's own
+  // session and needs no service-role credential. Used as a fallback so
+  // account selection (and therefore Strategy Execution's paper-only gate)
+  // still resolves when the privileged path is unavailable.
+  const listMyPaperAccountsBasicFn = useServerFn(listMyPaperAccountsBasic);
+  const basicAccountsQuery = useQuery<
+    Array<{ id: string; label: string; environment: string; account_number: string; currency: string; status: string }>
+  >({
+    queryKey: ["trading-accounts-basic"],
+    queryFn: () => listMyPaperAccountsBasicFn() as Promise<
+      Array<{ id: string; label: string; environment: string; account_number: string; currency: string; status: string }>
+    >,
+    enabled: !!user,
+  });
+  const basicAccounts = useMemo(() => basicAccountsQuery.data ?? [], [basicAccountsQuery.data]);
+
+  // Never guess: the panel trades whichever account is selected here. Falls
+  // back to the RLS-only list so a selection still happens even when the
+  // privileged account list can't load.
   useEffect(() => {
-    if (!accounts.length) return;
-    setAccountId((cur) =>
-      cur && accounts.some((a) => a.id === cur) ? cur : accounts[0].id,
-    );
-  }, [accounts]);
+    const list = accounts.length ? accounts : basicAccounts;
+    if (!list.length) return;
+    setAccountId((cur) => (cur && list.some((a) => a.id === cur) ? cur : list[0].id));
+  }, [accounts, basicAccounts]);
 
   const tradingQuery = useQuery<AccountSnapshot>({
     queryKey: ["trading-snapshot", accountId],
@@ -1883,21 +1902,29 @@ function StudioWorkspace() {
         | { kind: "reset" },
     ): Promise<AccountSnapshot> => {
       if (action.kind === "submit") {
-        const res = (await submitOrderFn({
-          data: {
-            ...(accountId ? { accountId } : {}),
-            symbol,
-            timeframe: interval,
-            side: action.draft.side,
-            type: action.draft.type,
-            qty: action.draft.qty,
-            ...(action.draft.limitPrice ? { limitPrice: action.draft.limitPrice } : {}),
-            ...(action.draft.stopPrice ? { stopPrice: action.draft.stopPrice } : {}),
-            ...(action.draft.stopLoss ? { stopLoss: action.draft.stopLoss } : {}),
-            ...(action.draft.takeProfit ? { takeProfit: action.draft.takeProfit } : {}),
-          },
-        })) as { rejected: string | null; snapshot: AccountSnapshot };
+        if (!accountId) throw new Error("Select a trading account first.");
+        // Phase 5B-Final — manual paper orders go through the SAME trusted
+        // execution boundary as Strategy Execution (submitPaperOrder ->
+        // supabase/functions/paper-submit-order -> the existing OMS). This
+        // is a converge-on-one-system requirement, not an accident: the
+        // old submitTradeOrder server function required supabaseAdmin on
+        // the Node server, which is not reliably provisioned in every
+        // hosting tier; the Edge Function always receives it from the
+        // platform instead.
+        const res = await submitPaperOrder({
+          accountId,
+          symbol,
+          timeframe: interval,
+          side: action.draft.side,
+          type: action.draft.type,
+          qty: action.draft.qty,
+          ...(action.draft.limitPrice ? { limitPrice: action.draft.limitPrice } : {}),
+          ...(action.draft.stopPrice ? { stopPrice: action.draft.stopPrice } : {}),
+          ...(action.draft.stopLoss ? { stopLoss: action.draft.stopLoss } : {}),
+          ...(action.draft.takeProfit ? { takeProfit: action.draft.takeProfit } : {}),
+        });
         if (res.rejected) throw new Error(res.rejected);
+        if (!res.snapshot) throw new Error("Order accepted but no snapshot returned.");
         track("paper_trade_created", {
           side: action.draft.side,
           type: action.draft.type,
@@ -3150,11 +3177,21 @@ function StudioWorkspace() {
   // Phase 5B-1/5B-2/5B-4 — Strategy Execution (Arm/Start/Stop paper
   // trading). Reads the SAME `testerProject`/`snapshot`/`accountId` state
   // Backtest and the manual ticket already use — no second "which project
-  // is active" concept, no second account/position read. `submitOrderFn`
-  // is the EXISTING `submitTradeOrder` server function (the ONE canonical
-  // OMS submission path) already bound above; this hook never defines or
-  // wraps a second one.
-  const activeAccount = useMemo(() => accounts.find((a) => a.id === accountId) ?? snapshot?.account ?? null, [accounts, accountId, snapshot]);
+  // is active" concept, no second account/position read. Phase 5B-Final:
+  // `submitPaperOrder` (supabase/functions/paper-submit-order) is now the
+  // ONE canonical OMS submission path for BOTH the manual ticket above and
+  // Strategy Execution below — this hook never defines or wraps a second
+  // one. `basicAccounts` is the RLS-only fallback so `activeAccount`'s
+  // paper-only check still resolves even when the privileged
+  // `accounts`/`snapshot` reads are unavailable (see basicAccountsQuery).
+  const activeAccount = useMemo(
+    () =>
+      accounts.find((a) => a.id === accountId) ??
+      snapshot?.account ??
+      (basicAccounts.find((a) => a.id === accountId) as TradingAccount | undefined) ??
+      null,
+    [accounts, accountId, snapshot, basicAccounts],
+  );
   const openPositionForSymbol = useMemo(() => {
     const p = snapshot?.positions.find((row) => row.symbol === symbol.toUpperCase() && row.status === "open");
     return p ? { side: p.side, qty: p.qty } : null;
@@ -3171,7 +3208,7 @@ function StudioWorkspace() {
     indicatorVersion: null,
     indicatorName: testerProject?.name ?? "",
     defaultQty: paperQty,
-    submitOrderFn: (input) => submitOrderFn({ data: input }) as Promise<{ rejected?: string | null; snapshot?: AccountSnapshot }>,
+    submitOrderFn: (input) => submitPaperOrder(input),
   });
   const strategyExecutionProps: StrategyExecutionProps | null = testerProject
     ? {

@@ -42,7 +42,35 @@ const POSITION_COLS =
 const EXEC_COLS =
   "id, order_id, position_id, symbol, side, qty, price, commission, realized_pnl, executed_at";
 
-const db = (): Db => supabaseAdmin;
+/**
+ * Phase 5B-Final — trusted-execution-boundary injection point. Every
+ * function in this file keeps calling the SAME `db()` accessor it always
+ * has; the only change is that `db()` now prefers an explicitly-injected
+ * client over the module's own `supabaseAdmin` when one has been set.
+ *
+ * Why this exists: the Node/TanStack server process this file normally
+ * runs in may not itself be provisioned with `SUPABASE_SERVICE_ROLE_KEY`
+ * (Lovable Cloud's app-hosting tier does not universally grant it — see
+ * the Phase 5B-Final audit). Supabase Edge Functions, by contrast, always
+ * receive it automatically from the platform. Rather than duplicating
+ * this file's order/fill/position/P&L/risk logic inside a second,
+ * Deno-only implementation, `supabase/functions/paper-submit-order/`
+ * imports THIS file directly (via a Deno import map resolving the `@/`
+ * alias and the `@supabase/supabase-js` npm package) and calls
+ * `__setTrustedDbClient` once, at the top of the request, with an admin
+ * client built from ITS OWN environment — then calls the exact same
+ * exported `submitOrder`/`getSnapshot` functions unchanged. One
+ * implementation, two hosts, never two engines.
+ *
+ * The Node path is completely unaffected: nothing there ever calls
+ * `__setTrustedDbClient`, so `db()` falls back to `supabaseAdmin` exactly
+ * as it always has.
+ */
+let trustedDbOverride: Db | null = null;
+export function __setTrustedDbClient(client: Db | null): void {
+  trustedDbOverride = client;
+}
+const db = (): Db => trustedDbOverride ?? supabaseAdmin;
 
 export class OmsError extends Error {}
 
@@ -443,8 +471,21 @@ export async function submitOrder(userId: string, input: SubmitInput) {
   // arrives within 2s of the previous one is almost never intentional. The
   // read below catches the common case; `clientTag` makes it atomic, because
   // a unique index rejects the loser of a genuinely concurrent double click.
+  //
+  // Phase 5B-Final — a caller-supplied `signalId` (a strategy's own
+  // deterministic indicator+symbol+timeframe+bar+kind+side identity, never
+  // random) gets the EXACT SAME unique-index-backed atomicity, via the
+  // `signal:` prefix below, rather than being exempted from it. This is the
+  // server-side backstop the client-side dedup set (useStrategyExecution's
+  // processedSignalsRef) cannot fully provide on its own — an HTTP retry of
+  // the identical request (network hiccup, a second browser tab, a replayed
+  // request) now collides on the SAME unique `(account_id, client_tag)`
+  // index and returns the ALREADY-ACCEPTED order (see the duplicate-key
+  // catch below) instead of creating a second one. A manual ticket (no
+  // signalId) keeps its own pre-existing 2-second-window content-based
+  // guard, unchanged.
   const clientTag = input.signalId
-    ? null
+    ? `signal:${input.signalId}`
     : [
         acct.id,
         input.symbol.toUpperCase(),

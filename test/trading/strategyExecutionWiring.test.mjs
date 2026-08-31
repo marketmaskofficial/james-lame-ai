@@ -146,10 +146,14 @@ const tradingFnsSrc = read("src/lib/trading.functions.ts");
   ok("the pure adapter module (strategyExecution.ts) has ZERO I/O of any kind — no fetch, no Supabase, no server function imports", !/fetch\(|supabase|createServerFn|useServerFn/.test(adapterSrc));
   ok("the pure adapter module never computes P&L/commission/balance — those fields never appear in it", !/realized_pnl|commission|balance/.test(adapterSrc));
   ok(
-    "studio.tsx wires the hook's submitOrderFn to the EXISTING submitOrderFn (useServerFn(submitTradeOrder)) already bound for the manual ticket — not a new server function",
-    /submitOrderFn: \(input\) => submitOrderFn\(\{ data: input \}\)/.test(studioSrc),
+    "Phase 5B-Final: studio.tsx wires the hook's submitOrderFn to submitPaperOrder — the SAME trusted-execution-boundary client used by the manual ticket, not a second submission path",
+    /submitOrderFn: \(input\) => submitPaperOrder\(input\)/.test(studioSrc),
   );
-  ok("no new createServerFn was added to trading.functions.ts for strategy execution (submitTradeOrder is reused as-is)", (tradingFnsSrc.match(/createServerFn/g) ?? []).length === (read("src/lib/trading.functions.ts").match(/createServerFn/g) ?? []).length);
+  ok(
+    "Phase 5B-Final: the manual ticket's submit branch also calls submitPaperOrder — manual PAPER and strategy PAPER converge on one call site",
+    /const res = await submitPaperOrder\(\{/.test(studioSrc),
+  );
+  ok("studio.tsx imports submitPaperOrder from the browser-safe trusted-execution client, not from oms.server.ts directly", /import \{ submitPaperOrder \} from "@\/lib\/trading\/paperExecutionClient"/.test(studioSrc));
 }
 
 // ---- 18. No new schema ------------------------------------------------------
@@ -170,6 +174,8 @@ const tradingFnsSrc = read("src/lib/trading.functions.ts");
     ["src/lib/trading/strategyExecution.ts", adapterSrc],
     ["src/components/studio/useStrategyExecution.ts", hookSrc],
     ["src/components/studio/TradingPanel.tsx", panelSrc],
+    ["src/lib/trading/paperExecutionClient.ts", read("src/lib/trading/paperExecutionClient.ts")],
+    ["src/routes/studio.tsx", studioSrc],
   ]) {
     ok(`${name} never references supabaseAdmin/service-role/OPENAI_API_KEY`, !/supabaseAdmin|service_role|SUPABASE_SERVICE_ROLE|OPENAI_API_KEY/.test(src));
   }
