@@ -1,4 +1,3 @@
-import { useEffect, useRef, useState } from "react";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { AppNavRail } from "@/components/AppNavRail";
 import { canRunPreview as canRunPreviewCheck, canSubmitValidate } from "@/lib/builder/generationState";
@@ -6,10 +5,11 @@ import type { Timeframe } from "@/lib/marketdata";
 import { BuilderToolbar } from "./BuilderToolbar";
 import { ChatPanel } from "./ChatPanel";
 import { CodeEditorPanel } from "./CodeEditorPanel";
-import { PreviewPanel, type PreviewContext } from "./PreviewPanel";
+import { PreviewPanel } from "./PreviewPanel";
 import { SettingsPanel } from "./SettingsPanel";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import { useBuilderMarketData } from "./useBuilderMarketData";
+import { useBuilderPreviewRefresh } from "./useBuilderPreviewRefresh";
 import { useBuilderProject } from "./useBuilderProject";
 
 /**
@@ -69,16 +69,18 @@ import { useBuilderProject } from "./useBuilderProject";
  * Phase 5A-4d — `useBuilderMarketData` (a separate, Builder-local hook —
  * deliberately NOT folded into `useBuilderProject`/`BuilderProjectState`,
  * see that hook's own doc comment) supplies real `bars`/`barsLoading`/
- * `marketDataError`/`selectedSymbol`/`selectedTimeframe`. Run Preview is a
- * real, manual, `BuilderToolbar` action that calls the EXISTING
- * `submitRunPreview(bars)` with these real bars — no second execution path,
- * no automatic re-run on symbol/timeframe/code change (that's Phase
- * 5A-4e's job). `previewContext`/`pendingPreviewContextRef` below exist
- * solely to know which symbol/timeframe the currently-displayed
- * `previewResult` was actually computed against, so `PreviewPanel` can
- * honestly disclose staleness rather than ever drawing an indicator
- * computed against one symbol's bars on top of a different symbol's
- * candles.
+ * `marketDataError`/`selectedSymbol`/`selectedTimeframe`.
+ *
+ * Phase 5A-4e — `useBuilderPreviewRefresh` owns automatic Preview
+ * execution: a first successful build/refinement, a symbol/timeframe
+ * change once bars are ready, and a 500ms-debounced manual edit all
+ * eventually call the EXISTING `submitRunPreview(bars)` — still the one
+ * `runIndicator` call site in Builder, still no second execution path. The
+ * Run Preview button becomes that hook's `triggerManualRun` — an explicit,
+ * debounce-bypassing, immediate retry action, not the only way Preview
+ * updates anymore. `previewContext` (also owned by that hook) is what lets
+ * `PreviewPanel` honestly distinguish a current preview from one that's
+ * stale relative to the current symbol/timeframe/code.
  */
 
 export type BuilderTab = "chat" | "code" | "preview" | "settings";
@@ -99,30 +101,22 @@ export function BuilderWorkspace({
   onTabChange: (tab: BuilderTab) => void;
   signedIn: boolean;
 }) {
-  const { state, prompt, setPrompt, submitPrompt, submitFixError, updateSgscript, submitValidate, submitRunPreview } = useBuilderProject(signedIn);
+  const { state, prompt, setPrompt, submitPrompt, submitFixError, updateSgscript, submitValidate, submitRunPreview, manualEditVersion } =
+    useBuilderProject(signedIn);
   const { selectedSymbol, setSelectedSymbol, selectedTimeframe, setSelectedTimeframe, bars, barsLoading, marketDataError } = useBuilderMarketData();
 
-  /** Tracks which symbol/timeframe the CURRENTLY-DISPLAYED `previewResult`
-   * was actually run against. Updated only when `previewResult` changes to
-   * a new successful value (never on failure — `applyPreviewFailure` never
-   * touches `previewResult`, so this must not update either, or a failed
-   * run against a NEW symbol would incorrectly relabel the OLD, still-
-   * displayed chart as belonging to the new one). `pendingPreviewContextRef`
-   * captures the context a Run Preview click was made under; the effect
-   * below only promotes it once `previewResult`'s reference actually
-   * changes, tying this strictly to real success. */
-  const pendingPreviewContextRef = useRef<PreviewContext | null>(null);
-  const [previewContext, setPreviewContext] = useState<PreviewContext | null>(null);
-  useEffect(() => {
-    if (state.previewResult && pendingPreviewContextRef.current) {
-      setPreviewContext(pendingPreviewContextRef.current);
-    }
-  }, [state.previewResult]);
-
-  function handleRunPreview() {
-    pendingPreviewContextRef.current = { symbol: selectedSymbol, timeframe: selectedTimeframe };
-    void submitRunPreview(bars);
-  }
+  const { previewContext, triggerManualRun } = useBuilderPreviewRefresh({
+    sgscript: state.sgscript,
+    buildStatus: state.status,
+    previewStatus: state.previewStatus,
+    previewResult: state.previewResult,
+    manualEditVersion,
+    selectedSymbol,
+    selectedTimeframe,
+    bars,
+    barsLoading,
+    submitRunPreview,
+  });
 
   const chat = (
     <ChatPanel project={state} prompt={prompt} onPromptChange={setPrompt} onSubmit={submitPrompt} onFixError={submitFixError} signedIn={signedIn} />
@@ -144,6 +138,7 @@ export function BuilderWorkspace({
       selectedTimeframe={selectedTimeframe}
       onSymbolChange={setSelectedSymbol}
       onTimeframeChange={(tf: Timeframe) => setSelectedTimeframe(tf)}
+      sgscript={state.sgscript}
       previewStatus={state.previewStatus}
       previewResult={state.previewResult}
       previewError={state.previewError}
@@ -163,7 +158,7 @@ export function BuilderWorkspace({
           onValidate={submitValidate}
           canRunPreview={canRunPreview}
           previewRunning={state.previewStatus === "running"}
-          onRunPreview={handleRunPreview}
+          onRunPreview={triggerManualRun}
         />
 
         <div className="min-h-0 flex-1 overflow-hidden">

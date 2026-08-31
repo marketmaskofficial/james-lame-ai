@@ -92,6 +92,18 @@ export function useBuilderProject(signedIn: boolean) {
    * needs to add — no `AbortController`, no job queue, no polling. */
   const runSeqRef = useRef(0);
 
+  /** Phase 5A-4e — the narrow "a manual edit just happened" signal the
+   * preview-refresh orchestration (`useBuilderPreviewRefresh.ts`) debounces
+   * off of. Deliberately NOT inferred by diffing `state.sgscript` values
+   * (that can't distinguish a manual keystroke from `sgscript` changing
+   * because a build/refinement just succeeded, which must NOT debounce).
+   * Bumped synchronously inside `updateSgscript` below, then read as a
+   * plain number at render time — the ref itself holds no data other than
+   * this counter, so it's not a second copy of the code in any sense; the
+   * one `setState` call `updateSgscript` already makes is what actually
+   * triggers the re-render that lets a consumer observe the new value. */
+  const manualEditSeqRef = useRef(0);
+
   // Only ever enabled for an indicatorId this hook did NOT itself just
   // create — i.e. never fires during the normal Phase 5A-2 flow (first
   // build always self-assigns), and is ready for a future "resume this
@@ -230,6 +242,7 @@ export function useBuilderProject(signedIn: boolean) {
    * `createIndicatorFn`/`updateIndicatorFn`/`appendIndicatorMessageFn`
    * call is anywhere in this function). */
   function updateSgscript(sgscript: string) {
+    manualEditSeqRef.current += 1;
     setState((s) => setManualSgscript(s, sgscript));
   }
 
@@ -283,5 +296,5 @@ export function useBuilderProject(signedIn: boolean) {
     }
   }
 
-  return { state, prompt, setPrompt, submitPrompt, submitFixError, updateSgscript, submitValidate, submitRunPreview };
+  return { state, prompt, setPrompt, submitPrompt, submitFixError, updateSgscript, submitValidate, submitRunPreview, manualEditVersion: manualEditSeqRef.current };
 }
