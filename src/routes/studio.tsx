@@ -118,7 +118,9 @@ import {
   TradingPanel,
   type OrderDraft,
   type TicketPrefill,
+  type StrategyExecutionProps,
 } from "@/components/studio/TradingPanel";
+import { useStrategyExecution } from "@/components/studio/useStrategyExecution";
 import { AccountBar, EnvBadge } from "@/components/studio/AccountBar";
 import { FeedbackButton } from "@/components/FeedbackButton";
 import { AppNavRail } from "@/components/AppNavRail";
@@ -3136,8 +3138,56 @@ function StudioWorkspace() {
       built ??
       indicators.find((i) => i.key === editingKey) ??
       indicators[indicators.length - 1];
-    return { name: active.result.meta.name, strategy: active.result.strategy, code: active.code };
+    // Phase 5B-1: `savedId` (set whenever this chart entry came from a
+    // persisted indicator — Saved-list "Add to chart", Builder's own Add to
+    // Chart/Backtest handoff, or "Edit code") doubles as the strategy
+    // execution adapter's originating indicatorId. `null` for an unsaved
+    // AI-build-in-progress or pasted script — those simply can't be armed
+    // yet (see canArmStrategy in useStrategyExecution's caller).
+    return { name: active.result.meta.name, strategy: active.result.strategy, code: active.code, indicatorId: active.savedId ?? null };
   }, [indicators, editingKey]);
+
+  // Phase 5B-1/5B-2/5B-4 — Strategy Execution (Arm/Start/Stop paper
+  // trading). Reads the SAME `testerProject`/`snapshot`/`accountId` state
+  // Backtest and the manual ticket already use — no second "which project
+  // is active" concept, no second account/position read. `submitOrderFn`
+  // is the EXISTING `submitTradeOrder` server function (the ONE canonical
+  // OMS submission path) already bound above; this hook never defines or
+  // wraps a second one.
+  const activeAccount = useMemo(() => accounts.find((a) => a.id === accountId) ?? snapshot?.account ?? null, [accounts, accountId, snapshot]);
+  const openPositionForSymbol = useMemo(() => {
+    const p = snapshot?.positions.find((row) => row.symbol === symbol.toUpperCase() && row.status === "open");
+    return p ? { side: p.side, qty: p.qty } : null;
+  }, [snapshot, symbol]);
+  const [paperQty, setPaperQty] = useState(1);
+  const strategyExecution = useStrategyExecution({
+    strategy: testerProject?.strategy ?? null,
+    bars,
+    symbol,
+    timeframe: interval,
+    account: activeAccount,
+    openPositionForSymbol,
+    indicatorId: testerProject?.indicatorId ?? null,
+    indicatorVersion: null,
+    indicatorName: testerProject?.name ?? "",
+    defaultQty: paperQty,
+    submitOrderFn: (input) => submitOrderFn({ data: input }) as Promise<{ rejected?: string | null; snapshot?: AccountSnapshot }>,
+  });
+  const strategyExecutionProps: StrategyExecutionProps | null = testerProject
+    ? {
+        projectName: testerProject.name,
+        hasStrategy: testerProject.strategy.declared,
+        mode: strategyExecution.mode,
+        isPaperAccount: activeAccount?.environment === "paper",
+        isSubmitting: strategyExecution.isSubmitting,
+        startError: strategyExecution.startError,
+        lastSignalError: strategyExecution.lastSignalError,
+        onStart: strategyExecution.start,
+        onStop: strategyExecution.stop,
+        paperQty,
+        onPaperQtyChange: setPaperQty,
+      }
+    : null;
 
   // Backtest fills drawn on the chart so the rules can be verified visually.
   const backtestMarkers = useMemo(() => {
@@ -3208,6 +3258,7 @@ function StudioWorkspace() {
           onFlatten={() => tradeMutation.mutate({ kind: "flatten" })}
           onReset={() => tradeMutation.mutate({ kind: "reset" })}
           prefill={prefill}
+          strategyExecution={strategyExecutionProps}
         />
       );
     }
@@ -4611,6 +4662,7 @@ function StudioWorkspace() {
           onFlatten={() => tradeMutation.mutate({ kind: "flatten" })}
           onReset={() => tradeMutation.mutate({ kind: "reset" })}
           prefill={prefill}
+          strategyExecution={strategyExecutionProps}
         />
       </div>
     )}
@@ -4952,6 +5004,7 @@ function StudioWorkspace() {
               onFlatten={() => tradeMutation.mutate({ kind: "flatten" })}
               onReset={() => tradeMutation.mutate({ kind: "reset" })}
               prefill={prefill}
+              strategyExecution={strategyExecutionProps}
             />
 
           ) : rightTab === "watchlist" && watchlistTab ? (
