@@ -5,10 +5,10 @@
 //   - /builder is registered with the same access-gating pattern every
 //     other top-level route uses,
 //   - AppNavRail links to it,
-//   - the toolbar's Save/Save Version/Validate/Run Preview actions are all
-//     driven by real conditional guards (never a hardcoded true/fake-success
-//     stub), and Add to Chart remains the one action still unconditionally
-//     disabled (that hand-off is a later phase),
+//   - the toolbar's Save/Save Version/Validate/Run Preview/Add to Chart/
+//     Backtest actions are all driven by real conditional guards (never a
+//     hardcoded true/fake-success stub) — Phase 5A-6A/C activated Add to
+//     Chart/Backtest, which were the last two placeholders,
 //   - the Builder shell never imports the canonical SGScript/Pine/AI/
 //     renderer/backtest implementation modules — Phase 5A-1 is UI shell +
 //     routing only, and this enforces the "one canonical chain, never a
@@ -107,10 +107,9 @@ const toolbarSrc = sources["src/components/builder/BuilderToolbar.tsx"];
   ok("Chart Studio's own rail link is untouched (still LineChart / \"Chart Studio\")", /to="\/studio"[\s\S]{0,120}title="Chart Studio"/.test(navRailSrc));
 }
 
-// ---- Toolbar: Phase 5A-5 activates Save/Save Version/Restore as real,
-// ---- conditionally-guarded actions (never a hardcoded true); Add to Chart
-// ---- is the ONE action that remains unconditionally disabled — that
-// ---- hand-off is still a later phase.
+// ---- Toolbar: Phase 5A-5 activates Save/Save Version/Restore, and Phase
+// ---- 5A-6A/C additionally activates Add to Chart/Backtest, all as real,
+// ---- conditionally-guarded actions — never a hardcoded true anywhere.
 {
   const buttonBlocks = toolbarSrc.split(/<button/).slice(1); // one entry per <button ...>...</button> region
   ok("BuilderToolbar renders at least 4 action buttons (Save, Validate, Run Preview, Add to Chart)", buttonBlocks.length >= 4);
@@ -119,14 +118,19 @@ const toolbarSrc = sources["src/components/builder/BuilderToolbar.tsx"];
   const validateBlock = buttonBlocks.find((b) => /aria-label="Validate"/.test(b));
   const runPreviewBlock = buttonBlocks.find((b) => /aria-label="Run Preview"/.test(b));
   const addToChartBlock = buttonBlocks.find((b) => /aria-label="Add to Chart"/.test(b));
+  const backtestBlock = buttonBlocks.find((b) => /aria-label="Backtest"/.test(b));
 
   ok(
     "Phase 5A-5B: Save is conditionally disabled via disabled={!canSave}, driven by a real canSave(indicatorId, dirty, ...) guard — never a hardcoded true, and never able to create an empty indicator from a brand-new /builder session",
     Boolean(saveBlock) && /disabled=\{!canSave\}/.test(saveBlock),
   );
   ok(
-    "Add to Chart remains unconditionally disabled (a literal `disabled` attribute, never `disabled={someCondition}`) — still a later phase",
-    Boolean(addToChartBlock) && /\bdisabled(\s|>)/.test(addToChartBlock.slice(0, 60)) && !/disabled=\{/.test(addToChartBlock.slice(0, 60)),
+    "Phase 5A-6A: Add to Chart is conditionally disabled via disabled={!canHandoff || handoffPending}, driven by a real canHandoff(indicatorId, ...) guard — never a hardcoded true, never able to fire from a brand-new /builder session with nothing persisted yet",
+    Boolean(addToChartBlock) && /disabled=\{!canHandoff \|\| handoffPending\}/.test(addToChartBlock),
+  );
+  ok(
+    "Phase 5A-6C: Backtest shares the identical canHandoff/handoffPending guard as Add to Chart — one gate, not two",
+    Boolean(backtestBlock) && /disabled=\{!canHandoff \|\| handoffPending\}/.test(backtestBlock),
   );
   ok(
     "Validate is conditionally disabled via disabled={!canValidate}, driven by canValidate (a real prop, not a hardcoded true)",
@@ -137,8 +141,8 @@ const toolbarSrc = sources["src/components/builder/BuilderToolbar.tsx"];
     Boolean(runPreviewBlock) && /disabled=\{!canRunPreview\}/.test(runPreviewBlock),
   );
   ok(
-    "Phase 5A-5B: exactly the expected set of conditional disabled states exist — Save, Save Version, Restore, Validate, Run Preview (Open and Add to Chart are the only non-conditional actions)",
-    (toolbarSrc.match(/disabled=\{/g) ?? []).length === 5,
+    "exactly the expected set of conditional disabled states exist — Save, Save Version, Restore, Validate, Run Preview, Backtest, Add to Chart (Open is the only fully non-conditional action)",
+    (toolbarSrc.match(/disabled=\{/g) ?? []).length === 7,
   );
   ok("Phase 5A-5B: Save Version's own conditional guard also reads a real canSaveVersion prop", /disabled=\{!canSaveVersion/.test(toolbarSrc));
   ok("Phase 5A-5B: Restore's own conditional guard checks restorePending/currentVersion, never a hardcoded true", /disabled=\{restorePending/.test(toolbarSrc));
@@ -146,6 +150,7 @@ const toolbarSrc = sources["src/components/builder/BuilderToolbar.tsx"];
   ok('Validate button is present', /aria-label="Validate"/.test(toolbarSrc));
   ok('Run Preview button is present', /aria-label="Run Preview"/.test(toolbarSrc));
   ok('Add to Chart button is present', /aria-label="Add to Chart"/.test(toolbarSrc));
+  ok('Backtest button is present', /aria-label="Backtest"/.test(toolbarSrc));
   ok('Open button is present (Phase 5A-5F saved-project discovery)', /aria-label="Open"/.test(toolbarSrc));
 }
 

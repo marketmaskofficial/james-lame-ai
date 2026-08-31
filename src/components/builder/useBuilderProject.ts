@@ -427,6 +427,27 @@ export function useBuilderProject(signedIn: boolean, initialIndicatorId?: string
     saveMutation.mutate();
   }
 
+  /**
+   * Phase 5A-6A/C — the save-before-handoff step Add to Chart and Backtest
+   * both need before navigating to Studio: reuses the exact SAME
+   * `saveMutation` (`updateIndicator(..., snapshot: false)`) plain Save
+   * already uses — never a second persistence call, never a version
+   * snapshot merely because a handoff was requested. Resolves `true`
+   * immediately for an already-clean project (no network call at all).
+   * Resolves `false` on a save failure — `saveMutation.error` (exposed as
+   * `saveError` below) is left populated for the caller to display, and the
+   * caller is expected to stay put rather than navigate.
+   */
+  async function ensureSavedForHandoff(): Promise<boolean> {
+    if (!state.dirty) return true;
+    try {
+      await saveMutation.mutateAsync();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** Phase 5A-5B — explicit Save Version: identical payload to Save, plus
    * `snapshot: true` and a changelog — the ONE place `indicator_versions`
    * gains a new row from a user action (routine AI refinements no longer
@@ -540,6 +561,8 @@ export function useBuilderProject(signedIn: boolean, initialIndicatorId?: string
     saveIndicator,
     savePending: saveMutation.isPending,
     saveError: saveMutation.error instanceof Error ? saveMutation.error.message : null,
+    // Phase 5A-6A/C:
+    ensureSavedForHandoff,
     saveVersionIndicator,
     saveVersionPending: saveVersionMutation.isPending,
     saveVersionError: saveVersionMutation.error instanceof Error ? saveVersionMutation.error.message : null,
