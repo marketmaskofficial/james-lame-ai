@@ -118,7 +118,9 @@ import {
   TradingPanel,
   type OrderDraft,
   type TicketPrefill,
+  type StrategyExecutionProps,
 } from "@/components/studio/TradingPanel";
+import { useStrategyExecution } from "@/components/studio/useStrategyExecution";
 import { AccountBar, EnvBadge } from "@/components/studio/AccountBar";
 import { FeedbackButton } from "@/components/FeedbackButton";
 import { AppNavRail } from "@/components/AppNavRail";
@@ -198,6 +200,7 @@ import {
   flattenAllPositions,
   getTradingSnapshot,
   listTradingAccounts,
+  listMyPaperAccountsBasic,
   createPaperTradingAccount,
   renameTradingAccount,
   reverseTradePosition,
@@ -206,8 +209,8 @@ import {
   modifyTradeOrder,
   setPositionBrackets,
   resetPaperAccount,
-  submitTradeOrder,
 } from "@/lib/trading.functions";
+import { submitPaperOrder } from "@/lib/trading/paperExecutionClient";
 
 
 export const Route = createFileRoute("/studio")({
@@ -1793,7 +1796,6 @@ function StudioWorkspace() {
   const [accountId, setAccountId] = useState<string | null>(null);
   const [brokersOpen, setBrokersOpen] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
-  const submitOrderFn = useServerFn(submitTradeOrder);
   const cancelOrderFn = useServerFn(cancelTradeOrder);
   const closePositionFn = useServerFn(closeTradePosition);
   const flattenFn = useServerFn(flattenAllPositions);
@@ -1818,13 +1820,32 @@ function StudioWorkspace() {
   });
   const accounts = useMemo(() => accountsQuery.data ?? [], [accountsQuery.data]);
 
-  // Never guess: the panel trades whichever account is selected here.
+  // Phase 5B-Final — RLS-only account discovery. `accountsQuery` above goes
+  // through oms.server.ts/supabaseAdmin (also auto-provisions a first
+  // account); this reads `trading_accounts` directly under the caller's own
+  // session and needs no service-role credential. Used as a fallback so
+  // account selection (and therefore Strategy Execution's paper-only gate)
+  // still resolves when the privileged path is unavailable.
+  const listMyPaperAccountsBasicFn = useServerFn(listMyPaperAccountsBasic);
+  const basicAccountsQuery = useQuery<
+    Array<{ id: string; label: string; environment: string; account_number: string; currency: string; status: string }>
+  >({
+    queryKey: ["trading-accounts-basic"],
+    queryFn: () => listMyPaperAccountsBasicFn() as Promise<
+      Array<{ id: string; label: string; environment: string; account_number: string; currency: string; status: string }>
+    >,
+    enabled: !!user,
+  });
+  const basicAccounts = useMemo(() => basicAccountsQuery.data ?? [], [basicAccountsQuery.data]);
+
+  // Never guess: the panel trades whichever account is selected here. Falls
+  // back to the RLS-only list so a selection still happens even when the
+  // privileged account list can't load.
   useEffect(() => {
-    if (!accounts.length) return;
-    setAccountId((cur) =>
-      cur && accounts.some((a) => a.id === cur) ? cur : accounts[0].id,
-    );
-  }, [accounts]);
+    const list = accounts.length ? accounts : basicAccounts;
+    if (!list.length) return;
+    setAccountId((cur) => (cur && list.some((a) => a.id === cur) ? cur : list[0].id));
+  }, [accounts, basicAccounts]);
 
   const tradingQuery = useQuery<AccountSnapshot>({
     queryKey: ["trading-snapshot", accountId],
@@ -1881,21 +1902,29 @@ function StudioWorkspace() {
         | { kind: "reset" },
     ): Promise<AccountSnapshot> => {
       if (action.kind === "submit") {
-        const res = (await submitOrderFn({
-          data: {
-            ...(accountId ? { accountId } : {}),
-            symbol,
-            timeframe: interval,
-            side: action.draft.side,
-            type: action.draft.type,
-            qty: action.draft.qty,
-            ...(action.draft.limitPrice ? { limitPrice: action.draft.limitPrice } : {}),
-            ...(action.draft.stopPrice ? { stopPrice: action.draft.stopPrice } : {}),
-            ...(action.draft.stopLoss ? { stopLoss: action.draft.stopLoss } : {}),
-            ...(action.draft.takeProfit ? { takeProfit: action.draft.takeProfit } : {}),
-          },
-        })) as { rejected: string | null; snapshot: AccountSnapshot };
+        if (!accountId) throw new Error("Select a trading account first.");
+        // Phase 5B-Final — manual paper orders go through the SAME trusted
+        // execution boundary as Strategy Execution (submitPaperOrder ->
+        // supabase/functions/paper-submit-order -> the existing OMS). This
+        // is a converge-on-one-system requirement, not an accident: the
+        // old submitTradeOrder server function required supabaseAdmin on
+        // the Node server, which is not reliably provisioned in every
+        // hosting tier; the Edge Function always receives it from the
+        // platform instead.
+        const res = await submitPaperOrder({
+          accountId,
+          symbol,
+          timeframe: interval,
+          side: action.draft.side,
+          type: action.draft.type,
+          qty: action.draft.qty,
+          ...(action.draft.limitPrice ? { limitPrice: action.draft.limitPrice } : {}),
+          ...(action.draft.stopPrice ? { stopPrice: action.draft.stopPrice } : {}),
+          ...(action.draft.stopLoss ? { stopLoss: action.draft.stopLoss } : {}),
+          ...(action.draft.takeProfit ? { takeProfit: action.draft.takeProfit } : {}),
+        });
         if (res.rejected) throw new Error(res.rejected);
+        if (!res.snapshot) throw new Error("Order accepted but no snapshot returned.");
         track("paper_trade_created", {
           side: action.draft.side,
           type: action.draft.type,
@@ -3136,8 +3165,66 @@ function StudioWorkspace() {
       built ??
       indicators.find((i) => i.key === editingKey) ??
       indicators[indicators.length - 1];
-    return { name: active.result.meta.name, strategy: active.result.strategy, code: active.code };
+    // Phase 5B-1: `savedId` (set whenever this chart entry came from a
+    // persisted indicator — Saved-list "Add to chart", Builder's own Add to
+    // Chart/Backtest handoff, or "Edit code") doubles as the strategy
+    // execution adapter's originating indicatorId. `null` for an unsaved
+    // AI-build-in-progress or pasted script — those simply can't be armed
+    // yet (see canArmStrategy in useStrategyExecution's caller).
+    return { name: active.result.meta.name, strategy: active.result.strategy, code: active.code, indicatorId: active.savedId ?? null };
   }, [indicators, editingKey]);
+
+  // Phase 5B-1/5B-2/5B-4 — Strategy Execution (Arm/Start/Stop paper
+  // trading). Reads the SAME `testerProject`/`snapshot`/`accountId` state
+  // Backtest and the manual ticket already use — no second "which project
+  // is active" concept, no second account/position read. Phase 5B-Final:
+  // `submitPaperOrder` (supabase/functions/paper-submit-order) is now the
+  // ONE canonical OMS submission path for BOTH the manual ticket above and
+  // Strategy Execution below — this hook never defines or wraps a second
+  // one. `basicAccounts` is the RLS-only fallback so `activeAccount`'s
+  // paper-only check still resolves even when the privileged
+  // `accounts`/`snapshot` reads are unavailable (see basicAccountsQuery).
+  const activeAccount = useMemo(
+    () =>
+      accounts.find((a) => a.id === accountId) ??
+      snapshot?.account ??
+      (basicAccounts.find((a) => a.id === accountId) as TradingAccount | undefined) ??
+      null,
+    [accounts, accountId, snapshot, basicAccounts],
+  );
+  const openPositionForSymbol = useMemo(() => {
+    const p = snapshot?.positions.find((row) => row.symbol === symbol.toUpperCase() && row.status === "open");
+    return p ? { side: p.side, qty: p.qty } : null;
+  }, [snapshot, symbol]);
+  const [paperQty, setPaperQty] = useState(1);
+  const strategyExecution = useStrategyExecution({
+    strategy: testerProject?.strategy ?? null,
+    bars,
+    symbol,
+    timeframe: interval,
+    account: activeAccount,
+    openPositionForSymbol,
+    indicatorId: testerProject?.indicatorId ?? null,
+    indicatorVersion: null,
+    indicatorName: testerProject?.name ?? "",
+    defaultQty: paperQty,
+    submitOrderFn: (input) => submitPaperOrder(input),
+  });
+  const strategyExecutionProps: StrategyExecutionProps | null = testerProject
+    ? {
+        projectName: testerProject.name,
+        hasStrategy: testerProject.strategy.declared,
+        mode: strategyExecution.mode,
+        isPaperAccount: activeAccount?.environment === "paper",
+        isSubmitting: strategyExecution.isSubmitting,
+        startError: strategyExecution.startError,
+        lastSignalError: strategyExecution.lastSignalError,
+        onStart: strategyExecution.start,
+        onStop: strategyExecution.stop,
+        paperQty,
+        onPaperQtyChange: setPaperQty,
+      }
+    : null;
 
   // Backtest fills drawn on the chart so the rules can be verified visually.
   const backtestMarkers = useMemo(() => {
@@ -3208,6 +3295,7 @@ function StudioWorkspace() {
           onFlatten={() => tradeMutation.mutate({ kind: "flatten" })}
           onReset={() => tradeMutation.mutate({ kind: "reset" })}
           prefill={prefill}
+          strategyExecution={strategyExecutionProps}
         />
       );
     }
@@ -4611,6 +4699,7 @@ function StudioWorkspace() {
           onFlatten={() => tradeMutation.mutate({ kind: "flatten" })}
           onReset={() => tradeMutation.mutate({ kind: "reset" })}
           prefill={prefill}
+          strategyExecution={strategyExecutionProps}
         />
       </div>
     )}
@@ -4952,6 +5041,7 @@ function StudioWorkspace() {
               onFlatten={() => tradeMutation.mutate({ kind: "flatten" })}
               onReset={() => tradeMutation.mutate({ kind: "reset" })}
               prefill={prefill}
+              strategyExecution={strategyExecutionProps}
             />
 
           ) : rightTab === "watchlist" && watchlistTab ? (

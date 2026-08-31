@@ -1,1 +1,9 @@
 project_id = "ncgaobzcvzdhaccpaixb"
+
+# Phase 5B-Final — trusted paper-execution transport boundary. This function
+# carries no OMS logic of its own; it verifies the caller's JWT, confirms
+# account ownership + paper-only, then calls the SAME submitOrder/getSnapshot
+# already used by the Node server (src/lib/trading/oms.server.ts).
+[functions.paper-submit-order]
+import_map = "./functions/import_map.json"
+verify_jwt = true

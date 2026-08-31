@@ -1,7 +1,31 @@
 import { useEffect, useMemo, useState } from "react";
-import { Loader2, ShieldAlert, TrendingDown, TrendingUp } from "lucide-react";
+import { Loader2, Play, ShieldAlert, Square, TrendingDown, TrendingUp } from "lucide-react";
 import type { AccountSnapshot } from "@/lib/trading/types";
 import { getInstrument, pnlPerUnit } from "@/lib/trading/instruments";
+
+/** Phase 5B-4/5B-5 — the Strategy Execution controls this panel renders
+ * when a strategy-capable project is on the chart. Deliberately a plain
+ * prop bag (not this component owning any execution state itself) —
+ * `useStrategyExecution` (src/components/studio/useStrategyExecution.ts)
+ * is the ONE place that owns Mode/armedContext/the actual OMS submission;
+ * this is purely presentational, exactly like `onSubmit`/`onFlatten` above
+ * are for the manual ticket. */
+export type StrategyExecutionProps = {
+  projectName: string | null;
+  hasStrategy: boolean;
+  mode: "off" | "paper";
+  isPaperAccount: boolean;
+  isSubmitting: boolean;
+  startError: string | null;
+  lastSignalError: string | null;
+  onStart: () => void;
+  onStop: () => void;
+  /** Phase 5B-13 — the safe, explicit default-quantity fallback used for
+   * any strategy entry that doesn't declare its own `qty`. Never silently
+   * inferred/leveraged — a plain visible number the user sets themselves. */
+  paperQty: number;
+  onPaperQtyChange: (qty: number) => void;
+};
 
 export type OrderDraft = {
   side: "buy" | "sell";
@@ -83,6 +107,7 @@ export function TradingPanel({
   onReset,
   signedIn,
   prefill,
+  strategyExecution,
 }: {
   symbol: string;
   timeframe: string;
@@ -95,6 +120,10 @@ export function TradingPanel({
   onReset: () => void;
   signedIn: boolean;
   prefill?: TicketPrefill | null;
+  /** Omitted entirely when there's nothing on the chart to trade — the
+   * section simply doesn't render, exactly like the manual ticket already
+   * requires `signedIn`. */
+  strategyExecution?: StrategyExecutionProps | null;
 }) {
   const inst = getInstrument(symbol);
   const [type, setType] = useState<OrderDraft["type"]>("market");
@@ -226,6 +255,69 @@ export function TradingPanel({
           </div>
         </div>
       </div>
+
+      {strategyExecution && (
+        <div
+          className={`rounded-lg border p-2.5 ${
+            strategyExecution.mode === "paper" ? "border-emerald-500/50 bg-emerald-500/10" : "border-border bg-card/60"
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Strategy Execution</span>
+            <span
+              className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide ${
+                strategyExecution.mode === "paper" ? "bg-emerald-500 text-emerald-950" : "bg-muted text-muted-foreground"
+              }`}
+            >
+              {strategyExecution.mode === "paper" ? "PAPER — ARMED" : "OFF"}
+            </span>
+          </div>
+          <p className="mt-1 truncate text-[11px] text-muted-foreground">{strategyExecution.projectName ?? "No strategy on the chart"}</p>
+
+          {!strategyExecution.hasStrategy ? (
+            <p className="mt-2 text-[10px] text-muted-foreground">This project has no declared strategy rules — visual-only indicators cannot be armed.</p>
+          ) : !strategyExecution.isPaperAccount ? (
+            <p className="mt-2 text-[10px] text-amber-400">Select a PAPER account to enable strategy execution.</p>
+          ) : (
+            <>
+            <label className="mt-2 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+              <span>Paper Qty (used when the strategy doesn't declare its own)</span>
+              <input
+                type="number"
+                min="0"
+                step="any"
+                disabled={strategyExecution.mode === "paper"}
+                value={strategyExecution.paperQty}
+                onChange={(e) => strategyExecution.onPaperQtyChange(Number(e.target.value) || 0)}
+                className="w-16 rounded border border-border bg-background px-1.5 py-0.5 text-right font-mono text-[11px] outline-none focus:border-primary disabled:opacity-50"
+              />
+            </label>
+            <button
+              disabled={strategyExecution.isSubmitting}
+              onClick={strategyExecution.mode === "paper" ? strategyExecution.onStop : strategyExecution.onStart}
+              className={`mt-2 flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] font-semibold transition disabled:opacity-50 ${
+                strategyExecution.mode === "paper" ? "bg-red-600 text-white hover:bg-red-500" : "bg-emerald-600 text-white hover:bg-emerald-500"
+              }`}
+            >
+              {strategyExecution.isSubmitting ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : strategyExecution.mode === "paper" ? (
+                <Square className="h-3.5 w-3.5" />
+              ) : (
+                <Play className="h-3.5 w-3.5" />
+              )}
+              {strategyExecution.mode === "paper" ? "Stop Paper Trading" : "Start Paper Trading"}
+            </button>
+            </>
+          )}
+
+          {strategyExecution.startError && <p className="mt-1.5 text-[10px] text-destructive">{strategyExecution.startError}</p>}
+          {strategyExecution.lastSignalError && <p className="mt-1.5 text-[10px] text-destructive">Last signal: {strategyExecution.lastSignalError}</p>}
+          {strategyExecution.mode === "paper" && (
+            <p className="mt-1.5 text-[10px] text-muted-foreground">Only new signals from bars that close from now on can submit orders — historical signals are never replayed.</p>
+          )}
+        </div>
+      )}
 
       {/* prominent quick trade — market orders at the live last price */}
       <div>

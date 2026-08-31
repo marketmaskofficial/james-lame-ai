@@ -169,6 +169,26 @@ export const listTradingAccounts = createServerFn({ method: "POST" })
     return oms.listAccounts(context.userId);
   });
 
+// Phase 5B-Final — a read-only fallback for account discovery that never
+// touches oms.server.ts/supabaseAdmin. `trading_accounts` already grants
+// SELECT to its own owner via RLS, so this can answer "does this user have
+// a PAPER account, and which one" using ONLY the caller's own authenticated
+// session — no service-role credential required. listTradingAccounts above
+// stays the source of truth for the full account list (balances, equity,
+// auto-provisioning); this exists so Strategy Execution's paper-only gating
+// keeps working even when the privileged path is unavailable.
+export const listMyPaperAccountsBasic = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { data, error } = await context.supabase
+      .from("trading_accounts")
+      .select("id, label, environment, account_number, currency, status")
+      .eq("user_id", context.userId)
+      .order("created_at", { ascending: true });
+    if (error) throw new Error(error.message);
+    return data ?? [];
+  });
+
 export const createPaperTradingAccount = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((i: unknown) =>
