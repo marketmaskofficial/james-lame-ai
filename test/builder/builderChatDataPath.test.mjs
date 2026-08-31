@@ -70,6 +70,7 @@ const resizableSrc = read("src/components/ui/resizable.tsx");
 const previewPanelSrc = read("src/components/builder/PreviewPanel.tsx");
 const marketDataHookSrc = read("src/components/builder/useBuilderMarketData.ts");
 const builderToolbarSrc = read("src/components/builder/BuilderToolbar.tsx");
+const previewRefreshHookSrc = read("src/components/builder/useBuilderPreviewRefresh.ts");
 
 // ---- 1. Explicit allow-list: the 6 canonical functions ARE reused --------
 {
@@ -148,6 +149,10 @@ const builderToolbarSrc = read("src/components/builder/BuilderToolbar.tsx");
     );
     ok(`useBuilderMarketData.ts never references "${forbidden}" (Phase 5A-4d: real bars only, via the canonical fetchBars wrapper)`, !marketDataHookSrc.includes(forbidden));
     ok(`BuilderToolbar.tsx never references "${forbidden}"`, !builderToolbarSrc.includes(forbidden));
+    ok(
+      `useBuilderPreviewRefresh.ts never references "${forbidden}" (Phase 5A-4e: orchestration only — it decides WHEN to call the existing submitRunPreview, never a second execution/render/AI path)`,
+      !previewRefreshHookSrc.includes(forbidden),
+    );
   }
   ok("resizable.tsx never references any canonical/forbidden module (it only touches react-resizable-panels)", FORBIDDEN.every((f) => !resizableSrc.includes(f)));
 }
@@ -437,15 +442,15 @@ const builderToolbarSrc = read("src/components/builder/BuilderToolbar.tsx");
   );
 }
 
-// ---- 10. Phase 5A-4c/4d: previewResult -> LoadedIndicator adapter is exact -
+// ---- 10. Phase 5A-4c/4d/4e: previewResult -> LoadedIndicator adapter -------
 {
   const indicatorsBlock = previewPanelSrc.slice(
     previewPanelSrc.indexOf("const indicators = useMemo"),
     previewPanelSrc.indexOf("const hasOscPane"),
   );
   ok(
-    "no previewResult produces zero indicators (empty array, not a fabricated placeholder indicator)",
-    /if\s*\(\s*!previewResult\s*\|\|\s*isStale\s*\)\s*return\s*\[\]\s*;/.test(indicatorsBlock),
+    "no previewResult, or a MARKET-stale one, produces zero indicators (empty array, not a fabricated placeholder indicator)",
+    /if\s*\(\s*!previewResult\s*\|\|\s*marketStale\s*\)\s*return\s*\[\]\s*;/.test(indicatorsBlock),
   );
   ok('adapter key is the stable literal "builder-preview"', /key:\s*["']builder-preview["']/.test(indicatorsBlock));
   ok("indicator name comes from previewResult.meta.name, not a hardcoded or re-derived name", /name:\s*previewResult\.meta\.name/.test(indicatorsBlock));
@@ -464,18 +469,31 @@ const builderToolbarSrc = read("src/components/builder/BuilderToolbar.tsx");
     previewPanelSrc.indexOf("const headerStatus"),
   );
   ok(
-    'hasOscPane is true only when at least one plot has pane === "osc", and false with no previewResult or while stale (never fabricated)',
-    /previewResult\s*&&\s*!isStale\s*\?\s*previewResult\.plots\.some\(\s*\(p\)\s*=>\s*p\.pane\s*===\s*["']osc["']\s*\)\s*:\s*false/.test(hasOscPaneBlock),
+    'hasOscPane is true only when at least one plot has pane === "osc", and false with no previewResult or while MARKET-stale (never fabricated)',
+    /previewResult\s*&&\s*!marketStale\s*\?\s*previewResult\.plots\.some\(\s*\(p\)\s*=>\s*p\.pane\s*===\s*["']osc["']\s*\)\s*:\s*false/.test(hasOscPaneBlock),
   );
 
   ok(
-    "the `indicators` memo depends only on previewResult/isStale, not on previewStatus — so an error/running status never erases the last-good chart's indicator data (StudioChart keeps rendering the last successful previewResult regardless of status)",
-    /\[previewResult,\s*isStale\]\s*\)\s*;/.test(indicatorsBlock),
+    "the `indicators` memo depends only on previewResult/marketStale, not on previewStatus or codeStale — so an error/running status/pending code edit never erases the last-good chart's indicator data (StudioChart keeps rendering the last successful previewResult regardless of status, and while only the code is stale)",
+    /\[previewResult,\s*marketStale\]\s*\)\s*;/.test(indicatorsBlock),
   );
 
   ok(
-    "Phase 5A-4d: `isStale` is computed from previewContext vs the CURRENTLY selected symbol/timeframe — a previewResult computed against a different symbol/timeframe is never drawn as if it belongs to the new selection",
+    "Phase 5A-4d: `marketStale` is computed from previewContext vs the CURRENTLY selected symbol/timeframe — a previewResult computed against a different symbol/timeframe is never drawn as if it belongs to the new selection",
     /previewContext\.symbol\s*!==\s*selectedSymbol\s*\|\|\s*previewContext\.timeframe\s*!==\s*selectedTimeframe/.test(previewPanelSrc),
+  );
+
+  ok(
+    "Phase 5A-4e: `codeStale` is computed from previewContext.sgscript vs the CURRENT canonical sgscript, only when NOT market-stale — a pending code edit never hides the last-good indicator (it's still valid against the current bars)",
+    /codeStale\s*=\s*previewResult\s*!==\s*null\s*&&\s*previewContext\s*!==\s*null\s*&&\s*!marketStale\s*&&\s*previewContext\.sgscript\s*!==\s*sgscript/.test(
+      previewPanelSrc,
+    ),
+  );
+
+  const headerStatusBlock = previewPanelSrc.slice(previewPanelSrc.indexOf("const headerStatus"), previewPanelSrc.indexOf("const overlayMode"));
+  ok(
+    'Phase 5A-4e fix (found via real hosted QA): the header\'s "Updating preview…" badge is suppressed once previewStatus is "error" — codeStale alone never clears on a failed run (previewContext only ever advances on success), so without this check a terminal runtime failure for the new code would misleadingly keep showing "Updating preview…" forever instead of nothing (the error is already surfaced by the overlay banner)',
+    /codeStale\s*&&\s*previewStatus\s*!==\s*["']error["']/.test(headerStatusBlock),
   );
 }
 
@@ -492,6 +510,10 @@ const builderToolbarSrc = read("src/components/builder/BuilderToolbar.tsx");
   ok(
     'StudioChart is mounted with tool="cursor" and an empty, stable drawings array — Builder never enables drawing-tool creation',
     /tool="cursor"/.test(previewPanelSrc) && /drawings=\{EMPTY_DRAWINGS\}/.test(previewPanelSrc),
+  );
+  ok(
+    "Phase 5A-4e fix: StudioChart is deliberately remounted (key={selectedSymbol:selectedTimeframe}) on a symbol/timeframe change — discovered via real hosted QA to be required because StudioChart's own `sameSet` bars-update heuristic (its own source comment: \"can be fooled by coincidence\") gets fooled when two different symbols' bars share an identical first-bar timestamp (routine at matching wall-clock-aligned intervals), patching just the last bar instead of replacing the whole series and leaving a badly distorted price axis. This is a StudioChart usage change from PreviewPanel, not a StudioChart.tsx edit.",
+    /key=\{`\$\{selectedSymbol\}:\$\{selectedTimeframe\}`\}/.test(previewPanelSrc),
   );
 }
 
@@ -573,18 +595,21 @@ const builderToolbarSrc = read("src/components/builder/BuilderToolbar.tsx");
   );
 }
 
-// ---- 15. Phase 5A-4d: Run Preview receives real bars + latest sgscript ----
+// ---- 15. Phase 5A-4d/4e: Run Preview / auto-refresh reach only submitRunPreview ----
 {
   ok(
-    "BuilderWorkspace's handleRunPreview calls the EXISTING submitRunPreview(bars) with the real fetched bars — no second execution path, no new runIndicator call site",
-    /function handleRunPreview\(\)\s*\{[\s\S]*?submitRunPreview\(bars\)[\s\S]*?\}/.test(workspaceSrcTop),
+    "useBuilderPreviewRefresh's runNow calls the EXISTING submitRunPreview(bars) with the real fetched bars — no second execution path, no new runIndicator call site",
+    /function runNow\(\)\s*\{[\s\S]*?submitRunPreview\(l\.bars\)[\s\S]*?\}/.test(previewRefreshHookSrc),
   );
   ok(
-    "handleRunPreview never calls buildProject/validateProject/createIndicator/updateIndicator/appendIndicatorMessage — Run Preview never generates, validates, or persists",
-    (() => {
-      const body = workspaceSrcTop.slice(workspaceSrcTop.indexOf("function handleRunPreview"), workspaceSrcTop.indexOf("const chat ="));
-      return !/buildProjectFn|validateProjectFn|createIndicatorFn|updateIndicatorFn|appendIndicatorMessageFn|buildMutation\.mutate|validateMutation\.mutate/.test(body);
-    })(),
+    "the preview-refresh hook never calls buildProject/validateProject/createIndicator/updateIndicator/appendIndicatorMessage — automatic and manual Preview both never generate, validate, or persist",
+    !/buildProjectFn|validateProjectFn|createIndicatorFn|updateIndicatorFn|appendIndicatorMessageFn|buildMutation\.mutate|validateMutation\.mutate|buildProject\(|validateProject\(/.test(
+      previewRefreshHookSrc,
+    ),
+  );
+  ok(
+    "triggerManualRun (the Run Preview button's handler) also funnels through the same runNow — no second call site",
+    /function triggerManualRun\(\)\s*\{[\s\S]*?runNow\(\)[\s\S]*?\}/.test(previewRefreshHookSrc),
   );
   ok(
     "Phase 5A-4d: canRunPreview (the toolbar-enablement gate) requires real bars via bars.length > 0, so a click can never reach the runtime's own \"No market data loaded\" failure",

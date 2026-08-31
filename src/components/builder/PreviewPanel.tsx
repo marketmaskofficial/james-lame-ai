@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { AlertTriangle, LineChart, Loader2 } from "lucide-react";
+import { AlertTriangle, LineChart, Loader2, RefreshCw } from "lucide-react";
 import { StudioChart, type Drawing, type LoadedIndicator } from "@/components/studio/StudioChart";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { timeframeLabel, type Timeframe } from "@/lib/marketdata";
@@ -7,48 +7,60 @@ import { SYMBOL_REGISTRY } from "@/lib/symbols";
 import type { Bar, RunResult } from "@/lib/sgscript/types";
 import type { PreviewStatus } from "@/lib/builder/generationState";
 import { BUILDER_TIMEFRAMES } from "./useBuilderMarketData";
+import type { PreviewContext } from "./useBuilderPreviewRefresh";
 
 /**
- * Phase 5A-4c/5A-4d — Live Preview region: the real canonical renderer
- * (`StudioChart`, the exact same component Chart Studio uses — never a
- * copy, never a second lightweight-charts setup) plus real historical
- * market data. Presentation only: every value it renders (`bars`,
- * `previewStatus`, `previewResult`, `previewError`, the market-data fields)
- * comes from `BuilderWorkspace`, which owns `useBuilderMarketData` and
- * `useBuilderProject`; this component makes no fetch, no server/AI call,
+ * Phase 5A-4c/5A-4d/5A-4e — Live Preview region: the real canonical
+ * renderer (`StudioChart`, the exact same component Chart Studio uses —
+ * never a copy, never a second lightweight-charts setup) plus real
+ * historical market data, kept automatically fresh. Presentation only:
+ * every value it renders comes from `BuilderWorkspace`, which owns
+ * `useBuilderMarketData`, `useBuilderProject`, and `useBuilderPreviewRefresh`;
+ * this component makes no fetch, no server/AI call, no `runIndicator` call,
  * and owns no Builder state of its own.
  *
- * Phase 5A-4d wires real `bars` (`useBuilderMarketData`, reusing the exact
- * canonical `fetchBars` every other market-data consumer in this app
- * already uses) and a symbol/timeframe selector into the header slot Phase
- * 5A-4c reserved. Per the Phase 5A-4d audit: once real bars exist, the
- * chart shows REAL candles even before any indicator has been run
- * (`indicators=[]`, never a fabricated placeholder) — Run Preview then adds
- * the generated indicator on top, still through the exact same
- * `submitRunPreview` → `runIndicator` → `previewResult` chain Phase 5A-4b
- * built.
+ * Once real bars exist, the chart shows REAL candles even before any
+ * indicator has been run (`indicators=[]`, never a fabricated placeholder).
  *
- * `previewContext` disambiguates "which symbol/timeframe was the visible
- * `previewResult` actually computed against" from "what's currently
- * selected" — changing symbol/timeframe never re-runs SGScript
- * automatically (Phase 5A-4e's job), so a stale `previewResult` computed
- * against a DIFFERENT symbol's bars must never be drawn as if it belongs to
- * the new selection (its plotted values are timestamped against the old
- * symbol's bars entirely). When stale, the indicator is hidden (never
- * mismatched onto the new candles) and a compact banner discloses exactly
- * what to do about it.
+ * `previewContext` (Phase 5A-4e, `{symbol, timeframe, sgscript}` — owned by
+ * `useBuilderPreviewRefresh.ts`) disambiguates "which symbol/timeframe/code
+ * the visible `previewResult` was actually computed against" from "what's
+ * currently selected/typed." Two distinct staleness tiers:
+ *   - MARKET stale (symbol or timeframe differs): the indicator is hidden
+ *     entirely — its plotted values are timestamped against a DIFFERENT
+ *     symbol's bars, so drawing it over the new candles would be actively
+ *     wrong, not just outdated. A banner discloses exactly what to do.
+ *   - CODE stale (only `sgscript` differs, symbol/timeframe still match):
+ *     the last-good indicator STAYS visible — it's still valid against the
+ *     current bars, just computed from slightly older code, which is
+ *     exactly the "never blank a valid chart while an automatic rerun is
+ *     pending/running" behavior Phase 5A-4e requires. A subtle "Updating
+ *     preview…" hint communicates it without hiding anything.
  *
- * `StudioChart` is mounted unconditionally (idle/loading/error/stale/
- * running/success all use the SAME instance) so it never remounts on a
- * status transition — only the overlay caption/banner on top of it changes.
+ * `StudioChart` is mounted unconditionally with respect to Preview
+ * STATUS — idle/running/error/success/code-stale all reuse the SAME
+ * instance, only the overlay caption/banner changes. It IS deliberately
+ * remounted (`key={selectedSymbol:selectedTimeframe}`) on a symbol or
+ * timeframe change: `StudioChart`'s own candle-update effect uses a
+ * `sameSet` heuristic (matching the new bars' first timestamp against the
+ * previous dataset's, by design, to `update()` just the live bar instead of
+ * reloading everything every tick) that its own source comments already
+ * flag as "fooled by coincidence" — two different symbols fetched via the
+ * same `fetchBars(symbol, timeframe, 500)` shape at the same real-world
+ * moment routinely share an IDENTICAL first-bar timestamp (wall-clock-
+ * aligned 15m/1h/etc. boundaries are the same regardless of symbol), which
+ * fools the heuristic into patching just the last bar instead of replacing
+ * the whole series — leaving hundreds of stale old-symbol-priced candles
+ * mixed with one new-symbol-priced one, and a badly distorted price axis.
+ * Forcing a remount on symbol/timeframe change is a normal React pattern,
+ * touches nothing inside `StudioChart.tsx`, and sidesteps the heuristic
+ * entirely by giving it no "previous dataset" to be fooled by.
  */
 
 const EMPTY_DRAWINGS: Drawing[] = [];
 function noopAddDrawing(): void {}
 function noopRemoveDrawing(): void {}
 function noopSelectDrawing(): void {}
-
-export type PreviewContext = { symbol: string; timeframe: Timeframe };
 
 export function PreviewPanel({
   bars,
@@ -58,6 +70,7 @@ export function PreviewPanel({
   selectedTimeframe,
   onSymbolChange,
   onTimeframeChange,
+  sgscript,
   previewStatus,
   previewResult,
   previewError,
@@ -70,39 +83,58 @@ export function PreviewPanel({
   selectedTimeframe: Timeframe;
   onSymbolChange: (symbol: string) => void;
   onTimeframeChange: (timeframe: Timeframe) => void;
+  sgscript: string;
   previewStatus: PreviewStatus;
   previewResult: RunResult | null;
   previewError: string | null;
   previewContext: PreviewContext | null;
 }) {
-  const isStale =
+  const marketStale =
     previewResult !== null &&
     previewContext !== null &&
     (previewContext.symbol !== selectedSymbol || previewContext.timeframe !== selectedTimeframe);
 
+  const codeStale = previewResult !== null && previewContext !== null && !marketStale && previewContext.sgscript !== sgscript;
+
   const indicators = useMemo<LoadedIndicator[]>(() => {
-    if (!previewResult || isStale) return [];
+    if (!previewResult || marketStale) return [];
     return [{ key: "builder-preview", name: previewResult.meta.name, visible: true, result: previewResult }];
-  }, [previewResult, isStale]);
+  }, [previewResult, marketStale]);
 
   const hasOscPane = useMemo(
-    () => (previewResult && !isStale ? previewResult.plots.some((p) => p.pane === "osc") : false),
-    [previewResult, isStale],
+    () => (previewResult && !marketStale ? previewResult.plots.some((p) => p.pane === "osc") : false),
+    [previewResult, marketStale],
   );
 
-  const headerStatus = barsLoading ? "Loading bars…" : previewStatus === "running" ? "Running preview…" : null;
+  const headerStatus = barsLoading
+    ? "Loading bars…"
+    : previewStatus === "running"
+      ? "Running preview…"
+      : codeStale && previewStatus !== "error"
+        ? "Updating preview…"
+        : null;
 
-  const overlayMode: "loading" | "marketError" | "runtimeErrorNoResult" | "runtimeErrorBanner" | "stale" | "idleReal" | "idleEmpty" | "none" =
-    barsLoading
-      ? "loading"
-      : marketDataError
-        ? "marketError"
-        : previewError && !previewResult
-          ? "runtimeErrorNoResult"
+  const overlayMode:
+    | "loading"
+    | "marketError"
+    | "runtimeErrorNoResult"
+    | "marketStale"
+    | "runtimeErrorBanner"
+    | "codeStale"
+    | "idleReal"
+    | "idleEmpty"
+    | "none" = barsLoading
+    ? "loading"
+    : marketDataError
+      ? "marketError"
+      : previewError && !previewResult
+        ? "runtimeErrorNoResult"
+        : marketStale
+          ? "marketStale"
           : previewError && previewResult
             ? "runtimeErrorBanner"
-            : isStale
-              ? "stale"
+            : codeStale
+              ? "codeStale"
               : !previewResult && bars.length > 0
                 ? "idleReal"
                 : !previewResult
@@ -161,6 +193,7 @@ export function PreviewPanel({
 
       <div className="relative min-h-0 flex-1">
         <StudioChart
+          key={`${selectedSymbol}:${selectedTimeframe}`}
           bars={bars}
           indicators={indicators}
           tool="cursor"
@@ -215,13 +248,20 @@ export function PreviewPanel({
           </div>
         )}
 
-        {overlayMode === "stale" && previewContext && (
+        {overlayMode === "marketStale" && previewContext && (
           <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center gap-1.5 border-t border-brand/30 bg-brand/10 px-3 py-1.5 text-xs text-brand">
             <AlertTriangle className="h-3 w-3 shrink-0" />
             <span className="truncate">
-              Preview is stale (last run: {previewContext.symbol} · {timeframeLabel(previewContext.timeframe)}) — run again for {selectedSymbol} ·{" "}
-              {timeframeLabel(selectedTimeframe)}
+              Preview is stale (last run: {previewContext.symbol} · {timeframeLabel(previewContext.timeframe)}) — updates automatically once{" "}
+              {selectedSymbol} · {timeframeLabel(selectedTimeframe)} bars are ready
             </span>
+          </div>
+        )}
+
+        {overlayMode === "codeStale" && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center gap-1.5 border-t border-brand/30 bg-brand/10 px-3 py-1.5 text-xs text-brand">
+            <RefreshCw className="h-3 w-3 shrink-0" />
+            <span className="truncate">Preview update pending — showing the previous result</span>
           </div>
         )}
       </div>
