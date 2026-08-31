@@ -34,6 +34,7 @@ export function ChatPanel({
   onSubmit,
   onFixError,
   signedIn,
+  messagesLoadError,
 }: {
   project: BuilderProjectState;
   prompt: string;
@@ -41,6 +42,11 @@ export function ChatPanel({
   onSubmit: () => void;
   onFixError: () => void;
   signedIn: boolean;
+  /** Phase 5A-5A — a non-blocking chat-history restoration failure: the
+   * project, its code, and Preview all still work fully; only the past
+   * conversation for a reopened project failed to load. Never surfaced as
+   * a generation/build error. */
+  messagesLoadError?: string | null;
 }) {
   const logRef = useRef<HTMLDivElement>(null);
   const busy = project.status === "generating";
@@ -57,6 +63,12 @@ export function ChatPanel({
       <div className="shrink-0 border-b border-border px-3 py-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
         AI Builder Chat
       </div>
+
+      {messagesLoadError && (
+        <p className="shrink-0 border-b border-border bg-amber-500/10 px-3 py-1.5 text-[10px] text-amber-600">
+          Couldn't load past conversation for this project — code and Preview are unaffected.
+        </p>
+      )}
 
       <div ref={logRef} className="min-h-0 flex-1 space-y-2.5 overflow-y-auto p-3 text-xs">
         {project.messages.length === 0 && (
