@@ -140,7 +140,10 @@ const builderGateSrc = read("src/components/builder/BuilderGate.tsx");
 // ---- 6. Dirty-state guard: one real router blocker, no fragile hand-roll ---
 {
   ok("BuilderWorkspace uses TanStack Router's own useBlocker — the 'normal supported blocker' the audit asked to look for, not a hand-rolled global router replacement", /useBlocker\(/.test(builderWorkspaceSrc));
-  ok("the blocker's shouldBlockFn reads the real state.dirty, not a hardcoded value", /shouldBlockFn:\s*\(\)\s*=>\s*state\.dirty/.test(builderWorkspaceSrc));
+  ok(
+    "the blocker's shouldBlockFn reads the real state.dirty, not a hardcoded value (Phase 5A-6A additionally consults suppressBlockerRef so Add to Chart/Backtest's own post-save navigation is never blocked by a stale dirty read)",
+    /shouldBlockFn:\s*\(\)\s*=>\s*!suppressBlockerRef\.current && state\.dirty/.test(builderWorkspaceSrc),
+  );
   ok("enableBeforeUnload is tied to state.dirty — no browser refresh/close warning for a clean project", /enableBeforeUnload:\s*state\.dirty/.test(builderWorkspaceSrc));
   ok("a real AlertDialog (the same primitive TradeDetailDrawer's discard-confirmation uses) renders the Keep editing / Discard changes choice", /AlertDialogTitle>Discard unsaved changes/.test(builderWorkspaceSrc));
   ok("Keep editing calls blocker.reset(), Discard calls blocker.proceed() — the router's own resolver, not custom navigation logic", /blocker\.reset\?\.\(\)/.test(builderWorkspaceSrc) && /blocker\.proceed\?\.\(\)/.test(builderWorkspaceSrc));

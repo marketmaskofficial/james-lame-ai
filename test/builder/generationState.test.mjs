@@ -21,6 +21,7 @@ import {
   beginPreviewRun,
   beginValidation,
   buildRequestPayload,
+  canHandoff,
   canRunPreview,
   canSave,
   canSaveVersion,
@@ -259,6 +260,15 @@ function runResult(overrides = {}) {
   ok("canSave: not signed in -> false", canSave("id-1", true, false, false) === false);
   ok("canSaveVersion: shares the identical gate as canSave", canSaveVersion("id-1", true, false, true) === true);
   ok("canSaveVersion: NO id -> false", canSaveVersion(null, true, false, true) === false);
+}
+
+// ==== Phase 5A-6A/C: canHandoff (Add to Chart / Backtest) ====================
+{
+  ok("canHandoff: has id, not generating, not save-pending -> true", canHandoff("id-1", "success", false) === true);
+  ok("canHandoff: has id, dirty is irrelevant (a dirty project is saved first, never blocked here) -> true", canHandoff("id-1", "idle", false) === true);
+  ok("canHandoff: NO id (nothing persisted yet) -> false", canHandoff(null, "success", false) === false);
+  ok("canHandoff: while an AI build is generating -> false", canHandoff("id-1", "generating", false) === false);
+  ok("canHandoff: while a save is already pending -> false", canHandoff("id-1", "success", true) === false);
 }
 
 // ==== Phase 5A-5C: mergeSettingsWithDefaults ==================================
